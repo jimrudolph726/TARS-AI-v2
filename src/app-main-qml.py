@@ -195,13 +195,45 @@ class MainInterfaceController(QObject):
     def batteryPercent(self) -> int:
         return self._battery
 
+    @Property(bool, constant=True)
+    def batteryAvailable(self) -> bool:
+        return True
+
     @Property(int, notify=telemetryChanged)
     def cpuTemperature(self) -> int:
         return self._cpu_temperature
 
+    @Property(bool, constant=True)
+    def cpuAvailable(self) -> bool:
+        return True
+
     @Property(bool, notify=telemetryChanged)
     def wifiOnline(self) -> bool:
         return self._wifi_online
+
+    @Property(str, notify=telemetryChanged)
+    def wifiSsid(self) -> str:
+        return "TARS-NET" if self._wifi_online else ""
+
+    @Property(bool, constant=True)
+    def runtimeReady(self) -> bool:
+        return True
+
+    @Property(str, constant=True)
+    def runtimeStatus(self) -> str:
+        return "PROTOTYPE READY"
+
+    @Property(bool, constant=True)
+    def uiVisible(self) -> bool:
+        return True
+
+    @Property(bool, constant=True)
+    def overlayVisible(self) -> bool:
+        return False
+
+    @Property(str, constant=True)
+    def overlaySource(self) -> str:
+        return ""
 
     @Property(bool, notify=mutedChanged)
     def muted(self) -> bool:
@@ -265,6 +297,14 @@ class MainInterfaceController(QObject):
     @Slot()
     def requestPower(self) -> None:
         self._set_notice("Mock shutdown requested · no system action was taken", 5000)
+
+    @Slot()
+    def requestShutdown(self) -> None:
+        self.requestPower()
+
+    @Slot()
+    def exitProgram(self) -> None:
+        QGuiApplication.quit()
 
     @Slot()
     def toggleWifi(self) -> None:

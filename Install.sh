@@ -683,6 +683,7 @@ HEAVY
         cat >> "$req_file" << 'UI'
 
 # === UI & CAMERA (Pi4/Pi5) ===
+PySide6>=6.8,<7                 # Native Qt/QML touchscreen interface
 PyOpenGL                        # OpenGL support
 PyOpenGL-accelerate             # OpenGL acceleration
 picamera2                       # PI camera module

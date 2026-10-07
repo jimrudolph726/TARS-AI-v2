@@ -544,6 +544,7 @@ def load_config():
             "fullscreen": config.getboolean('UI', 'fullscreen'),
             "screen_width": config.getint('UI', 'screen_width', fallback=480),
             "screen_height": config.getint('UI', 'screen_height', fallback=320),
+            "rotation": config.getint('UI', 'rotation', fallback=0),
             "show_time": config.getboolean('UI', 'show_time', fallback=True),
             "show_cpu_temp": config.getboolean('UI', 'show_cpu_temp', fallback=False),
             "ampm_format": config.getboolean('UI', 'ampm_format', fallback=True),
@@ -1091,6 +1092,11 @@ CONFIG_METADATA = {
         'screen_height': {
             'depends_on': [{'field': 'UI_enabled', 'values': ['True', 'true']}],
             'description': 'Height of the TARS on-device display in pixels. Common: 320 for standard 3.5" Pi display, 480 for 5" displays, 600 for 7" displays. Set to 0 for auto-detect.'
+        },
+        'rotation': {
+            'depends_on': [{'field': 'UI_enabled', 'values': ['True', 'true']}],
+            'options': ['0', '90', '180', '270'],
+            'description': 'Rotate the native QML interface to match how the display is mounted. Use 0 for upright, 90 for clockwise, 180 for upside down, or 270 for counter-clockwise.'
         },
         'show_time': {
             'depends_on': [{'field': 'UI_enabled', 'values': ['True', 'true']}],

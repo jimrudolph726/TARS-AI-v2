@@ -1,0 +1,66 @@
+TARS-AI V2 Qt/QML interface
+============================
+
+TARS-AI V2 uses PySide6 and QML as its native on-device interface. Pygame is
+not loaded by src/app.py.
+
+Architecture
+------------
+
+- src/app.py owns the Qt application and QML engine.
+- src/qml/main/TarsMain.qml and its components/ directory own layout,
+  animation, touch input, and visual state.
+- src/modules/module_ui_qml.py is the thread-safe UI state controller and
+  conversation model.
+- src/modules/module_runtime.py starts speech, memory, models, skills,
+  hardware, web UI, Bluetooth, and vision on a background runtime thread.
+
+Qt remains on the process main thread. Existing TARS services may call the UI
+controller from their worker threads; the controller queues all QML model and
+property changes back onto the Qt thread.
+
+Raspberry Pi setup
+------------------
+
+From the repository root:
+
+    cd ~/TARS-AI-v2
+    python3 -m venv --system-site-packages src/.venv
+    source src/.venv/bin/activate
+    python -m pip install -r requirements-main-ui-qml.txt
+
+The main installer also includes PySide6 for Pi 4 and Pi 5 installations.
+
+Run
+---
+
+Run the live TARS application:
+
+    cd ~/TARS-AI-v2/src
+    source .venv/bin/activate
+    python app.py show_ui=true
+
+Run only the hardware-safe visual prototype:
+
+    cd ~/TARS-AI-v2
+    ./run-main-ui-demo.sh --fullscreen
+
+Press Esc in a windowed session, or use Menu > Exit TARS, to stop the
+application cleanly. The header power control asks for confirmation before
+requesting Raspberry Pi shutdown.
+
+Display configuration
+---------------------
+
+The [UI] section of src/config.ini controls the native interface:
+
+    [UI]
+    UI_enabled = True
+    fullscreen = True
+    show_mouse = False
+    screen_width = 480
+    screen_height = 800
+    rotation = 0
+
+rotation accepts 0, 90, 180, or 270. For a landscape display running the
+portrait interface sideways, use rotation = 90 or rotation = 270.

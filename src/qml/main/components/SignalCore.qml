@@ -6,7 +6,7 @@ Item {
     property string state: "LISTENING"
     property color accent: "#ff3852"
     property real uiScale: 1.0
-    readonly property bool animated: state !== "IDLE"
+    readonly property bool animated: state !== "IDLE" && state !== "STANDBY"
     readonly property real energy: state === "SPEAKING" ? 1.0
                                    : state === "LISTENING" ? 0.78
                                    : state === "THINKING" ? 0.48 : 0.18

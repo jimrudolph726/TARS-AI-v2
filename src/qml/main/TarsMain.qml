@@ -6,12 +6,12 @@ import "components"
 ApplicationWindow {
     id: window
 
-    visible: true
+    visible: controller.uiVisible
     width: initialWindowWidth
     height: initialWindowHeight
     minimumWidth: displayRotation % 180 === 0 ? 320 : 480
     minimumHeight: displayRotation % 180 === 0 ? 480 : 320
-    title: "TARS Main Interface · QML Prototype"
+    title: "TARS-AI"
     color: "#03080a"
 
     readonly property color red: "#ff3852"
@@ -33,9 +33,11 @@ ApplicationWindow {
         id: scene
 
         property string overlayMode: ""
+        focus: true
+        Keys.onEscapePressed: controller.exitProgram()
         readonly property bool rotated: displayRotation === 90 || displayRotation === 270
         readonly property real uiScale: Math.min(width / 480, height / 720)
-        readonly property color stateColor: controller.tarsState === "IDLE" ? "#829199"
+        readonly property color stateColor: controller.tarsState === "STANDBY" ? "#829199"
                                             : controller.tarsState === "THINKING" ? window.amber
                                             : window.red
 
@@ -275,9 +277,6 @@ ApplicationWindow {
                     }
                 }
 
-                TapHandler {
-                    onTapped: controller.cycleState()
-                }
             }
 
             TarsPanel {
@@ -332,7 +331,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         label: "BATTERY"
-                        value: controller.batteryPercent + "%"
+                        value: controller.batteryAvailable ? controller.batteryPercent + "%" : "--"
                         iconText: "B"
                         valueColor: window.green
                         uiScale: scene.uiScale
@@ -342,7 +341,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         label: "CPU"
-                        value: controller.cpuTemperature + "°C"
+                        value: controller.cpuAvailable ? controller.cpuTemperature + "°C" : "--"
                         iconText: "C"
                         valueColor: controller.cpuTemperature >= 70 ? window.red : window.green
                         uiScale: scene.uiScale
@@ -472,7 +471,7 @@ ApplicationWindow {
                                 font.letterSpacing: 2 * scene.uiScale
                             }
                             Text {
-                                text: "TARS INTERFACE · SAFE PROTOTYPE"
+                                text: "TARS-AI · NATIVE QML CONTROL"
                                 color: "#91a2aa"
                                 font.family: monoFontFamily
                                 font.pixelSize: 6.5 * scene.uiScale
@@ -539,7 +538,7 @@ ApplicationWindow {
                                     anchors.horizontalCenter: parent.horizontalCenter
                                     anchors.bottom: parent.bottom
                                     anchors.bottomMargin: 12 * scene.uiScale
-                                    text: "SIMULATED CAMERA FEED"
+                                    text: "CAMERA MODULE"
                                     color: "#9babb3"
                                     font.family: monoFontFamily
                                     font.pixelSize: 8 * scene.uiScale
@@ -548,7 +547,7 @@ ApplicationWindow {
                             }
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                text: "Hardware access is disabled in this prototype"
+                                text: "Live camera migration is the next interface module"
                                 color: "#9babb3"
                                 font.family: monoFontFamily
                                 font.pixelSize: 8 * scene.uiScale
@@ -592,29 +591,37 @@ ApplicationWindow {
                             TarsButton {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
-                                text: "ADD DEMO CONVERSATION"
-                                iconText: "+"
+                                text: "SYSTEM STATUS"
+                                iconText: "SYS"
                                 accent: window.red
                                 onClicked: {
-                                    controller.addDemoExchange()
+                                    controller.activateFeature("System status")
                                     scene.overlayMode = ""
                                 }
                             }
                             TarsButton {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
-                                text: controller.wifiOnline ? "SIMULATE WI-FI OFFLINE" : "SIMULATE WI-FI ONLINE"
+                                text: controller.wifiOnline
+                                    ? "WI-FI · " + (controller.wifiSsid.length > 0 ? controller.wifiSsid : "ONLINE")
+                                    : "WI-FI · OFFLINE"
                                 iconText: "WIFI"
                                 accent: window.red
-                                onClicked: controller.toggleWifi()
+                                onClicked: {
+                                    controller.activateFeature("Wi-Fi")
+                                    scene.overlayMode = ""
+                                }
                             }
                             TarsButton {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
-                                text: "CYCLE TARS STATE"
-                                iconText: "STATE"
+                                text: "EXIT TARS"
+                                iconText: "EXIT"
                                 accent: window.red
-                                onClicked: controller.cycleState()
+                                onClicked: {
+                                    scene.overlayMode = ""
+                                    controller.exitProgram()
+                                }
                             }
                         }
 
@@ -641,7 +648,7 @@ ApplicationWindow {
                             }
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                text: "Prototype mode will not affect the computer."
+                                text: "This will safely stop TARS and power off the Raspberry Pi."
                                 color: "#97a7ae"
                                 font.family: monoFontFamily
                                 font.pixelSize: 8 * scene.uiScale
@@ -660,12 +667,12 @@ ApplicationWindow {
                                 TarsButton {
                                     width: 170 * scene.uiScale
                                     height: 62 * scene.uiScale
-                                    text: "MOCK SHUTDOWN"
+                                    text: "SHUT DOWN"
                                     iconText: "PWR"
                                     accent: window.red
                                     selected: true
                                     onClicked: {
-                                        controller.requestPower()
+                                        controller.requestShutdown()
                                         scene.overlayMode = ""
                                     }
                                 }
@@ -673,6 +680,71 @@ ApplicationWindow {
                         }
                     }
                 }
+            }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            visible: !controller.runtimeReady
+            color: "#e603080a"
+            z: 80
+
+            Column {
+                anchors.centerIn: parent
+                width: parent.width - 56 * scene.uiScale
+                spacing: 18 * scene.uiScale
+
+                SignalCore {
+                    width: parent.width
+                    height: 132 * scene.uiScale
+                    state: "BOOTING"
+                    accent: window.red
+                    uiScale: scene.uiScale
+                }
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "INITIALIZING TARS"
+                    color: window.pale
+                    font.family: displayFontFamily
+                    font.pixelSize: 22 * scene.uiScale
+                    font.bold: true
+                    font.letterSpacing: 3 * scene.uiScale
+                }
+                Text {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    text: controller.runtimeStatus
+                    color: "#9eb0b8"
+                    font.family: monoFontFamily
+                    font.pixelSize: 8 * scene.uiScale
+                    font.letterSpacing: 1.2 * scene.uiScale
+                }
+                TarsButton {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: 150 * scene.uiScale
+                    height: 54 * scene.uiScale
+                    text: "EXIT"
+                    iconText: "X"
+                    accent: window.red
+                    onClicked: controller.exitProgram()
+                }
+            }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            visible: controller.overlayVisible
+            color: "#f003080a"
+            z: 100
+
+            Image {
+                anchors.fill: parent
+                anchors.margins: 12 * scene.uiScale
+                source: controller.overlaySource
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+                cache: false
             }
         }
     }

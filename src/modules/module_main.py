@@ -14,7 +14,7 @@ import time
 import asyncio
 
 # === Custom Modules ===
-from modules.module_config import load_config, get_capabilities
+from modules.module_config import load_config
 from modules.module_llm import process_completion, detect_emotion, detect_emotion_from_llm, llm_execute_side_effects, _sanitize_for_tts
 from modules.module_tts import play_audio_chunks, SentenceTTSPipeline
 from modules.module_messageQue import queue_message
@@ -22,20 +22,6 @@ from modules.module_servoctl import initialize_servos
 from modules.module_state import set_tars_state, TarsState
 
 CONFIG = load_config()
-CAPABILITIES = get_capabilities()
-
-# Conditional imports based on device capabilities
-UIManager = None
-if CAPABILITIES is None or CAPABILITIES.can_use_ui:
-    _use_lite_ui = CAPABILITIES is not None and not CAPABILITIES.can_use_opengl
-    try:
-        if _use_lite_ui:
-            from modules.module_ui_lite import UIManagerLite as _UIManager
-        else:
-            from modules.module_ui import UIManager as _UIManager
-        UIManager = _UIManager
-    except ImportError as e:
-        print(f"WARNING: UIManager not available: {e}")
 
 
 # BT Controller
@@ -557,7 +543,7 @@ def initialize_managers(mem_manager, char_manager, stt_mgr, ui_mgr, shutdown_evt
     - mem_manager: The MemoryManager instance from app.py.
     - char_manager: The CharacterManager instance from app.py.
     - stt_mgr: The STTManager instance from app.py.
-    - ui_mgr: The UIManager instance from app.py.
+    - ui_mgr: The native Qt/QML UI controller from app.py.
     - shutdown_evt: The shutdown event from app.py.
     - battery_mod: The BatteryModule instance from app.py.
     """

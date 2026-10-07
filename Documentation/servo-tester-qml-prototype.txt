@@ -1,0 +1,30 @@
+TARS Servo Calibration QML Prototype
+====================================
+
+This prototype demonstrates the proposed PySide6 + Qt Quick/QML overhaul of
+src/app-servotester.py. It is intentionally desktop-safe: its Python backend
+simulates values and status and never imports Raspberry Pi GPIO/PCA9685 modules.
+
+Run on Windows
+--------------
+
+Double-click run-servotester-demo.bat, or run:
+
+    python -m pip install -r requirements-servotester-qml.txt
+    python src/app-servotester-qml.py
+
+Use --fullscreen to launch full screen.
+
+Architecture
+------------
+
+- src/app-servotester-qml.py is the mock Python controller. It exposes Qt
+  properties, signals, and slots and owns all application state.
+- src/qml/ServoCalibration.qml composes the dashboard.
+- src/qml/CalibrationSide.qml creates the mirrored physical-side panels.
+- src/qml/ServoControl.qml, Panel.qml, and TacticalButton.qml are reusable
+  visual components.
+
+For a hardware implementation, replace ServoCalibrationController with a
+controller that delegates to modules.module_servoctl. Keep hardware I/O off
+the GUI thread and rate-limit slider-driven servo updates.

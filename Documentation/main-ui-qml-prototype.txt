@@ -1,0 +1,47 @@
+TARS Main Interface QML Prototype
+=================================
+
+This is a hardware-safe PySide6 + Qt Quick/QML prototype of the next TARS
+touchscreen interface. It simulates state, telemetry, conversation history,
+camera access, apps, mute, menu, and power behavior. It never imports or calls
+the Raspberry Pi camera, GPIO, servos, speech stack, or LLM.
+
+Windows
+-------
+
+    python -m pip install -r requirements-main-ui-qml.txt
+    run-main-ui-demo.bat
+
+Useful options:
+
+    run-main-ui-demo.bat --autoplay
+    run-main-ui-demo.bat --fullscreen
+    python src/app-main-qml.py --screenshot artifacts/main-ui-preview.png
+
+Raspberry Pi 5
+--------------
+
+Use a 64-bit Raspberry Pi OS installation and the existing TARS virtual
+environment:
+
+    cd ~/TARS-AI
+    source src/.venv/bin/activate
+    python -m pip install -r requirements-main-ui-qml.txt
+    bash run-main-ui-demo.sh --fullscreen --autoplay
+
+If the physical display is mounted sideways, add --rotation 90 or
+--rotation 270. Example:
+
+    bash run-main-ui-demo.sh --fullscreen --rotation 270 --autoplay
+
+Architecture
+------------
+
+- src/app-main-qml.py: mock observable controller and conversation list model
+- src/qml/main/TarsMain.qml: portrait application shell and interactive views
+- src/qml/main/components/: reusable controls and visual components
+
+The eventual hardware integration should preserve the QML API and replace the
+mock controller with a bridge to module_state, module_messageQue, battery,
+temperature, Wi-Fi, camera, apps, and shutdown services. Qt must own the main
+GUI thread; slow services should communicate through queued signals.

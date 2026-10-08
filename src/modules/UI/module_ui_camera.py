@@ -1,6 +1,9 @@
 import cv2
 import numpy as np
-import pygame
+try:
+    import pygame
+except ImportError:  # Qt/QML camera and vision do not require pygame.
+    pygame = None
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -25,10 +28,12 @@ class CameraModule:
     def __init__(self, width, height, use_camera_module=True):
         apply_corrections = True
 
-        if self._initialized:
+        if self._initialized and getattr(self, 'picam2', None) is not None:
             if (width, height) != getattr(self, '_init_size', (width, height)):
                 print(f"WARNING: CameraModule singleton already initialized at {self._init_size}, ignoring ({width}, {height})")
             return
+        # A transient initialization failure must not poison the singleton for
+        # the rest of the process. A later vision request gets a clean retry.
         self._initialized = True
         self._init_size = (width, height)
 
@@ -36,6 +41,7 @@ class CameraModule:
         self.use_camera_module = use_camera_module
         self.apply_corrections = apply_corrections
         self._frame = None
+        self._rgb_frame = None
         self.running = False
         self.save_next_frame = False
         self.lock = threading.Lock()
@@ -148,10 +154,12 @@ class CameraModule:
                 elif self.rotation == 270:
                     frame = np.rot90(frame, k=3)
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                surface = pygame.surfarray.make_surface(frame)
+                rgb_frame = np.ascontiguousarray(frame)
+                surface = pygame.surfarray.make_surface(rgb_frame) if pygame is not None else None
 
                 with self.lock:
                     self._frame = surface
+                    self._rgb_frame = rgb_frame
 
                     if not self.first_frame_captured:
                         self.first_frame_captured = True
@@ -199,10 +207,8 @@ class CameraModule:
         deadline = time.time() + timeout
         while time.time() < deadline:
             with self.lock:
-                frame = self._frame
-            if frame is not None:
-                frame_array = pygame.surfarray.array3d(frame)
-                frame_array = np.transpose(frame_array, (1, 0, 2))
+                frame_array = None if self._rgb_frame is None else self._rgb_frame.copy()
+            if frame_array is not None:
                 frame_bgr = cv2.cvtColor(frame_array, cv2.COLOR_RGB2BGR)
                 ok, buf = cv2.imencode('.jpg', frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 if ok:
@@ -213,18 +219,15 @@ class CameraModule:
     def capture_rgb_array(self):
         """Return the latest frame as a copied HxWx3 RGB array for Qt/QML."""
         with self.lock:
-            frame = self._frame
-            if frame is None:
+            if self._rgb_frame is None:
                 return None
-            frame_array = pygame.surfarray.array3d(frame)
-        return np.ascontiguousarray(np.transpose(frame_array, (1, 0, 2)))
+            return self._rgb_frame.copy()
 
     def _save_frame_unlocked(self):
         """Save current frame to disk. Must be called with self.lock held."""
-        if self._frame is None:
+        if self._rgb_frame is None:
             return None
-        frame_array = pygame.surfarray.array3d(self._frame)
-        frame_array = cv2.cvtColor(frame_array, cv2.COLOR_RGB2BGR)
+        frame_array = cv2.cvtColor(self._rgb_frame, cv2.COLOR_RGB2BGR)
         output_dir = Path("../vision")
         output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

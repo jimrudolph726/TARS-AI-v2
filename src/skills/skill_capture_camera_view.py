@@ -85,30 +85,34 @@ def execute(parameters, context):
 
     _vision_active = True
     try:
-        # Single-pass for multimodal backends
-        if vision_processor in ("llm", "openai"):
+        # Capture and analyze directly through the configured vision backend.
+        # Previously the multimodal path called get_completion(), which rebuilt
+        # the normal tool-enabled prompt.  On a "what do you see?" request the
+        # model could invoke capture_camera_view a second time instead of
+        # analyzing the image already attached to that request.
+        if debug:
+            queue_message(f"DEBUG VISION: Capturing frame with {vision_processor}")
+        description = process_camera_image(
+            query or "Describe what you see.",
+            detection_context=detection_context or None,
+        )
+        failed = (
+            not description
+            or str(description).startswith("Error:")
+            or "couldn't process the image" in str(description).lower()
+            or "encountered an error" in str(description).lower()
+        )
+        if failed:
+            queue_message(f"ERROR: Camera analysis failed: {description}")
+            return "I tried to look but couldn't process the camera image."
+
+        # Caption-only backends need one text-only pass to turn the terse
+        # caption into a natural answer. Multimodal backends already return the
+        # completed visual answer and should not be sent through tool routing.
+        if vision_processor in ("blip", "server_hosted", "external"):
             if debug:
-                queue_message("DEBUG VISION: Single-pass (camera image sent directly to LLM)")
-            from modules.module_vision import capture_camera_base64
-            from modules.module_llm import get_completion
-            b64, capture_err = capture_camera_base64()
-            if capture_err:
-                return capture_err
-            try:
-                prompt = query or "Describe what you see."
-                if detection_context:
-                    prompt = f"{detection_context}\n\n{prompt}"
-                reply = get_completion(prompt, image_b64=b64)
-                return reply if reply else "I tried to look but couldn't process the image."
-            except Exception as e:
-                queue_message(f"ERROR: Single-pass vision failed: {e}")
-                return "I tried to look but encountered an error."
-        else:
-            # Two-pass for caption-only backends (blip, server_hosted)
-            if debug:
-                queue_message(f"DEBUG VISION: Two-pass (caption via {vision_processor}, then LLM)")
-            description = process_camera_image(query, detection_context=detection_context or None)
-            if description and not description.startswith("Error:"):
+                queue_message(f"DEBUG VISION: Refining {vision_processor} caption")
+            if description:
                 vision_prompt = f"*You looked through your camera and saw: {description}*"
                 if detection_context:
                     vision_prompt += f" {detection_context}"
@@ -122,6 +126,6 @@ def execute(parameters, context):
                 except Exception as e:
                     queue_message(f"WARN: Vision follow-up LLM call failed: {e}")
                     return description
-            return "I tried to look but couldn't process the image."
+        return description
     finally:
         _vision_active = False

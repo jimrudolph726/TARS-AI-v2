@@ -245,6 +245,7 @@ _BACKENDS = {
     "llm": _describe_llm,
     "openai": _describe_openai,
     "external": _describe_server,
+    "server_hosted": _describe_server,
 }
 
 
@@ -260,9 +261,39 @@ def process_image(image_data, prompt="Describe this image in detail.", detection
         prompt = f"{detection_context}\n\n{prompt}"
 
     try:
-        return backend(image_data, prompt)
+        result = backend(image_data, prompt)
+        result_text = str(result or "").lower()
+        refusal_markers = (
+            "unable to view",
+            "unable to see",
+            "can't view",
+            "cannot view",
+            "can't access the image",
+            "cannot access the image",
+            "do not have access to the image",
+        )
+        # If the configured chat model is not vision-capable, preserve the
+        # robot's camera feature by falling back to its local BLIP captioner.
+        if (processor in ("llm", "openai")
+                and any(marker in result_text for marker in refusal_markers)
+                and BlipProcessor is not None and BlipForConditionalGeneration is not None
+                and torch is not None):
+            queue_message(
+                f"WARNING: Vision backend '{processor}' could not inspect the frame; "
+                "falling back to local BLIP"
+            )
+            return _describe_blip(image_data, prompt)
+        return result
     except Exception as e:
         queue_message(f"ERROR: Vision ({processor}) failed - {e}")
+        if (processor in ("llm", "openai")
+                and BlipProcessor is not None and BlipForConditionalGeneration is not None
+                and torch is not None):
+            try:
+                queue_message("WARNING: Retrying camera analysis with local BLIP")
+                return _describe_blip(image_data, prompt)
+            except Exception as fallback_error:
+                queue_message(f"ERROR: BLIP vision fallback failed - {fallback_error}")
         return f"Error: {e}"
 
 
@@ -273,12 +304,18 @@ def capture_camera_base64():
     if CameraModule is None:
         return None, "Error: Camera module not available"
     try:
-        camera = CameraModule(1920, 1080)
+        # 1280x720 is ample for cloud/local vision while avoiding a costly
+        # 1080p capture pipeline on the Pi. CameraModule is a singleton, so if
+        # the QML preview already started it this reuses its current frame.
+        camera = CameraModule(1280, 720)
         image_bytes = camera.capture_bytes()
+        if not image_bytes:
+            raise RuntimeError("camera returned an empty frame")
+        queue_message(f"INFO: Camera frame captured ({len(image_bytes)} bytes)")
         return _to_base64(image_bytes), None
     except Exception as e:
         queue_message(f"ERROR: Camera capture failed - {e}")
-        return None, "I tried to look but encountered an error."
+        return None, f"Error: Camera capture failed: {e}"
 
 
 def process_camera_image(user_prompt="Describe what you see.", detection_context=None):

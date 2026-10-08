@@ -3,17 +3,29 @@ import re
 import asyncio
 import os
 import hashlib
+import requests
 from modules.module_config import load_config
-from elevenlabs.client import ElevenLabs
 
 from modules.module_messageQue import queue_message
 
 CONFIG = load_config()
 
-elevenlabs_client = ElevenLabs(api_key=CONFIG['TTS']['elevenlabs_api_key'])
-
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tts", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
+
+if CONFIG['TTS']['ttsoption'] == 'elevenlabs':
+    _voice_id = CONFIG['TTS']['elevenlabs_voice_id'] or ''
+    _model_id = CONFIG['TTS']['elevenlabs_model'] or ''
+    if CONFIG['TTS']['elevenlabs_api_key'] and _voice_id:
+        queue_message(
+            f"LOAD: ElevenLabs custom voice ready "
+            f"(voice ...{_voice_id[-6:]}, model {_model_id})"
+        )
+    else:
+        queue_message(
+            "ERROR: ElevenLabs is selected but ELEVENLABS_API_KEY or "
+            "elevenlabs_voice_id is missing"
+        )
 
 def split_into_sentences(text, max_length=80):
     sentences = re.split(r'(?<=[.!?])\s+', text)
@@ -41,28 +53,65 @@ def split_into_sentences(text, max_length=80):
     return chunks if chunks else [text]
 
 def get_cache_filename(text):
-    text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+    # A wake response generated with one voice/model must never be reused
+    # after the user selects a different custom voice.
+    identity = "|".join((
+        str(CONFIG['TTS']['elevenlabs_voice_id'] or ''),
+        str(CONFIG['TTS']['elevenlabs_model'] or ''),
+        text,
+    ))
+    text_hash = hashlib.md5(identity.encode('utf-8')).hexdigest()
     return os.path.join(CACHE_DIR, f"elevenlabs_{text_hash}.mp3")
+
+
+def _request_speech(text, streaming=False):
+    """Call ElevenLabs using its documented REST contract.
+
+    This intentionally uses ``requests`` rather than the optional ElevenLabs
+    SDK, so selecting ElevenLabs cannot silently become unavailable merely
+    because that otherwise-unused package is absent from the Pi environment.
+    """
+    api_key = CONFIG['TTS']['elevenlabs_api_key']
+    voice_id = CONFIG['TTS']['elevenlabs_voice_id']
+    model_id = CONFIG['TTS']['elevenlabs_model']
+
+    if not api_key:
+        raise RuntimeError("ELEVENLABS_API_KEY is not configured in .env")
+    if not voice_id:
+        raise RuntimeError("elevenlabs_voice_id is not configured in config.ini")
+
+    suffix = "/stream" if streaming else ""
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}{suffix}"
+    headers = {
+        "xi-api-key": api_key,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+    }
+    # output_format is a query parameter in the current ElevenLabs API.  The
+    # previous implementation sent it, optimize_streaming_latency, and an
+    # unsupported enable_ssml field in the JSON body, which can return 422.
+    params = {"output_format": "mp3_44100_128"}
+    payload = {"text": text, "model_id": model_id}
+    response = requests.post(
+        url,
+        headers=headers,
+        params=params,
+        json=payload,
+        timeout=(10, 60),
+    )
+    if response.status_code != 200:
+        detail = response.text[:500].replace("\n", " ")
+        raise RuntimeError(f"ElevenLabs API returned {response.status_code}: {detail}")
+    if not response.content:
+        raise RuntimeError("ElevenLabs returned an empty audio response")
+    return io.BytesIO(response.content)
 
 async def synthesize_elevenlabs_streaming(chunk):
     """
     Synthesize using direct REST API to ensure SSML tags are processed.
     The Python SDK sometimes doesn't handle SSML properly, so we use direct HTTP.
     """
-    api_key = CONFIG['TTS']['elevenlabs_api_key']
-    if not api_key:
-        queue_message("ERROR: Elevenlabs API key not found in env file")
-        return
-
     try:
-        import aiohttp
-        
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{CONFIG['TTS']['elevenlabs_voice_id']}/stream"
-        headers = {
-            "xi-api-key": api_key,
-            "Content-Type": "application/json"
-        }
-        
         # Check if model supports SSML
         model_id = CONFIG['TTS']['elevenlabs_model']
         is_eleven_v3 = 'v3' in model_id.lower()
@@ -71,34 +120,13 @@ async def synthesize_elevenlabs_streaming(chunk):
             # Eleven V3 doesn't support SSML, log warning
             queue_message(f"WARNING: Model {model_id} doesn't support SSML tags. Use [pause], [short pause], [long pause] instead.")
         
-        payload = {
-            "text": chunk,
-            "model_id": model_id,
-            "output_format": "mp3_44100_128",
-            "optimize_streaming_latency": 3,
-            "enable_ssml": True  # CRITICAL: Enable SSML parsing
-        }
-        
         # Log the actual text being sent (for debugging)
         if '<break' in chunk:
             queue_message(f"DEBUG: Sending text with SSML: {chunk[:100]}...")
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    queue_message(f"ERROR: ElevenLabs API returned {response.status}: {error_text}")
-                    return None
-                
-                audio_bytes = await response.read()
-                
-                if not audio_bytes:
-                    queue_message(f"ERROR: ElevenLabs returned empty response")
-                    return None
-                
-                audio_buffer = io.BytesIO(audio_bytes)
-                audio_buffer.seek(0)
-                return audio_buffer
+
+        audio_buffer = await asyncio.to_thread(_request_speech, chunk, True)
+        audio_buffer.seek(0)
+        return audio_buffer
 
     except Exception as e:
         queue_message(f"ERROR: ElevenLabs streaming failed: {e}")
@@ -111,14 +139,6 @@ async def synthesize_elevenlabs_complete(text):
     Synthesize complete speech using direct REST API.
     """
     try:
-        import aiohttp
-        
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{CONFIG['TTS']['elevenlabs_voice_id']}"
-        headers = {
-            "xi-api-key": CONFIG['TTS']['elevenlabs_api_key'],
-            "Content-Type": "application/json"
-        }
-        
         # Check if model supports SSML
         model_id = CONFIG['TTS']['elevenlabs_model']
         is_eleven_v3 = 'v3' in model_id.lower()
@@ -126,33 +146,13 @@ async def synthesize_elevenlabs_complete(text):
         if is_eleven_v3 and '<break' in text:
             queue_message(f"WARNING: Model {model_id} doesn't support SSML tags. Use [pause], [short pause], [long pause] instead.")
         
-        payload = {
-            "text": text,
-            "model_id": model_id,
-            "output_format": "mp3_44100_128",
-            "enable_ssml": True  # CRITICAL: Enable SSML parsing
-        }
-        
         # Log if SSML is present
         if '<break' in text:
             queue_message(f"DEBUG: Sending wakeword with SSML: {text}")
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    queue_message(f"ERROR: ElevenLabs API returned {response.status}: {error_text}")
-                    return None
-                
-                audio_bytes = await response.read()
-                
-                if not audio_bytes:
-                    queue_message(f"ERROR: ElevenLabs returned empty response")
-                    return None
-                
-                audio_buffer = io.BytesIO(audio_bytes)
-                audio_buffer.seek(0)
-                return audio_buffer
+
+        audio_buffer = await asyncio.to_thread(_request_speech, text, False)
+        audio_buffer.seek(0)
+        return audio_buffer
 
     except Exception as e:
         queue_message(f"ERROR: ElevenLabs synthesis failed: {e}")

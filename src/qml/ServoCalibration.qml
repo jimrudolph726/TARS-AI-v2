@@ -7,17 +7,20 @@ ApplicationWindow {
     visible: true
     width: 1440
     height: 900
-    minimumWidth: 1120
-    minimumHeight: 700
-    title: "TARS Servo Calibration · QML Prototype"
+    minimumWidth: 320
+    minimumHeight: 200
+    title: "TARS Servo Calibration"
     color: "#03080a"
 
     readonly property color red: "#ff3852"
     readonly property color green: "#2aff8a"
     readonly property color pale: "#dbe4e8"
-    readonly property real outerMargin: Math.max(10, width * 0.009)
-    readonly property real headerHeight: Math.max(66, height * 0.082)
-    readonly property real footerHeight: Math.max(174, height * 0.215)
+    readonly property real designWidth: 1440
+    readonly property real designHeight: 900
+    readonly property real interfaceScale: Math.min(width / designWidth, height / designHeight)
+    readonly property real outerMargin: 13
+    readonly property real headerHeight: 74
+    readonly property real footerHeight: 194
 
     background: Rectangle {
         color: "#03080a"
@@ -27,6 +30,19 @@ ApplicationWindow {
             GradientStop { position: 1.0; color: "#050b0e" }
         }
     }
+
+    // The dashboard was designed at 1440x900. Scale the entire logical canvas
+    // uniformly so it fits smaller Pi displays (including 800x480) without
+    // cropping either side or changing pointer/drag coordinates.
+    Item {
+        id: designSurface
+        width: window.designWidth
+        height: window.designHeight
+        anchors.centerIn: parent
+        scale: window.interfaceScale
+        transformOrigin: Item.Center
+        focus: true
+        Keys.onEscapePressed: window.close()
 
     Rectangle {
         id: topBar
@@ -254,7 +270,9 @@ ApplicationWindow {
                     anchors.horizontalCenter: parent.horizontalCenter
                     anchors.bottom: parent.bottom
                     anchors.bottomMargin: 7
-                    text: "ALL SERVOS  ·  MOCK HARDWARE  ·  SAFE PREVIEW"
+                    text: controller.hardwareConnected
+                          ? "ALL SERVOS  ·  PCA9685 CONNECTED  ·  LIVE CALIBRATION"
+                          : "ALL SERVOS  ·  MOCK HARDWARE  ·  SAFE PREVIEW"
                     color: "#9faab0"
                     font.family: "Consolas"
                     font.pixelSize: 8
@@ -339,7 +357,7 @@ ApplicationWindow {
                         model: [
                             { "title": "BATTERY", "value": controller.batteryPercent + "%  " + controller.batteryVoltage.toFixed(2) + "V", "ok": true },
                             { "title": "SERVO POWER", "value": controller.servoPower ? "ACTIVE" : "DISABLED", "ok": controller.servoPower },
-                            { "title": "PCA9685", "value": "MOCK CONNECTED", "ok": true },
+                            { "title": "PCA9685", "value": controller.hardwareModeText, "ok": controller.hardwareConnected },
                             { "title": "INA260", "value": "MOCK CONNECTED", "ok": true }
                         ]
                         delegate: Rectangle {
@@ -521,5 +539,6 @@ ApplicationWindow {
             font.pixelSize: 9
             font.letterSpacing: 0.8
         }
+    }
     }
 }

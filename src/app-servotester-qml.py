@@ -1,31 +1,34 @@
-"""Desktop-safe PySide6/QML prototype for the TARS servo calibration UI.
+"""PySide6/QML servo calibration UI for TARS.
 
-This intentionally uses a mock backend.  It does not import board, busio,
-PCA9685, or module_servoctl, so it is safe to run on a development computer.
-The QObject API is shaped so a hardware controller can replace it later without
-rewriting the QML presentation layer.
+On a Raspberry Pi this app uses the project's existing PCA9685 servo module.
+On other computers it automatically uses a safe mock backend. Pass ``--mock``
+on the Pi to explore the interface without moving hardware.
 """
 
 from __future__ import annotations
 
 import argparse
+import configparser
 import os
 import sys
+import threading
 from copy import deepcopy
 from pathlib import Path
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="TARS servo calibration QML prototype")
+    parser = argparse.ArgumentParser(description="TARS servo calibration QML app")
     parser.add_argument("--fullscreen", action="store_true", help="open full screen")
     parser.add_argument("--screenshot", type=Path, help="save a screenshot and exit")
+    parser.add_argument("--window-size", metavar="WIDTHxHEIGHT", help=argparse.SUPPRESS)
+    backend = parser.add_mutually_exclusive_group()
+    backend.add_argument("--mock", action="store_true", help="never access servo hardware")
+    backend.add_argument("--hardware", action="store_true", help="force PCA9685 hardware mode")
     return parser.parse_args()
 
 
 ARGS = _parse_args()
 
-# These make the automated screenshot path work without a display server.  They
-# are set before importing Qt because Qt reads them during application startup.
 if ARGS.screenshot and "QT_QPA_PLATFORM" not in os.environ:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     os.environ.setdefault("QT_QUICK_BACKEND", "software")
@@ -40,20 +43,92 @@ import shiboken6
 ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent
 
+SERVO_DEFINITIONS = {
+    "left_height": {
+        "label": "LEFT HEIGHT", "config": "perfectLeftHeightOffset", "channel": 0,
+        "preview_base": 350, "preview_sign": 1,
+        "limits": ("leftUpHeight", "leftDownHeight"),
+    },
+    "left_leg": {
+        "label": "LEFT LEG  (FORWARD / BACK)", "config": "perfectLeftLegOffset", "channel": 2,
+        "preview_base": 300, "preview_sign": 1,
+        "limits": ("forwardLeftLeg", "backLeftLeg"),
+    },
+    "left_main": {
+        "label": "LEFT MAIN ARM", "config": "leftMainOffset", "channel": 4,
+        "preview_key": "leftMainMin", "limits": ("leftMainMin", "leftMainMax"),
+    },
+    "left_forearm": {
+        "label": "LEFT FOREARM", "config": "leftForearmOffset", "channel": 5,
+        "preview_key": "leftForarmMin", "limits": ("leftForarmMin", "leftForarmMax"),
+    },
+    "left_hand": {
+        "label": "LEFT HAND", "config": "leftHandOffset", "channel": 6,
+        "preview_key": "leftHandMin", "limits": ("leftHandMin", "leftHandMax"),
+    },
+    "right_height": {
+        "label": "RIGHT HEIGHT", "config": "perfectRightHeightOffset", "channel": 1,
+        "preview_base": 350, "preview_sign": -1, "limit_sign": -1,
+        "limits": ("rightUpHeight", "rightDownHeight"),
+    },
+    "right_leg": {
+        "label": "RIGHT LEG  (FORWARD / BACK)", "config": "perfectRightLegOffset", "channel": 3,
+        "preview_base": 300, "preview_sign": 1,
+        "limits": ("forwardRightLeg", "backRightLeg"),
+    },
+    "right_main": {
+        "label": "RIGHT MAIN ARM", "config": "rightMainOffset", "channel": 7,
+        "preview_key": "rightMainMin", "limits": ("rightMainMin", "rightMainMax"),
+    },
+    "right_forearm": {
+        "label": "RIGHT FOREARM", "config": "rightForearmOffset", "channel": 8,
+        "preview_key": "rightForarmMin", "limits": ("rightForarmMin", "rightForarmMax"),
+    },
+    "right_hand": {
+        "label": "RIGHT HAND", "config": "rightHandOffset", "channel": 9,
+        "preview_key": "rightHandMin", "limits": ("rightHandMin", "rightHandMax"),
+    },
+}
 
-def _servo(servo_id: str, label: str, value: int, minimum: int, maximum: int, unit: str) -> dict:
+
+def _is_raspberry_pi() -> bool:
+    try:
+        return "raspberry pi" in Path("/proc/device-tree/model").read_text().lower()
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def _find_config_path() -> Path | None:
+    for path in (ROOT / "config.ini", PROJECT_ROOT / "config.ini"):
+        if path.is_file():
+            return path
+    return None
+
+
+def _read_servo_config(path: Path | None) -> dict[str, str]:
+    if path is None:
+        return {}
+    parser = configparser.RawConfigParser()
+    parser.optionxform = str
+    parser.read(path, encoding="utf-8")
+    return dict(parser.items("SERVO")) if parser.has_section("SERVO") else {}
+
+
+def _servo(servo_id: str, value: int) -> dict:
+    definition = SERVO_DEFINITIONS[servo_id]
+    is_arm = "_height" not in servo_id and "_leg" not in servo_id
     return {
         "id": servo_id,
-        "label": label,
+        "label": definition["label"],
         "value": value,
-        "minimum": minimum,
-        "maximum": maximum,
-        "unit": unit,
+        "minimum": -90 if is_arm else -50,
+        "maximum": 90 if is_arm else 50,
+        "unit": "ticks",
     }
 
 
 class ServoCalibrationController(QObject):
-    """Mock state/controller exposed to QML through properties and slots."""
+    """State and bounded hardware operations exposed to QML."""
 
     servosChanged = Signal()
     stateChanged = Signal()
@@ -62,25 +137,55 @@ class ServoCalibrationController(QObject):
 
     def __init__(self) -> None:
         super().__init__()
-        self._servos = {
-            "left_height": _servo("left_height", "LEFT HEIGHT", -12, -50, 50, "mm"),
-            "left_leg": _servo("left_leg", "LEFT LEG  (FORWARD / BACK)", 3, -50, 50, "mm"),
-            "left_main": _servo("left_main", "LEFT MAIN ARM", 0, -90, 90, "°"),
-            "left_forearm": _servo("left_forearm", "LEFT FOREARM", 0, -90, 90, "°"),
-            "left_hand": _servo("left_hand", "LEFT HAND", 0, -90, 90, "°"),
-            "right_height": _servo("right_height", "RIGHT HEIGHT", 7, -50, 50, "mm"),
-            "right_leg": _servo("right_leg", "RIGHT LEG  (FORWARD / BACK)", -2, -50, 50, "mm"),
-            "right_main": _servo("right_main", "RIGHT MAIN ARM", 0, -90, 90, "°"),
-            "right_forearm": _servo("right_forearm", "RIGHT FOREARM", 0, -90, 90, "°"),
-            "right_hand": _servo("right_hand", "RIGHT HAND", 0, -90, 90, "°"),
-        }
+        self._config_path = _find_config_path()
+        self._servo_config = _read_servo_config(self._config_path)
+        self._servoctl = None
+        self._hardware_connected = False
+        self._hardware_error = ""
+        self._movement_active = False
+
+        self._servos = {}
+        for servo_id, definition in SERVO_DEFINITIONS.items():
+            raw = self._servo_config.get(definition["config"], "0")
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                value = 0
+            self._servos[servo_id] = _servo(servo_id, value)
+
         self._saved_servos = deepcopy(self._servos)
         self._dirty = False
         self._servo_power = True
-        self._status = "Mock hardware online · controls are safe to explore"
         self._profile = "Default"
         self._battery = 81
         self._voltage = 11.74
+
+        wants_hardware = ARGS.hardware or (not ARGS.mock and _is_raspberry_pi())
+        if wants_hardware:
+            self._connect_hardware()
+
+        if self._hardware_connected:
+            self._status = "PCA9685 online · move a slider to preview that servo"
+        elif wants_hardware:
+            self._status = f"Hardware unavailable · {self._hardware_error}"
+            self._servo_power = False
+        else:
+            self._status = "Mock mode · use --hardware to force PCA9685 control"
+
+    def _connect_hardware(self) -> None:
+        try:
+            import modules.module_servoctl as servoctl
+
+            if servoctl.pca is None and not servoctl.initialize_pca9685():
+                raise RuntimeError("PCA9685 initialization failed; check I2C and servo power")
+            self._servoctl = servoctl
+            self._hardware_connected = servoctl.pca is not None
+            if not self._hardware_connected:
+                raise RuntimeError("PCA9685 was not detected")
+        except Exception as exc:
+            self._hardware_error = str(exc)
+            self._hardware_connected = False
+            print(f"[SERVO TESTER] Hardware mode unavailable: {exc}", file=sys.stderr)
 
     def _side(self, prefix: str) -> list[dict]:
         return [deepcopy(item) for key, item in self._servos.items() if key.startswith(prefix)]
@@ -100,6 +205,14 @@ class ServoCalibrationController(QObject):
     @Property(bool, notify=stateChanged)
     def servoPower(self) -> bool:
         return self._servo_power
+
+    @Property(bool, constant=True)
+    def hardwareConnected(self) -> bool:
+        return self._hardware_connected
+
+    @Property(str, constant=True)
+    def hardwareModeText(self) -> str:
+        return "CONNECTED" if self._hardware_connected else "MOCK MODE"
 
     @Property(str, notify=statusChanged)
     def statusText(self) -> str:
@@ -131,18 +244,73 @@ class ServoCalibrationController(QObject):
             self._dirty = dirty
             self.stateChanged.emit()
 
+    def _config_int(self, key: str, default: int) -> int:
+        try:
+            return int(self._servo_config.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _target_pulse(self, servo_id: str, offset: int) -> int:
+        definition = SERVO_DEFINITIONS[servo_id]
+        base = definition.get("preview_base")
+        if base is None:
+            base = self._config_int(definition["preview_key"], 300)
+        return int(base) + int(definition.get("preview_sign", 1)) * offset
+
+    def _offset_is_safe(self, servo_id: str, offset: int) -> bool:
+        definition = SERVO_DEFINITIONS[servo_id]
+        sign = int(definition.get("limit_sign", 1))
+        return all(
+            10 <= self._config_int(key, 300) + sign * offset <= 600
+            for key in definition["limits"]
+        )
+
+    def _preview_servo(self, servo_id: str) -> bool:
+        if not self._hardware_connected:
+            return True
+        if not self._servo_power:
+            self._set_status("Servo power is disabled · enable servos before previewing")
+            return False
+        definition = SERVO_DEFINITIONS[servo_id]
+        offset = int(self._servos[servo_id]["value"])
+        pulse = self._target_pulse(servo_id, offset)
+        try:
+            if not self._servoctl.set_servo_pwm(definition["channel"], pulse):
+                raise RuntimeError("I2C write failed")
+            self._servoctl.servo_positions[definition["channel"]] = pulse
+            return True
+        except Exception as exc:
+            self._set_status(f"Servo preview failed · {exc}")
+            return False
+
+    def _preview_all(self) -> None:
+        for servo_id in self._servos:
+            if not self._preview_servo(servo_id):
+                break
+
     @Slot(str, float)
     def setServoValue(self, servo_id: str, raw_value: float) -> None:
         servo = self._servos.get(servo_id)
         if not servo:
             return
         value = max(servo["minimum"], min(servo["maximum"], round(raw_value)))
-        if servo["value"] == value:
+        if not self._offset_is_safe(servo_id, value):
+            self._set_status(f"Blocked {servo['label'].title()} · pulse would leave safe range 10–600")
+            self.servosChanged.emit()
             return
+        if servo["value"] == value:
+            self._preview_servo(servo_id)
+            return
+        old_value = servo["value"]
         servo["value"] = value
+        if not self._preview_servo(servo_id):
+            servo["value"] = old_value
+            self.servosChanged.emit()
+            return
         self.servosChanged.emit()
         self._set_dirty(self._servos != self._saved_servos)
-        self._set_status(f"Previewing {servo['label'].title()}: {value:+d}{servo['unit']}")
+        mode = "Moved" if self._hardware_connected else "Previewing"
+        self._set_status(f"{mode} {servo['label'].title()}: {value:+d} ticks · not saved")
 
     @Slot(str, int)
     def adjustServo(self, servo_id: str, delta: int) -> None:
@@ -150,44 +318,114 @@ class ServoCalibrationController(QObject):
         if servo:
             self.setServoValue(servo_id, servo["value"] + delta)
 
+    def _run_movement_worker(self, movement: str) -> None:
+        functions = {
+            "Step Forward": "step_forward", "Walk Forward": "walk_forward",
+            "Turn Left": "turn_left", "Turn Right": "turn_right",
+        }
+        try:
+            from modules import module_movements
+            getattr(module_movements, functions[movement])()
+            self._set_status(f"Movement complete · {movement}")
+        except Exception as exc:
+            self._set_status(f"Movement failed · {exc}")
+        finally:
+            self._movement_active = False
+
     @Slot(str)
     def runMovement(self, movement: str) -> None:
+        if not self._hardware_connected:
+            self._set_status(f"Mock movement: {movement}")
+            return
         if not self._servo_power:
             self._set_status("Movement blocked · servo power is disabled")
             return
-        self._set_status(f"Simulated movement: {movement}")
+        if self._movement_active:
+            self._set_status("Movement already in progress")
+            return
+        self._movement_active = True
+        self._set_status(f"Running movement · {movement}")
+        threading.Thread(target=self._run_movement_worker, args=(movement,), daemon=True).start()
 
     @Slot()
     def disableServos(self) -> None:
+        if self._hardware_connected:
+            self._servoctl.disable_all_servos()
         self._servo_power = False
         self.stateChanged.emit()
-        self._set_status("Servo power disabled · mock emergency stop engaged")
+        self._set_status("Servo output disabled")
 
     @Slot()
     def enableServos(self) -> None:
         self._servo_power = True
         self.stateChanged.emit()
-        self._set_status("Servo power enabled · mock controller active")
+        self._preview_all()
+        self._set_status("Servo output enabled at current calibration positions")
 
     @Slot()
     def resetPositions(self) -> None:
-        for servo in self._servos.values():
-            servo["value"] = 0
-        self.servosChanged.emit()
-        self._set_dirty(self._servos != self._saved_servos)
-        self._set_status("All mock servos moved to neutral")
+        if self._hardware_connected:
+            self._set_status("Moving all servos to their configured neutral positions")
+            threading.Thread(target=self._servoctl.reset_positions, daemon=True).start()
+        else:
+            self._set_status("Mock reset · calibration values were not changed")
+
+    def _write_offsets(self) -> None:
+        if self._config_path is None:
+            raise FileNotFoundError("config.ini was not found in the project or src directory")
+        lines = self._config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        values = {
+            SERVO_DEFINITIONS[servo_id]["config"]: int(servo["value"])
+            for servo_id, servo in self._servos.items()
+        }
+        in_servo = False
+        updated: set[str] = set()
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.lower() == "[servo]":
+                in_servo = True
+                continue
+            if in_servo and stripped.startswith("["):
+                in_servo = False
+            if not in_servo or "=" not in line:
+                continue
+            key = line.split("=", 1)[0].strip()
+            if key not in values:
+                continue
+            newline = "\r\n" if line.endswith("\r\n") else "\n"
+            comment = ""
+            if "#" in line:
+                comment = "  #" + line.split("#", 1)[1].rstrip("\r\n")
+            lines[index] = f"{key} = {values[key]}{comment}{newline}"
+            updated.add(key)
+        missing = [key for key in values if key not in updated]
+        if missing:
+            raise KeyError("Missing [SERVO] settings: " + ", ".join(missing))
+        temporary = self._config_path.with_suffix(self._config_path.suffix + ".tmp")
+        temporary.write_text("".join(lines), encoding="utf-8", newline="")
+        temporary.replace(self._config_path)
 
     @Slot()
     def saveCalibration(self) -> None:
-        self._saved_servos = deepcopy(self._servos)
-        self._set_dirty(False)
-        self._set_status(f"Calibration saved to profile: {self._profile}")
+        try:
+            self._write_offsets()
+            self._servo_config = _read_servo_config(self._config_path)
+            if self._hardware_connected:
+                import modules.module_config as module_config
+                module_config._config_cache = None
+                self._servoctl.refresh_config()
+            self._saved_servos = deepcopy(self._servos)
+            self._set_dirty(False)
+            self._set_status(f"Calibration saved to {self._config_path.name}")
+        except Exception as exc:
+            self._set_status(f"Calibration save failed · {exc}")
 
     @Slot()
     def revertCalibration(self) -> None:
         self._servos = deepcopy(self._saved_servos)
         self.servosChanged.emit()
         self._set_dirty(False)
+        self._preview_all()
         self._set_status("Unsaved calibration changes reverted")
 
     @Slot(str)
@@ -196,34 +434,43 @@ class ServoCalibrationController(QObject):
             return
         self._profile = profile
         self.profileChanged.emit()
-        self._set_status(f"Active mock profile: {profile}")
+        self._set_status(f"Active profile: {profile}")
+
+    def shutdown(self) -> None:
+        if self._hardware_connected:
+            try:
+                self._servoctl.disable_all_servos()
+            except Exception as exc:
+                print(f"[SERVO TESTER] Shutdown warning: {exc}", file=sys.stderr)
 
 
 def main() -> int:
     app = QGuiApplication(sys.argv)
     app.setApplicationName("TARS Servo Calibration")
     app.setOrganizationName("TARS-AI")
-
     engine = QQmlApplicationEngine()
     controller = ServoCalibrationController()
+    app.aboutToQuit.connect(controller.shutdown)
     engine.rootContext().setContextProperty("controller", controller)
     engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "ServoCalibration.qml")))
-
     if not engine.rootObjects():
         return 1
-
     window = engine.rootObjects()[0]
+    if ARGS.window_size:
+        try:
+            width, height = (int(part) for part in ARGS.window_size.lower().split("x", 1))
+            window.setWidth(width)
+            window.setHeight(height)
+        except (TypeError, ValueError):
+            print("--window-size must look like 800x480", file=sys.stderr)
+            return 2
     if ARGS.fullscreen:
         window.showFullScreen()
-
     if ARGS.screenshot:
         screenshot_path = ARGS.screenshot.resolve()
         screenshot_path.parent.mkdir(parents=True, exist_ok=True)
 
         def capture() -> None:
-            # ApplicationWindow can be wrapped as QWindow rather than
-            # QQuickWindow by PySide. Re-wrap the same C++ object as its actual
-            # Qt Quick base class, then capture the scene graph directly.
             pointer = shiboken6.getCppPointer(window)[0]
             quick_window = shiboken6.wrapInstance(pointer, QQuickWindow)
             image = quick_window.grabWindow()
@@ -235,7 +482,6 @@ def main() -> int:
             app.quit()
 
         QTimer.singleShot(1200, capture)
-
     return app.exec()
 
 

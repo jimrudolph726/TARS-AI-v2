@@ -1,9 +1,24 @@
-TARS Servo Calibration QML Prototype
-====================================
+TARS Servo Calibration — PySide6/QML
+=====================================
 
-This prototype demonstrates the proposed PySide6 + Qt Quick/QML overhaul of
-src/app-servotester.py. It is intentionally desktop-safe: its Python backend
-simulates values and status and never imports Raspberry Pi GPIO/PCA9685 modules.
+The QML servo tester is responsive and supports both real Raspberry Pi servo
+hardware and a safe desktop/mock mode.
+
+Run on Raspberry Pi
+-------------------
+
+From the repository root, with the project's virtual environment active:
+
+    python src/app-servotester-qml.py --fullscreen
+
+On a Raspberry Pi, the app automatically connects to the PCA9685 through the
+existing modules.module_servoctl code. Moving a slider previews that offset on
+the corresponding physical servo. Slider changes remain temporary until SAVE
+CALIBRATION is pressed; Save writes the ten offset values to src/config.ini.
+
+Use this mode when you want to inspect the UI without moving hardware:
+
+    python src/app-servotester-qml.py --fullscreen --mock
 
 Run on Windows
 --------------
@@ -13,18 +28,27 @@ Double-click run-servotester-demo.bat, or run:
     python -m pip install -r requirements-servotester-qml.txt
     python src/app-servotester-qml.py
 
-Use --fullscreen to launch full screen.
+Non-Raspberry Pi computers automatically use mock mode. Use --hardware only
+when deliberately testing a compatible PCA9685 environment.
+
+Safety and controls
+-------------------
+
+- Offset changes are rejected if either configured servo endpoint would leave
+  the existing safe pulse range of 10–600.
+- DISABLE SERVOS immediately removes PWM output from all channels.
+- Closing the tester also disables all servo channels.
+- REVERT restores the last saved offsets and previews those positions.
+- RESET POSITION runs the project's existing neutral-position routine without
+  changing saved calibration offsets.
+- Escape closes the fullscreen window.
 
 Architecture
 ------------
 
-- src/app-servotester-qml.py is the mock Python controller. It exposes Qt
-  properties, signals, and slots and owns all application state.
-- src/qml/ServoCalibration.qml composes the dashboard.
+- src/app-servotester-qml.py owns configuration, state, safe hardware calls,
+  mock fallback behavior, and the Qt-facing properties/signals/slots.
+- src/qml/ServoCalibration.qml composes and responsively scales the dashboard.
 - src/qml/CalibrationSide.qml creates the mirrored physical-side panels.
 - src/qml/ServoControl.qml, Panel.qml, and TacticalButton.qml are reusable
   visual components.
-
-For a hardware implementation, replace ServoCalibrationController with a
-controller that delegates to modules.module_servoctl. Keep hardware I/O off
-the GUI thread and rate-limit slider-driven servo updates.

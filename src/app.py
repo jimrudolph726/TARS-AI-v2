@@ -108,7 +108,7 @@ def main() -> int:
     app.setOrganizationName("TARS-AI Community")
 
     from modules.module_runtime import TarsRuntime
-    from modules.module_ui_qml import TarsUIController
+    from modules.module_ui_qml import CameraImageProvider, TarsUIController
 
     controller = TarsUIController(BASE_DIR)
     runtime = TarsRuntime(config=config, ui_controller=controller, debug_mode=debug_mode)
@@ -118,9 +118,12 @@ def main() -> int:
     engine = None
     if show_ui:
         engine = QQmlApplicationEngine()
+        engine.addImageProvider("camera", CameraImageProvider(controller))
         context = engine.rootContext()
         context.setContextProperty("controller", controller)
-        context.setContextProperty("displayRotation", config["UI"].get("rotation", 0))
+        # TARS's display is physically mounted in portrait orientation relative
+        # to the Pi framebuffer, so the complete logical UI is rotated right.
+        context.setContextProperty("displayRotation", 90)
         context.setContextProperty(
             "initialWindowWidth", max(320, config["UI"].get("screen_width", 480))
         )

@@ -6,10 +6,14 @@ Item {
     property string state: "LISTENING"
     property color accent: "#ff3852"
     property real uiScale: 1.0
-    readonly property bool animated: state !== "IDLE" && state !== "STANDBY"
-    readonly property real energy: state === "SPEAKING" ? 1.0
-                                   : state === "LISTENING" ? 0.78
-                                   : state === "THINKING" ? 0.48 : 0.18
+    property var audioLevels: []
+    property real audioLevel: 0.0
+
+    function levelAt(index) {
+        if (!audioLevels || index >= audioLevels.length)
+            return 0.0
+        return Math.max(0.0, Math.min(1.0, Number(audioLevels[index])))
+    }
 
     Rectangle {
         anchors.verticalCenter: parent.verticalCenter
@@ -41,27 +45,14 @@ Item {
                 readonly property real shape: Math.max(0.18, 1.0 - centerDistance)
                 width: Math.max(1.2, (waveform.width - waveform.spacing * 34) / 35)
                 height: Math.max(3 * root.uiScale,
-                                 (8 + 48 * shape * root.energy * (0.55 + 0.45 * Math.abs(Math.sin(index * 1.71)))) * root.uiScale)
+                                 (4 + 64 * shape * root.levelAt(index)) * root.uiScale)
                 anchors.verticalCenter: parent.verticalCenter
                 radius: width / 2
                 color: root.accent
                 opacity: 0.24 + 0.72 * shape
 
-                SequentialAnimation on height {
-                    running: root.animated
-                    loops: Animation.Infinite
-                    NumberAnimation {
-                        to: Math.max(4 * root.uiScale,
-                                     (8 + 42 * root.energy * (0.3 + Math.abs(Math.sin(index * 2.13)))) * root.uiScale)
-                        duration: 390 + (index % 6) * 55
-                        easing.type: Easing.InOutSine
-                    }
-                    NumberAnimation {
-                        to: Math.max(4 * root.uiScale,
-                                     (7 + 46 * root.energy * (0.24 + Math.abs(Math.cos(index * 1.39)))) * root.uiScale)
-                        duration: 430 + (index % 5) * 48
-                        easing.type: Easing.InOutSine
-                    }
+                Behavior on height {
+                    NumberAnimation { duration: 45; easing.type: Easing.OutQuad }
                 }
             }
         }
@@ -98,13 +89,8 @@ Item {
             color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.06)
             border.width: 1
             border.color: root.accent
-
-            SequentialAnimation on scale {
-                running: root.animated
-                loops: Animation.Infinite
-                NumberAnimation { to: 1.12; duration: root.state === "SPEAKING" ? 430 : 720; easing.type: Easing.OutSine }
-                NumberAnimation { to: 0.92; duration: root.state === "SPEAKING" ? 430 : 720; easing.type: Easing.InSine }
-            }
+            scale: 0.92 + root.audioLevel * 0.22
+            Behavior on scale { NumberAnimation { duration: 55; easing.type: Easing.OutQuad } }
         }
         Rectangle {
             anchors.centerIn: parent

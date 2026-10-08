@@ -11,9 +11,12 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
+
+import numpy as np
 
 from PySide6.QtCore import (
     QAbstractListModel,
@@ -26,6 +29,8 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
+from PySide6.QtGui import QImage
+from PySide6.QtQuick import QQuickImageProvider
 
 
 class ConversationModel(QAbstractListModel):
@@ -102,6 +107,29 @@ class ConversationModel(QAbstractListModel):
                 return
 
 
+class CameraImageProvider(QQuickImageProvider):
+    """Serve the controller's latest camera frame to QML without disk I/O."""
+
+    def __init__(self, controller: "TarsUIController") -> None:
+        super().__init__(QQuickImageProvider.Image)
+        self._controller = controller
+
+    def requestImage(self, _image_id, size, requested_size):  # noqa: N802, ANN001
+        image = self._controller.camera_image()
+        if image.isNull():
+            image = QImage(640, 480, QImage.Format_RGB888)
+            image.fill(Qt.black)
+        if requested_size.isValid():
+            image = image.scaled(
+                requested_size,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+        size.setWidth(image.width())
+        size.setHeight(image.height())
+        return image
+
+
 class TarsUIController(QObject):
     """Live, thread-safe state surface consumed by ``TarsMain.qml``."""
 
@@ -114,6 +142,8 @@ class TarsUIController(QObject):
     visibilityChanged = Signal()
     overlayChanged = Signal()
     silenceChanged = Signal()
+    audioChanged = Signal()
+    cameraChanged = Signal()
 
     runtimeStopped = Signal()
 
@@ -127,6 +157,7 @@ class TarsUIController(QObject):
     _overlayRequested = Signal(str, int)
     _telemetryRequested = Signal(object)
     _silenceRequested = Signal(float)
+    _cameraStartedRequested = Signal(object, object, str)
     _exitRequested = Signal()
     _shutdownRequested = Signal()
 
@@ -162,6 +193,21 @@ class TarsUIController(QObject):
         self._silence_progress = 0.0
         self._running = True
 
+        self._audio_levels = [0.0] * 35
+        self._pending_audio_levels = [0.0] * 35
+        self._audio_peak = 0.025
+        self._audio_lock = threading.Lock()
+        self._audio_stream = None
+
+        self._camera_module = None
+        self._camera_active = False
+        self._camera_starting = False
+        self._camera_ready = False
+        self._camera_error = ""
+        self._camera_frame = QImage()
+        self._camera_frame_revision = 0
+        self._camera_lock = threading.Lock()
+
         self._battery_source = None
         self._cpu_source = None
         self._stt_manager = None
@@ -180,6 +226,7 @@ class TarsUIController(QObject):
         self._overlayRequested.connect(self._apply_overlay)
         self._telemetryRequested.connect(self._apply_network_telemetry)
         self._silenceRequested.connect(self._apply_silence)
+        self._cameraStartedRequested.connect(self._apply_camera_started)
         self._exitRequested.connect(self.exitProgram)
         self._shutdownRequested.connect(self.requestShutdown)
 
@@ -201,9 +248,23 @@ class TarsUIController(QObject):
         self._overlay_timer.setSingleShot(True)
         self._overlay_timer.timeout.connect(self._clear_overlay)
 
+        self._audio_timer = QTimer(self)
+        self._audio_timer.setInterval(40)
+        self._audio_timer.timeout.connect(self._publish_audio_levels)
+        self._audio_timer.start()
+
+        self._camera_timer = QTimer(self)
+        self._camera_timer.setInterval(100)
+        self._camera_timer.timeout.connect(self._refresh_camera_frame)
+
         threading.Thread(
             target=self._wifi_poll_loop,
             name="QMLWiFiTelemetry",
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=self._start_audio_visualizer,
+            name="QMLAudioVisualizer",
             daemon=True,
         ).start()
 
@@ -287,6 +348,30 @@ class TarsUIController(QObject):
     def silenceProgress(self) -> float:
         return self._silence_progress
 
+    @Property("QVariantList", notify=audioChanged)
+    def audioLevels(self) -> list[float]:
+        return self._audio_levels
+
+    @Property(float, notify=audioChanged)
+    def audioLevel(self) -> float:
+        return max(self._audio_levels, default=0.0)
+
+    @Property(bool, notify=cameraChanged)
+    def cameraActive(self) -> bool:
+        return self._camera_active
+
+    @Property(bool, notify=cameraChanged)
+    def cameraReady(self) -> bool:
+        return self._camera_ready
+
+    @Property(str, notify=cameraChanged)
+    def cameraError(self) -> str:
+        return self._camera_error
+
+    @Property(int, notify=cameraChanged)
+    def cameraFrameRevision(self) -> int:
+        return self._camera_frame_revision
+
     @Property(QObject, constant=True)
     def conversationModel(self) -> QObject:
         return self._conversation
@@ -311,6 +396,145 @@ class TarsUIController(QObject):
                 self._cpu_source = cpu
             if stt is not None:
                 self._stt_manager = stt
+
+    def _start_audio_visualizer(self) -> None:
+        """Subscribe to the shared microphone hub used by STT."""
+        try:
+            from modules.module_mic import open_native_stream
+
+            stream = open_native_stream(callback=self._audio_callback)
+            stream.start()
+            self._audio_stream = stream
+        except Exception as exc:
+            print(f"WARNING: QML microphone visualizer unavailable: {exc}")
+
+    def _audio_callback(self, indata, _frames, _time_info, _status) -> None:
+        """Reduce a live mic chunk to the 35 samples drawn by QML."""
+        if self._muted:
+            levels = np.zeros(35, dtype=np.float32)
+        else:
+            audio = np.asarray(indata[:, 0], dtype=np.float32)
+            if audio.size == 0:
+                return
+            absolute = np.abs(audio)
+            frame_peak = float(np.percentile(absolute, 97))
+            self._audio_peak = max(0.015, self._audio_peak * 0.965, frame_peak)
+            indices = np.linspace(0, audio.size - 1, 35, dtype=np.int32)
+            levels = np.clip(absolute[indices] / self._audio_peak, 0.0, 1.0) ** 0.68
+
+        with self._audio_lock:
+            self._pending_audio_levels = levels.tolist()
+
+    @Slot()
+    def _publish_audio_levels(self) -> None:
+        with self._audio_lock:
+            target = list(self._pending_audio_levels)
+        smoothed = []
+        for current, requested in zip(self._audio_levels, target):
+            blend = 0.72 if requested > current else 0.34
+            smoothed.append(current + (requested - current) * blend)
+        self._audio_levels = smoothed
+        self.audioChanged.emit()
+
+    def camera_image(self) -> QImage:
+        with self._camera_lock:
+            return self._camera_frame.copy()
+
+    def _camera_start_worker(self) -> None:
+        try:
+            from modules.UI.module_ui_camera import CameraModule
+
+            camera = self._camera_module or CameraModule(640, 480, use_camera_module=True)
+            if camera.picam2 is None:
+                raise RuntimeError("Raspberry Pi camera was not detected")
+            if not camera.running:
+                camera.start_camera()
+
+            deadline = time.monotonic() + 6.0
+            frame = None
+            while time.monotonic() < deadline and self._camera_active:
+                frame = camera.capture_rgb_array()
+                if frame is not None:
+                    break
+                time.sleep(0.05)
+            if frame is None:
+                raise RuntimeError("camera did not produce a frame")
+
+            image = self._array_to_qimage(frame)
+            self._cameraStartedRequested.emit(camera, image, "")
+        except Exception as exc:
+            self._cameraStartedRequested.emit(None, QImage(), str(exc))
+
+    @staticmethod
+    def _array_to_qimage(frame) -> QImage:  # noqa: ANN001
+        rgb = np.ascontiguousarray(frame, dtype=np.uint8)
+        height, width, channels = rgb.shape
+        return QImage(
+            rgb.data,
+            width,
+            height,
+            channels * width,
+            QImage.Format_RGB888,
+        ).copy()
+
+    @Slot()
+    def openCamera(self) -> None:
+        self._camera_active = True
+        self._camera_error = ""
+        self.cameraChanged.emit()
+        if self._camera_ready:
+            self._camera_timer.start()
+            return
+        if self._camera_starting:
+            return
+        self._camera_starting = True
+        threading.Thread(
+            target=self._camera_start_worker,
+            name="QMLCameraStartup",
+            daemon=True,
+        ).start()
+
+    @Slot()
+    def closeCamera(self) -> None:
+        self._camera_active = False
+        self._camera_timer.stop()
+        self.cameraChanged.emit()
+
+    @Slot(object, object, str)
+    def _apply_camera_started(self, camera, image, error: str) -> None:  # noqa: ANN001
+        self._camera_starting = False
+        if error:
+            self._camera_ready = False
+            self._camera_error = error
+            self._apply_notice(f"CAMERA ERROR: {error}", 5000)
+        else:
+            self._camera_module = camera
+            self._camera_ready = True
+            with self._camera_lock:
+                self._camera_frame = image
+            self._camera_frame_revision += 1
+            if self._camera_active:
+                self._camera_timer.start()
+        self.cameraChanged.emit()
+
+    @Slot()
+    def _refresh_camera_frame(self) -> None:
+        if not self._camera_active or not self._camera_ready or self._camera_module is None:
+            return
+        try:
+            frame = self._camera_module.capture_rgb_array()
+            if frame is None:
+                return
+            image = self._array_to_qimage(frame)
+            with self._camera_lock:
+                self._camera_frame = image
+            self._camera_frame_revision += 1
+            self.cameraChanged.emit()
+        except Exception as exc:
+            self._camera_error = str(exc)
+            self._camera_ready = False
+            self._camera_timer.stop()
+            self.cameraChanged.emit()
 
     def update_data(self, source: str, message: str, category: str = "INFO") -> None:
         self._messageRequested.emit(str(source), str(message), str(category))
@@ -348,6 +572,19 @@ class TarsUIController(QObject):
     def stop(self) -> None:
         self._running = False
         self._wifi_stop.set()
+        self._audio_timer.stop()
+        self._camera_timer.stop()
+        if self._audio_stream is not None:
+            try:
+                self._audio_stream.close()
+            except Exception:
+                pass
+            self._audio_stream = None
+        if self._camera_module is not None:
+            try:
+                self._camera_module.stop()
+            except Exception:
+                pass
 
     def join(self, timeout=None) -> None:  # noqa: ANN001
         """Qt owns the main thread, so there is no UI worker to join."""
@@ -397,7 +634,7 @@ class TarsUIController(QObject):
     @Slot(str)
     def activateFeature(self, feature: str) -> None:
         if feature.strip().lower() == "camera":
-            self._apply_notice("CAMERA VIEW IS NEXT IN THE QML MIGRATION", 3500)
+            self.openCamera()
         else:
             self._apply_notice(f"{feature.upper()} SELECTED", 2400)
 

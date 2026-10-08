@@ -34,7 +34,15 @@ ApplicationWindow {
 
         property string overlayMode: ""
         focus: true
-        Keys.onEscapePressed: controller.exitProgram()
+        Keys.onEscapePressed: {
+            if (scene.overlayMode.length > 0) {
+                if (scene.overlayMode === "camera")
+                    controller.closeCamera()
+                scene.overlayMode = ""
+            } else {
+                controller.exitProgram()
+            }
+        }
         readonly property bool rotated: displayRotation === 90 || displayRotation === 270
         readonly property real uiScale: Math.min(width / 480, height / 720)
         readonly property color stateColor: controller.tarsState === "STANDBY" ? "#829199"
@@ -265,6 +273,8 @@ ApplicationWindow {
                         state: controller.tarsState
                         accent: scene.stateColor
                         uiScale: scene.uiScale
+                        audioLevels: controller.audioLevels
+                        audioLevel: controller.audioLevel
                     }
 
                     Text {
@@ -372,7 +382,7 @@ ApplicationWindow {
                     iconText: "[]"
                     accent: window.red
                     onClicked: {
-                        controller.activateFeature("Camera")
+                        controller.openCamera()
                         scene.overlayMode = "camera"
                     }
                 }
@@ -479,13 +489,42 @@ ApplicationWindow {
                             }
                         }
 
-                        TarsButton {
-                            Layout.preferredWidth: 50 * scene.uiScale
-                            Layout.fillHeight: true
-                            text: "CLOSE"
-                            iconText: "X"
-                            accent: window.red
-                            onClicked: scene.overlayMode = ""
+                        Button {
+                            id: closeOverlayButton
+                            Layout.preferredWidth: 72 * scene.uiScale
+                            Layout.preferredHeight: 28 * scene.uiScale
+                            Layout.alignment: Qt.AlignVCenter
+                            hoverEnabled: true
+                            onClicked: {
+                                if (scene.overlayMode === "camera")
+                                    controller.closeCamera()
+                                scene.overlayMode = ""
+                            }
+
+                            contentItem: Row {
+                                anchors.centerIn: parent
+                                spacing: 5 * scene.uiScale
+                                Text {
+                                    text: "×"
+                                    color: window.red
+                                    font.family: displayFontFamily
+                                    font.pixelSize: 11 * scene.uiScale
+                                    font.bold: true
+                                }
+                                Text {
+                                    text: "CLOSE"
+                                    color: window.pale
+                                    font.family: displayFontFamily
+                                    font.pixelSize: 7 * scene.uiScale
+                                    font.bold: true
+                                    font.letterSpacing: 0.7 * scene.uiScale
+                                }
+                            }
+                            background: Rectangle {
+                                radius: 4 * scene.uiScale
+                                color: closeOverlayButton.down ? "#2b171d" : "#09141a"
+                                border.color: window.red
+                            }
                         }
                     }
 
@@ -500,57 +539,87 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
 
-                        Column {
-                            anchors.centerIn: parent
+                        Rectangle {
+                            anchors.fill: parent
                             visible: scene.overlayMode === "camera"
-                            spacing: 14 * scene.uiScale
+                            radius: 6 * scene.uiScale
+                            color: "#03090c"
+                            border.color: controller.cameraReady ? window.red : "#42606c"
+                            clip: true
 
-                            Rectangle {
-                                width: modal.width - 70 * scene.uiScale
-                                height: 205 * scene.uiScale
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                radius: 6 * scene.uiScale
-                                color: "#03090c"
-                                border.color: "#42606c"
+                            Image {
+                                id: cameraFeed
+                                anchors.fill: parent
+                                anchors.margins: 2 * scene.uiScale
+                                source: controller.cameraReady
+                                    ? "image://camera/frame/" + controller.cameraFrameRevision
+                                    : ""
+                                cache: false
+                                asynchronous: false
+                                fillMode: Image.PreserveAspectCrop
+                                visible: controller.cameraReady
+                            }
 
-                                Repeater {
-                                    model: 4
-                                    Rectangle {
-                                        required property int index
-                                        width: index % 2 === 0 ? parent.width * 0.26 : 1
-                                        height: index % 2 === 0 ? 1 : parent.height * 0.32
-                                        x: index === 0 ? 0 : index === 2 ? parent.width * 0.74 : parent.width / 2
-                                        y: index === 1 ? 0 : index === 3 ? parent.height * 0.68 : parent.height / 2
-                                        color: window.red
-                                        opacity: 0.35
-                                    }
-                                }
+                            Repeater {
+                                model: controller.cameraReady ? 4 : 0
                                 Rectangle {
-                                    width: 56 * scene.uiScale
-                                    height: width
-                                    radius: width / 2
-                                    anchors.centerIn: parent
-                                    color: "transparent"
-                                    border.color: window.red
-                                    opacity: 0.7
-                                }
-                                Text {
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                    anchors.bottom: parent.bottom
-                                    anchors.bottomMargin: 12 * scene.uiScale
-                                    text: "CAMERA MODULE"
-                                    color: "#9babb3"
-                                    font.family: monoFontFamily
-                                    font.pixelSize: 8 * scene.uiScale
-                                    font.letterSpacing: 1.3 * scene.uiScale
+                                    required property int index
+                                    width: index % 2 === 0 ? parent.width * 0.18 : 1
+                                    height: index % 2 === 0 ? 1 : parent.height * 0.22
+                                    x: index === 0 ? 0 : index === 2 ? parent.width * 0.82 : parent.width / 2
+                                    y: index === 1 ? 0 : index === 3 ? parent.height * 0.78 : parent.height / 2
+                                    color: window.red
+                                    opacity: 0.55
                                 }
                             }
-                            Text {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                text: "Live camera migration is the next interface module"
-                                color: "#9babb3"
-                                font.family: monoFontFamily
-                                font.pixelSize: 8 * scene.uiScale
+
+                            BusyIndicator {
+                                anchors.centerIn: parent
+                                running: controller.cameraActive && !controller.cameraReady
+                                visible: running && controller.cameraError.length === 0
+                                width: 42 * scene.uiScale
+                                height: width
+                            }
+
+                            Column {
+                                anchors.centerIn: parent
+                                visible: !controller.cameraReady && controller.cameraError.length > 0
+                                width: parent.width - 40 * scene.uiScale
+                                spacing: 8 * scene.uiScale
+                                Text {
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    text: "CAMERA UNAVAILABLE"
+                                    color: window.red
+                                    font.family: displayFontFamily
+                                    font.pixelSize: 13 * scene.uiScale
+                                    font.bold: true
+                                }
+                                Text {
+                                    width: parent.width
+                                    text: controller.cameraError
+                                    color: "#aebbc1"
+                                    font.family: monoFontFamily
+                                    font.pixelSize: 7 * scene.uiScale
+                                    horizontalAlignment: Text.AlignHCenter
+                                    wrapMode: Text.Wrap
+                                }
+                            }
+
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                height: 24 * scene.uiScale
+                                color: "#b003090c"
+                                visible: controller.cameraReady
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "LIVE OPTICAL FEED  ·  " + cameraFeed.sourceSize.width + "×" + cameraFeed.sourceSize.height
+                                    color: "#d5dfe3"
+                                    font.family: monoFontFamily
+                                    font.pixelSize: 6.5 * scene.uiScale
+                                    font.letterSpacing: 1.1 * scene.uiScale
+                                }
                             }
                         }
 

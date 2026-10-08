@@ -5,7 +5,10 @@ import threading
 from datetime import datetime
 from pathlib import Path
 import time
-from module_config import load_config
+try:
+    from modules.module_config import load_config
+except ImportError:  # Compatibility with the legacy module search path.
+    from module_config import load_config
 
 CONFIG = load_config()
 target_fps = CONFIG['UI']['target_fps']
@@ -38,6 +41,8 @@ class CameraModule:
         self.lock = threading.Lock()
         self.first_frame_captured = False
         self.last_saved_image = None
+        self.thread = None
+        self.picam2 = None
 
         if self.use_camera_module:
             from picamera2 import Picamera2
@@ -59,7 +64,6 @@ class CameraModule:
                 )
                 self.picam2.configure(self.camera_config)
 
-                self.thread = None
                 self.start_camera()
             except Exception as e:
                 print(f"ERROR: Camera initialization failed: {e}")
@@ -205,6 +209,15 @@ class CameraModule:
                     return buf.tobytes()
             time.sleep(0.1)
         raise RuntimeError("Camera capture timed out")
+
+    def capture_rgb_array(self):
+        """Return the latest frame as a copied HxWx3 RGB array for Qt/QML."""
+        with self.lock:
+            frame = self._frame
+            if frame is None:
+                return None
+            frame_array = pygame.surfarray.array3d(frame)
+        return np.ascontiguousarray(np.transpose(frame_array, (1, 0, 2)))
 
     def _save_frame_unlocked(self):
         """Save current frame to disk. Must be called with self.lock held."""

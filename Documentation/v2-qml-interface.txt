@@ -11,7 +11,9 @@ Architecture
 - src/qml/main/TarsMain.qml and its components/ directory own layout,
   animation, touch input, and visual state.
 - src/modules/module_ui_qml.py is the thread-safe UI state controller and
-  conversation model.
+  conversation model. It also bridges the shared microphone feed and the Pi
+  camera into QML without opening competing audio devices or writing frames
+  to disk.
 - src/modules/module_runtime.py starts speech, memory, models, skills,
   hardware, web UI, Bluetooth, and vision on a background runtime thread.
 
@@ -60,7 +62,13 @@ The [UI] section of src/config.ini controls the native interface:
     show_mouse = False
     screen_width = 480
     screen_height = 800
-    rotation = 0
+    rotation = 90
 
 rotation accepts 0, 90, 180, or 270. For a landscape display running the
 portrait interface sideways, use rotation = 90 or rotation = 270.
+
+The production TARS display is currently mounted for a 90-degree clockwise
+rotation, which src/app.py applies to the complete QML scene. The center signal
+display is driven by live samples from the shared microphone hub. The Camera
+button opens a live feed supplied through a Qt image provider; closing the
+camera returns to the main interface without stopping TARS.

@@ -23,7 +23,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="TARS main-interface QML prototype")
     parser.add_argument("--fullscreen", action="store_true", help="open full screen")
     parser.add_argument("--autoplay", action="store_true", help="cycle mock TARS states automatically")
-    parser.add_argument("--rotation", type=int, choices=(0, 90, 180, 270), default=0,
+    parser.add_argument("--rotation", type=int, choices=(0, 90, 180, 270), default=90,
                         help="rotate the logical portrait UI for a mounted display")
     parser.add_argument("--width", type=int, default=480, help="window width when not full screen")
     parser.add_argument("--height", type=int, default=720, help="window height when not full screen")
@@ -136,6 +136,8 @@ class MainInterfaceController(QObject):
     telemetryChanged = Signal()
     mutedChanged = Signal()
     noticeChanged = Signal()
+    audioChanged = Signal()
+    cameraChanged = Signal()
 
     STATES = (
         ("LISTENING", "TARS READY"),
@@ -154,6 +156,10 @@ class MainInterfaceController(QObject):
         self._notice = ""
         self._conversation = ConversationModel()
         self._telemetry_phase = 0.0
+        self._audio_phase = 0.0
+        self._audio_levels = [0.0] * 35
+        self._camera_active = False
+        self._camera_error = ""
 
         self._clock_timer = QTimer(self)
         self._clock_timer.setInterval(1000)
@@ -174,6 +180,11 @@ class MainInterfaceController(QObject):
         self._autoplay_timer.timeout.connect(self.cycleState)
         if autoplay:
             self._autoplay_timer.start()
+
+        self._audio_timer = QTimer(self)
+        self._audio_timer.setInterval(55)
+        self._audio_timer.timeout.connect(self._update_demo_audio)
+        self._audio_timer.start()
 
     @Property(str, notify=clockChanged)
     def currentTime(self) -> str:
@@ -243,6 +254,30 @@ class MainInterfaceController(QObject):
     def noticeText(self) -> str:
         return self._notice
 
+    @Property("QVariantList", notify=audioChanged)
+    def audioLevels(self) -> list[float]:
+        return self._audio_levels
+
+    @Property(float, notify=audioChanged)
+    def audioLevel(self) -> float:
+        return max(self._audio_levels, default=0.0)
+
+    @Property(bool, notify=cameraChanged)
+    def cameraActive(self) -> bool:
+        return self._camera_active
+
+    @Property(bool, notify=cameraChanged)
+    def cameraReady(self) -> bool:
+        return False
+
+    @Property(str, notify=cameraChanged)
+    def cameraError(self) -> str:
+        return self._camera_error
+
+    @Property(int, notify=cameraChanged)
+    def cameraFrameRevision(self) -> int:
+        return 0
+
     @Property(QObject, constant=True)
     def conversationModel(self) -> QObject:
         return self._conversation
@@ -284,6 +319,17 @@ class MainInterfaceController(QObject):
     def activateFeature(self, feature: str) -> None:
         self._set_notice(f"{feature} opened in safe prototype mode")
 
+    @Slot()
+    def openCamera(self) -> None:
+        self._camera_active = True
+        self._camera_error = "Camera feed is available in the live Raspberry Pi runtime"
+        self.cameraChanged.emit()
+
+    @Slot()
+    def closeCamera(self) -> None:
+        self._camera_active = False
+        self.cameraChanged.emit()
+
     @Slot(str)
     def launchApp(self, app_name: str) -> None:
         self._set_notice(f"Mock app selected: {app_name}")
@@ -317,6 +363,15 @@ class MainInterfaceController(QObject):
         self._telemetry_phase += 0.55
         self._cpu_temperature = 48 + round(3 * math.sin(self._telemetry_phase))
         self.telemetryChanged.emit()
+
+    @Slot()
+    def _update_demo_audio(self) -> None:
+        self._audio_phase += 0.18
+        self._audio_levels = [
+            max(0.03, abs(math.sin(self._audio_phase + index * 0.57)) * (0.3 + 0.7 * math.sin(index / 34 * math.pi)))
+            for index in range(35)
+        ]
+        self.audioChanged.emit()
 
 
 def main() -> int:

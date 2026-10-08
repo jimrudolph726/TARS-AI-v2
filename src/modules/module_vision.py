@@ -43,10 +43,14 @@ except ImportError:
     pass
 
 try:
-    from UI.module_ui_camera import CameraModule as _CameraModule
+    from modules.UI.module_ui_camera import CameraModule as _CameraModule
     CameraModule = _CameraModule
 except ImportError:
-    pass
+    try:
+        from UI.module_ui_camera import CameraModule as _CameraModule
+        CameraModule = _CameraModule
+    except ImportError:
+        pass
 
 # BLIP model state — guarded by _blip_lock
 from pathlib import Path

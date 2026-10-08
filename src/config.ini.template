@@ -215,7 +215,7 @@ show_mouse = False
 # Run display in fullscreen mode
 fullscreen = True
 # Rotate the QML interface for the mounted display: 0, 90, 180, or 270
-rotation = 0
+rotation = 90
 # Show clock on screensaver
 show_time = True
 # Show CPU temperature on display

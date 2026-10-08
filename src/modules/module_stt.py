@@ -13,6 +13,7 @@ import re
 import random
 import threading
 import time
+import math
 from collections import deque
 import wave
 import json
@@ -175,13 +176,23 @@ class STTManager:
         self.wake_silence_threshold = None
         self.silence_threshold = None  # Updated after measuring background noise
         self.silence_threshold_margin = None
-        self.MAX_RECORDING_FRAMES = 100   # ~12.5 seconds
-        self.MAX_SILENT_FRAMES = CONFIG['STT']['speechdelay']
+        # Capture in 125 ms blocks. ``speechdelay`` is configured in tenths
+        # of a second, so convert it to blocks instead of treating it as a raw
+        # frame count (the old 4000-sample blocks made 15 mean 3.75 seconds).
+        self.RECORD_FRAME_SIZE = 2000
+        self.MAX_RECORDING_SECONDS = 12.5
+        self.MAX_RECORDING_FRAMES = math.ceil(
+            self.MAX_RECORDING_SECONDS * self.MODEL_RATE / self.RECORD_FRAME_SIZE
+        )
+        silence_seconds = max(0.1, float(CONFIG['STT']['speechdelay']) / 10.0)
+        self.MAX_SILENT_FRAMES = max(1, math.ceil(
+            silence_seconds * self.MODEL_RATE / self.RECORD_FRAME_SIZE
+        ))
 
         # Callbacks
         self.wake_word_callback: Optional[Callable[[str], None]] = None
         self.utterance_callback: Optional[Callable[[str], None]] = None
-        self.post_utterance_callback: Optional[Callable[[], None]] = None
+        self.post_utterance_callback: Optional[Callable[[], Optional[bool]]] = None
         self.preemptive_llm_callback: Optional[Callable[[str], object]] = None  # fires LLM early
 
         # Wake word and model settings
@@ -599,7 +610,7 @@ class STTManager:
                 pass
 
             for _ in range(self.MAX_RECORDING_FRAMES):
-                data, _ = mic.read(4000)
+                data, _ = mic.read(self.RECORD_FRAME_SIZE)
 
                 # Abort recording if TTS just started — don't pick up TARS's own voice
                 if is_tts_playing():
@@ -735,9 +746,28 @@ class STTManager:
                 # Reset sherpa VAD state to prevent heap corruption from stale native buffers
                 if self.sherpa_vad is not None:
                     self.sherpa_vad.reset()
-                # Check again if paused before transcribing
-                if not self.is_paused():
-                    self._transcribe_utterance()
+                # Keep a conversation alive iteratively. The old callback
+                # recursively called _transcribe_utterance(), which grew a
+                # nested call stack and could leave the UI stuck in LISTENING
+                # when a round timed out or failed.
+                while (self.running and not self.shutdown_event.is_set()
+                       and not self.is_paused()):
+                    result = self._transcribe_utterance()
+                    if not result:
+                        break
+
+                    continue_session = True
+                    if self.post_utterance_callback:
+                        try:
+                            continue_session = self.post_utterance_callback() is not False
+                        except Exception as e:
+                            queue_message(f"WARN: Post-utterance callback failed: {e}")
+                            continue_session = False
+                    if not continue_session:
+                        break
+
+                if not self.shutdown_event.is_set() and not self.is_paused():
+                    set_tars_state(TarsState.STANDBY)
         queue_message("INFO: STT Manager stopped.")
 
     # === Transcription Dispatch ===
@@ -773,8 +803,6 @@ class STTManager:
                 speed.log(f"stt:{processor}({speed.fmt(stt_dur)})")
                 speed.start('stt_to_llm')  # Measure gap from STT done to LLM start
 
-            if self.post_utterance_callback and result:
-                self.post_utterance_callback()
             return result
         except Exception as e:
             queue_message(f"ERROR: Transcription failed: {e}")
@@ -1185,12 +1213,12 @@ class STTManager:
                 pass
 
             for _ in range(self.MAX_RECORDING_FRAMES):
-                data, _ = mic.read(4000)
+                data, _ = mic.read(self.RECORD_FRAME_SIZE)
 
                 # Abort recording if TTS just started — don't pick up TARS's own voice
                 if is_tts_playing():
                     set_tars_state(TarsState.STANDBY)
-                    return None, 0
+                    return None
 
                 is_silence, detected_speech, silent_frames = vad_func(data, detected_speech, silent_frames)
 
@@ -1293,7 +1321,7 @@ class STTManager:
                 queue_message(f"DEBUG: Transcription returned empty (chunks={len(audio_chunks)}, speech_frames={speech_frames})")
             return None
 
-        audio_duration = len(audio_chunks) * 4000 / RATE
+        audio_duration = len(audio_chunks) * self.RECORD_FRAME_SIZE / RATE
         queue_message(f"DEBUG: Transcribed: '{transcript}' (speech={speech_frames}, chunks={len(audio_chunks)}, ~{audio_duration:.1f}s audio)")
 
         # Check if preemptive LLM result is valid (transcript matches)
@@ -1822,7 +1850,7 @@ class STTManager:
     def set_utterance_callback(self, callback: Callable[[str], None]):
         self.utterance_callback = callback
 
-    def set_post_utterance_callback(self, callback: Callable[[], None]):
+    def set_post_utterance_callback(self, callback: Callable[[], Optional[bool]]):
         self.post_utterance_callback = callback
 
     def set_preemptive_llm_callback(self, callback: Callable[[str], object]):

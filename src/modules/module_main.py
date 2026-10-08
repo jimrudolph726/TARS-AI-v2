@@ -517,22 +517,24 @@ def utterance_callback(message):
 
 def post_utterance_callback():
     """
-    Restart listening for another utterance after handling the current one.
-    """
-    global stt_manager
+    Tell STT whether to keep the current conversation listening.
 
+    STT owns the iterative recording loop. This callback must not call back
+    into _transcribe_utterance(), otherwise every conversational turn nests
+    another recording call and state cleanup becomes unreliable.
+    """
     # Check if radio is active — if so, go back to wake word mode
     try:
         from skills.skill_tars_radio import _radio_thread, _radio_cancel
         if _radio_thread is not None and _radio_thread.is_alive() and not _radio_cancel.is_set():
             queue_message("DEBUG: post_utterance_callback -> radio active, returning to wake word loop")
             set_tars_state(TarsState.STANDBY)
-            return
+            return False
     except Exception:
         pass
 
-    queue_message("DEBUG: post_utterance_callback -> starting new recording round")
-    stt_manager._transcribe_utterance()
+    queue_message("DEBUG: post_utterance_callback -> continuing conversation")
+    return True
 
 # === Initialization ===
 def initialize_managers(mem_manager, char_manager, stt_mgr, ui_mgr, shutdown_evt=None, battery_mod=None):

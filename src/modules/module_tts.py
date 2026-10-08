@@ -20,11 +20,28 @@ import sounddevice as sd
 import soundfile as sf
 from io import BytesIO
 import asyncio
+from dataclasses import dataclass
 
 from modules.module_messageQue import queue_message
 from modules.module_config import load_config
 
 CONFIG = load_config()
+
+
+@dataclass(frozen=True)
+class PlaybackResult:
+    """Outcome of one TTS request.
+
+    ``bool(result)`` intentionally preserves the historical meaning of
+    play_audio_chunks(): True means playback was interrupted.
+    """
+
+    interrupted: bool = False
+    audio_played: bool = False
+    error: str = ""
+
+    def __bool__(self):
+        return self.interrupted
 
 # Barge-in: TTS cancellation event (thread-safe)
 _tts_cancel_event = threading.Event()
@@ -315,6 +332,8 @@ class SentenceTTSPipeline:
         self._remainder = ''
         self._first_queued = False
         self._interrupted = False
+        self._audio_played = False
+        self._failed_sentences = 0
         self._duration = 0.0
         self._play_time = 0.0   # Actual TTS synthesis+playback time (excludes queue waits)
         self._thread = None
@@ -350,6 +369,11 @@ class SentenceTTSPipeline:
         """Wait for TTS worker to finish playing all sentences."""
         if self._thread:
             self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                queue_message(f"ERROR: TTS pipeline did not finish within {timeout} seconds")
+                self._interrupted = True
+                stop_tts_playback()
+                self._thread.join(timeout=3)
 
     @property
     def remainder(self):
@@ -359,6 +383,15 @@ class SentenceTTSPipeline:
     @property
     def interrupted(self):
         return self._interrupted
+
+    @property
+    def audio_played(self):
+        """Whether at least one audio chunk reached the speaker."""
+        return self._audio_played
+
+    @property
+    def failed_sentences(self):
+        return self._failed_sentences
 
     @property
     def duration(self):
@@ -409,36 +442,60 @@ class SentenceTTSPipeline:
         t_start = time.perf_counter()
         play_total = 0.0
         first = True
+
+        def _mark_first_audio():
+            nonlocal first
+            if not first:
+                return
+            first = False
+            if self._on_first_play:
+                try:
+                    self._on_first_play()
+                except Exception:
+                    pass
+
         try:
             while not self._interrupted:
-                try:
-                    sentence = self._queue.get(timeout=30)
-                except _queue.Empty:
-                    break
+                # Wait for either a sentence or the finish sentinel.  LLMs can
+                # legitimately take more than 30 seconds on a Raspberry Pi;
+                # timing out here abandoned TTS while the UI kept streaming
+                # the eventual response text.
+                sentence = self._queue.get()
                 if sentence is None:
                     break
-                if first and self._on_first_play:
-                    first = False
-                    try:
-                        self._on_first_play()
-                    except Exception:
-                        pass
                 queue_message(f"DEBUG: TTS speaking: {sentence}")
                 t_play = time.perf_counter()
                 try:
                     if self._play_func:
-                        was_int = loop.run_until_complete(
+                        # Custom players retain the original bool contract.
+                        _mark_first_audio()
+                        raw_result = loop.run_until_complete(
                             self._play_func(sentence, self._tts_option)
                         )
+                        result = raw_result if isinstance(raw_result, PlaybackResult) else PlaybackResult(
+                            interrupted=bool(raw_result), audio_played=not bool(raw_result)
+                        )
                     else:
-                        was_int = loop.run_until_complete(
-                            play_audio_chunks(sentence, self._tts_option, emotion=self._emotion)
+                        result = loop.run_until_complete(
+                            play_audio_chunks(
+                                sentence,
+                                self._tts_option,
+                                emotion=self._emotion,
+                                return_status=True,
+                                on_audio_start=_mark_first_audio,
+                            )
                         )
                 except Exception as e:
                     queue_message(f"ERROR: TTS pipeline failed: {e}")
-                    was_int = False
+                    result = PlaybackResult(error=str(e))
                 play_total += time.perf_counter() - t_play
-                if was_int:
+
+                self._audio_played = self._audio_played or result.audio_played
+                if not result.audio_played and not result.interrupted:
+                    self._failed_sentences += 1
+                    queue_message(f"ERROR: TTS produced no playable audio for: {sentence[:80]}")
+
+                if result.interrupted:
                     self._interrupted = True
                     while not self._queue.empty():
                         try:
@@ -451,7 +508,21 @@ class SentenceTTSPipeline:
             loop.close()
 
 
-async def play_audio_chunks(text, config, is_wakeword=False, emotion=None):
+async def play_audio_chunks(
+    text,
+    config,
+    is_wakeword=False,
+    emotion=None,
+    return_status=False,
+    on_audio_start=None,
+    _allow_fallback=True,
+):
+    """Synthesize and play text, falling back to eSpeak if needed.
+
+    Existing callers receive the historical ``interrupted`` boolean.  The
+    sentence pipeline asks for a PlaybackResult so it can distinguish a
+    successful response from a backend that silently yielded no audio.
+    """
     _resolve_output_device()
     if not is_wakeword:
         queue_message(f"DEBUG: TTS speaking (direct): {text}")
@@ -459,6 +530,8 @@ async def play_audio_chunks(text, config, is_wakeword=False, emotion=None):
     audio_queue = asyncio.Queue(maxsize=3)
     synthesis_done = asyncio.Event()
     was_interrupted = False
+    audio_played = False
+    playback_errors = []
 
     async def synthesize_chunks():
         gen = generate_tts_audio(text, config, is_wakeword, emotion=emotion).__aiter__()
@@ -492,94 +565,127 @@ async def play_audio_chunks(text, config, is_wakeword=False, emotion=None):
             pass
 
     async def play_chunks():
-        nonlocal was_interrupted
+        nonlocal was_interrupted, audio_played
         threading.Thread(target=_notify_talking_state, args=("start_talking",), daemon=True).start()
 
-        while True:
-            if _tts_cancel_event.is_set():
-                was_interrupted = True
-                break
+        try:
+            while True:
+                if _tts_cancel_event.is_set():
+                    was_interrupted = True
+                    break
 
-            try:
                 try:
-                    audio_chunk = await asyncio.wait_for(audio_queue.get(), timeout=0.1)
-                except asyncio.TimeoutError:
+                    try:
+                        audio_chunk = await asyncio.wait_for(audio_queue.get(), timeout=0.1)
+                    except asyncio.TimeoutError:
+                        if synthesis_done.is_set() and audio_queue.empty():
+                            break
+                        continue
+
+                    data, samplerate = sf.read(audio_chunk, dtype='float32')
+                    if np.size(data) == 0:
+                        raise ValueError("TTS backend returned an empty audio chunk")
+
+                    # Resample to 16kHz if needed
+                    if samplerate != 16000:
+                        ratio = 16000 / samplerate
+                        new_len = int(len(data) * ratio)
+                        if data.ndim == 1:
+                            indices = np.linspace(0, len(data) - 1, new_len)
+                            data = np.interp(indices, np.arange(len(data)), data)
+                        else:
+                            indices = np.linspace(0, len(data) - 1, new_len)
+                            data = np.column_stack([
+                                np.interp(indices, np.arange(len(data)), data[:, ch])
+                                for ch in range(data.shape[1])
+                            ])
+                        samplerate = 16000
+
+                    max_val = np.max(np.abs(data))
+                    if max_val > 0:
+                        data = data / max_val
+
+                    gain = 1.5
+                    data = np.clip(data * gain, -1.0, 1.0)
+
+                    sd.play(data, samplerate, device=_output_device)
+                    _tts_playing.set()
+                    if not audio_played:
+                        audio_played = True
+                        if on_audio_start:
+                            try:
+                                on_audio_start()
+                            except Exception as e:
+                                queue_message(f"WARN: TTS start callback failed: {e}")
+
+                    # Log time-to-first-audio on the first chunk
+                    import modules.module_speed as speed
+                    speed.mark_first_audio()
+
+                    # Poll instead of sd.wait() so we can check for barge-in
+                    while True:
+                        if _tts_cancel_event.is_set():
+                            sd.stop()
+                            was_interrupted = True
+                            break
+                        try:
+                            stream = sd.get_stream()
+                            if stream is None or not stream.active:
+                                break
+                        except Exception:
+                            break
+                        await asyncio.sleep(0.05)
+
+                    _tts_playing.clear()
+                    if not is_wakeword:
+                        _tts_needs_flush.set()
+
+                    if was_interrupted:
+                        break
+
+                    # Brief pause between chunks for barge-in detection.
+                    # Monitor checks mic RMS only when _tts_playing is clear.
+                    for _ in range(6):  # 300ms window (6 x 50ms)
+                        if _tts_cancel_event.is_set():
+                            was_interrupted = True
+                            break
+                        await asyncio.sleep(0.05)
+
+                    if was_interrupted:
+                        break
+
+                except Exception as e:
+                    playback_errors.append(str(e))
+                    queue_message(f"ERROR: Failed to play chunk: {e}")
                     if synthesis_done.is_set() and audio_queue.empty():
                         break
-                    continue
+        finally:
+            _tts_playing.clear()
+            threading.Thread(target=_notify_talking_state, args=("stop_talking",), daemon=True).start()
 
-                data, samplerate = sf.read(audio_chunk, dtype='float32')
+    try:
+        await asyncio.gather(synthesize_chunks(), play_chunks())
+    finally:
+        _tts_playing.clear()
 
-                # Resample to 16kHz if needed
-                if samplerate != 16000:
-                    ratio = 16000 / samplerate
-                    new_len = int(len(data) * ratio)
-                    if data.ndim == 1:
-                        indices = np.linspace(0, len(data) - 1, new_len)
-                        data = np.interp(indices, np.arange(len(data)), data)
-                    else:
-                        indices = np.linspace(0, len(data) - 1, new_len)
-                        data = np.column_stack([
-                            np.interp(indices, np.arange(len(data)), data[:, ch])
-                            for ch in range(data.shape[1])
-                        ])
-                    samplerate = 16000
+    # A backend can fail internally and simply yield nothing. Do not report
+    # that as a successful spoken response: use the lightweight local voice
+    # so the user still hears TARS and log exactly what happened.
+    if (not audio_played and not was_interrupted and _allow_fallback
+            and config != "espeak" and text_to_speech_with_pipelining_espeak):
+        queue_message(f"WARNING: TTS '{config}' produced no audio; retrying with eSpeak")
+        return await play_audio_chunks(
+            text,
+            "espeak",
+            is_wakeword=is_wakeword,
+            emotion=emotion,
+            return_status=return_status,
+            on_audio_start=on_audio_start,
+            _allow_fallback=False,
+        )
 
-                max_val = np.max(np.abs(data))
-                if max_val > 0:
-                    data = data / max_val
-
-                gain = 1.5
-                data = np.clip(data * gain, -1.0, 1.0)
-
-                sd.play(data, samplerate, device=_output_device)
-                _tts_playing.set()
-
-                # Log time-to-first-audio on the first chunk
-                import modules.module_speed as speed
-                speed.mark_first_audio()
-
-                # Poll instead of sd.wait() so we can check for barge-in
-                while True:
-                    if _tts_cancel_event.is_set():
-                        sd.stop()
-                        was_interrupted = True
-                        break
-                    try:
-                        stream = sd.get_stream()
-                        if stream is None or not stream.active:
-                            break
-                    except Exception:
-                        break
-                    await asyncio.sleep(0.05)
-
-                _tts_playing.clear()
-                if not is_wakeword:
-                    _tts_needs_flush.set()
-
-                if was_interrupted:
-                    break
-
-                # Brief pause between chunks for barge-in detection.
-                # Monitor checks mic RMS only when _tts_playing is clear.
-                for _ in range(6):  # 300ms window (6 x 50ms)
-                    if _tts_cancel_event.is_set():
-                        was_interrupted = True
-                        break
-                    await asyncio.sleep(0.05)
-
-                if was_interrupted:
-                    break
-
-            except Exception as e:
-                queue_message(f"ERROR: Failed to play chunk: {e}")
-                if synthesis_done.is_set() and audio_queue.empty():
-                    break
-
-        threading.Thread(target=_notify_talking_state, args=("stop_talking",), daemon=True).start()
-
-    await asyncio.gather(
-        synthesize_chunks(),
-        play_chunks()
-    )
-    return was_interrupted
+    error = "; ".join(playback_errors)
+    if not audio_played and not was_interrupted and not error:
+        error = f"TTS backend '{config}' produced no audio"
+    result = PlaybackResult(was_interrupted, audio_played, error)
+    return result if return_status else result.interrupted

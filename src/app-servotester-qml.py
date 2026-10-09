@@ -90,6 +90,17 @@ SERVO_DEFINITIONS = {
     },
 }
 
+MOVEMENT_CATEGORIES = ("Locomotion", "Body", "Arms", "All")
+LOCOMOTION_MOVEMENTS = {
+    "step_forward", "walk_forward", "step_backward", "walk_backward",
+    "turn_left", "turn_left_slow", "turn_right", "turn_right_slow",
+    "neutral_legs",
+}
+BODY_MOVEMENTS = {
+    "pose", "bow", "tilt_right", "tilt_left", "side_side",
+    "wave_right", "wave_left", "excited", "laugh", "swing_legs",
+}
+
 
 def _is_raspberry_pi() -> bool:
     try:
@@ -134,6 +145,7 @@ class ServoCalibrationController(QObject):
     stateChanged = Signal()
     statusChanged = Signal()
     profileChanged = Signal()
+    movementsChanged = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -143,6 +155,7 @@ class ServoCalibrationController(QObject):
         self._hardware_connected = False
         self._hardware_error = ""
         self._movement_active = False
+        self._movement_category = "Locomotion"
 
         self._servos = {}
         for servo_id, definition in SERVO_DEFINITIONS.items():
@@ -229,6 +242,45 @@ class ServoCalibrationController(QObject):
     @Property(float, constant=True)
     def batteryVoltage(self) -> float:
         return self._voltage
+
+    @Property(bool, notify=stateChanged)
+    def movementActive(self) -> bool:
+        return self._movement_active
+
+    @Property("QVariantList", constant=True)
+    def movementCategories(self) -> list[str]:
+        return list(MOVEMENT_CATEGORIES)
+
+    @Property(str, notify=movementsChanged)
+    def movementCategory(self) -> str:
+        return self._movement_category
+
+    @Property("QVariantList", notify=movementsChanged)
+    def movementPresets(self) -> list[dict]:
+        from modules.module_movement_registry import HAS_ARMS, MOVEMENTS
+
+        arms_present = str(self._servo_config.get("arms_present", "false")).lower() in (
+            "1", "true", "yes", "on"
+        )
+        presets = []
+        for key, metadata in MOVEMENTS.items():
+            if key in LOCOMOTION_MOVEMENTS:
+                category = "Locomotion"
+            elif key in BODY_MOVEMENTS:
+                category = "Body"
+            else:
+                category = "Arms"
+            if self._movement_category != "All" and category != self._movement_category:
+                continue
+            needs_arms = metadata["type"] == HAS_ARMS
+            presets.append({
+                "key": key,
+                "name": metadata["name"],
+                "category": category,
+                "needsArms": needs_arms,
+                "available": not self._hardware_connected or not needs_arms or arms_present,
+            })
+        return presets
 
     @Property(QUrl, constant=True)
     def tarsImageUrl(self) -> QUrl:
@@ -318,24 +370,34 @@ class ServoCalibrationController(QObject):
         if servo:
             self.setServoValue(servo_id, servo["value"] + delta)
 
-    def _run_movement_worker(self, movement: str) -> None:
-        functions = {
-            "Step Forward": "step_forward", "Walk Forward": "walk_forward",
-            "Turn Left": "turn_left", "Turn Right": "turn_right",
-        }
+    def _run_movement_worker(self, movement: str, label: str) -> None:
         try:
             from modules import module_movements
-            getattr(module_movements, functions[movement])()
-            self._set_status(f"Movement complete · {movement}")
+            action = getattr(module_movements, movement, None)
+            if not callable(action):
+                raise KeyError(f"Unknown movement: {movement}")
+            completed = action()
+            if completed is False or self._servoctl.movement_stop_requested():
+                self._set_status(f"Movement stopped · {label}")
+            else:
+                self._set_status(f"Movement complete · {label}")
         except Exception as exc:
             self._set_status(f"Movement failed · {exc}")
         finally:
             self._movement_active = False
+            self.stateChanged.emit()
 
     @Slot(str)
     def runMovement(self, movement: str) -> None:
+        from modules.module_movement_registry import MOVEMENTS
+
+        metadata = MOVEMENTS.get(movement)
+        if metadata is None:
+            self._set_status(f"Unknown movement · {movement}")
+            return
+        label = metadata["name"]
         if not self._hardware_connected:
-            self._set_status(f"Mock movement: {movement}")
+            self._set_status(f"Mock movement · {label}")
             return
         if not self._servo_power:
             self._set_status("Movement blocked · servo power is disabled")
@@ -344,12 +406,31 @@ class ServoCalibrationController(QObject):
             self._set_status("Movement already in progress")
             return
         self._movement_active = True
-        self._set_status(f"Running movement · {movement}")
-        threading.Thread(target=self._run_movement_worker, args=(movement,), daemon=True).start()
+        self.stateChanged.emit()
+        self._set_status(f"Running movement · {label}")
+        threading.Thread(
+            target=self._run_movement_worker,
+            args=(movement, label),
+            daemon=True,
+        ).start()
+
+    @Slot(str)
+    def setMovementCategory(self, category: str) -> None:
+        if category not in MOVEMENT_CATEGORIES or category == self._movement_category:
+            return
+        self._movement_category = category
+        self.movementsChanged.emit()
+
+    @Slot()
+    def stopMovement(self) -> None:
+        if self._hardware_connected and self._servoctl is not None:
+            self._servoctl.request_movement_stop()
+        self._set_status("Stopping movement safely…")
 
     @Slot()
     def disableServos(self) -> None:
         if self._hardware_connected:
+            self._servoctl.request_movement_stop()
             self._servoctl.disable_all_servos()
         self._servo_power = False
         self.stateChanged.emit()
@@ -364,11 +445,31 @@ class ServoCalibrationController(QObject):
 
     @Slot()
     def resetPositions(self) -> None:
-        if self._hardware_connected:
-            self._set_status("Moving all servos to their configured neutral positions")
-            threading.Thread(target=self._servoctl.reset_positions, daemon=True).start()
-        else:
+        if not self._hardware_connected:
             self._set_status("Mock reset · calibration values were not changed")
+            return
+        if not self._servo_power:
+            self._set_status("Neutral position blocked · servo power is disabled")
+            return
+        if self._movement_active:
+            self._set_status("Movement already in progress")
+            return
+
+        def reset_worker() -> None:
+            guarded_reset = self._servoctl.movement_command(self._servoctl.reset_positions)
+            try:
+                completed = guarded_reset()
+                self._set_status("Neutral position restored" if completed else "Neutral reset stopped")
+            except Exception as exc:
+                self._set_status(f"Neutral reset failed · {exc}")
+            finally:
+                self._movement_active = False
+                self.stateChanged.emit()
+
+        self._movement_active = True
+        self.stateChanged.emit()
+        self._set_status("Moving all servos to their configured neutral positions")
+        threading.Thread(target=reset_worker, daemon=True).start()
 
     def _write_offsets(self) -> None:
         if self._config_path is None:
@@ -439,6 +540,7 @@ class ServoCalibrationController(QObject):
     def shutdown(self) -> None:
         if self._hardware_connected:
             try:
+                self._servoctl.request_movement_stop()
                 self._servoctl.disable_all_servos()
             except Exception as exc:
                 print(f"[SERVO TESTER] Shutdown warning: {exc}", file=sys.stderr)

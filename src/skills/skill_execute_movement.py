@@ -15,6 +15,7 @@ SKILL = {
      * "backward" - walk backward
      * "left" - turn left slowly
      * "right" - turn right slowly
+     * "stop" - stop the active movement
    Do NOT infer or guess movement from suggestions or questions
    Parameters: {{"movements": ["forward", "backward", "left", "right"]}}
    Example: {{"function": "execute_movement", "parameters": {{"movements": ["forward", "forward", "left"]}}}}""",
@@ -32,16 +33,23 @@ def _execute_movement(movements):
 
     # Lazy import servo functions
     try:
-        from modules.module_servoctl import step_forward, walk_backward, turn_right_slow, turn_left_slow
+        from modules.module_servoctl import (
+            request_movement_stop,
+            walk_forward,
+            walk_backward,
+            turn_right_slow,
+            turn_left_slow,
+        )
     except ImportError:
         queue_message("[ERROR] Servo control module not available.")
         return
 
     action_map = {
-        "forward": step_forward,
+        "forward": walk_forward,
         "backward": walk_backward,
         "left": turn_left_slow,
         "right": turn_right_slow,
+        "stop": request_movement_stop,
     }
 
     def movement_task():

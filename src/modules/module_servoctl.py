@@ -20,6 +20,9 @@ This license applies only to this file and does not override licenses of other f
 from __future__ import division
 import time
 import os
+import math
+import threading
+from functools import wraps
 import board
 import busio
 from adafruit_pca9685 import PCA9685
@@ -36,6 +39,56 @@ NEUTRAL_RIGHT_LEG = 300
 
 global_arm_speed = 0.5
 global_easing_strength = 0.6
+
+SERVO_UPDATE_HZ = 50.0
+SERVO_MIN_PULSE = 10
+SERVO_MAX_PULSE = 600
+
+_movement_stop_event = threading.Event()
+_movement_command_lock = threading.RLock()
+
+
+class MovementCancelled(RuntimeError):
+    """Raised internally when an active movement is asked to stop."""
+
+
+def request_movement_stop():
+    """Request a prompt, cooperative stop of the active movement."""
+    _movement_stop_event.set()
+
+
+def movement_stop_requested():
+    return _movement_stop_event.is_set()
+
+
+def movement_command(function):
+    """Serialize public movement commands and make them cancellable.
+
+    Existing movement functions already own the MOVING flag and lifecycle
+    callbacks.  This wrapper adds the missing cross-thread lock without
+    changing their public API.
+    """
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if not _movement_command_lock.acquire(blocking=False):
+            queue_message(f"MOVEMENT: Busy; ignored {function.__name__}")
+            return False
+        _movement_stop_event.clear()
+        try:
+            function(*args, **kwargs)
+            return not _movement_stop_event.is_set()
+        except MovementCancelled:
+            queue_message(f"MOVEMENT: Stopped {function.__name__}")
+            return False
+        finally:
+            _movement_command_lock.release()
+    return wrapped
+
+
+def wait_for_movement(seconds):
+    """Cancellable replacement for sleeps inside newly defined gaits."""
+    if seconds > 0 and _movement_stop_event.wait(seconds):
+        raise MovementCancelled()
 
 SERVO_POSITIONS_FILE = os.path.expanduser("~/.servo_positions.json")
 
@@ -403,35 +456,36 @@ def reset_positions():
 
     disable_all_servos()
 
-def move_servos_synchronized(movements, speed_factor, easing_strength=None):
+def move_servos_timed(movements, duration, easing_strength=None):
     """
-    Move multiple servos simultaneously.
+    Move multiple servos to their targets over a fixed duration at 50 Hz.
     
     Parameters:
     - movements: List of (channel, target_value) tuples
-    - speed_factor: Speed multiplier (0.0-1.0, higher is faster)
+    - duration: Total move duration in seconds
     - easing_strength: Easing amount (None uses global default, 0 = linear, higher = more ease in/out)
     """
     global _channels_initialized
-    
+
+    if _movement_stop_event.is_set():
+        raise MovementCancelled()
+
     effective_easing = easing_strength if easing_strength is not None else global_easing_strength
-    
+    effective_easing = max(0.0, min(1.0, float(effective_easing)))
     signal_servo_activity()
-    
+
     servo_data = []
     hold_channels = []
-    has_uninitialized_channel = False
-    
+
     for channel, target_value in movements:
         if target_value is None:
             continue
-        
+
         if channel not in _channels_initialized:
-            has_uninitialized_channel = True
             _channels_initialized.add(channel)
-            
+
         current_value = servo_positions.get(channel, None)
-        
+
         if current_value is None:
             neutral_positions = {
                 0: leftNeutralHeight,
@@ -447,78 +501,90 @@ def move_servos_synchronized(movements, speed_factor, easing_strength=None):
             }
             current_value = neutral_positions.get(channel, 300)
             servo_positions[channel] = current_value
-        
+
         if target_value == -1:
             hold_channels.append((channel, current_value))
             continue
-        
+
+        target_value = int(round(target_value))
+        if not SERVO_MIN_PULSE <= target_value <= SERVO_MAX_PULSE:
+            raise ValueError(
+                f"Unsafe PWM target {target_value} on channel {channel}; "
+                f"allowed range is {SERVO_MIN_PULSE}-{SERVO_MAX_PULSE}"
+            )
         if current_value == target_value:
             continue
-        
-        distance = abs(target_value - current_value)
-        step = 1 if target_value > current_value else -1
-        
+
         servo_data.append({
             'channel': channel,
-            'current': current_value,
+            'start': int(current_value),
+            'last': int(current_value),
             'target': target_value,
-            'step': step,
-            'distance': distance,
-            'steps_taken': 0
         })
-    
+
     for channel, value in hold_channels:
-        set_servo_pwm(channel, value)
-    
+        if not set_servo_pwm(channel, value):
+            raise RuntimeError(f"Unable to hold servo channel {channel}")
+
     if not servo_data:
         return
-    
+
     try:
         from modules.module_cputemp import record_movement
         record_movement()
     except Exception:
         pass
-    
-    max_distance = max(s['distance'] for s in servo_data)
-    
-    if has_uninitialized_channel:
-        effective_speed = min(speed_factor, 0.3)
-    else:
-        effective_speed = speed_factor
-    
-    base_delay = 0.02 * (1.0 - effective_speed)
-    
-    while any(s['current'] != s['target'] for s in servo_data):
+
+    duration = max(1.0 / SERVO_UPDATE_HZ, float(duration))
+    frame_count = max(1, int(math.ceil(duration * SERVO_UPDATE_HZ)))
+    frame_period = duration / frame_count
+    started_at = time.monotonic()
+
+    for frame in range(1, frame_count + 1):
+        if _movement_stop_event.is_set():
+            raise MovementCancelled()
+
+        linear_progress = frame / frame_count
+        smooth_progress = linear_progress * linear_progress * (3.0 - 2.0 * linear_progress)
+        progress = (
+            linear_progress * (1.0 - effective_easing)
+            + smooth_progress * effective_easing
+        )
+
         for servo in servo_data:
-            if servo['current'] != servo['target']:
-                servo['current'] += servo['step']
-                set_servo_pwm(servo['channel'], servo['current'])
-                servo['steps_taken'] += 1
-        
-        if max_distance > 0:
-            progress = min(s['steps_taken'] for s in servo_data if s['current'] != s['target'] or s['steps_taken'] > 0) / max_distance
-        else:
-            progress = 1.0
-        
-        if effective_easing > 0:
-            if progress < 0.5:
-                eased = 2 * progress * progress
-            else:
-                eased = 1 - 2 * (1 - progress) * (1 - progress)
-            delay_multiplier = 1.0 + effective_easing * (1.0 - 4 * (eased - 0.5) ** 2)
-        else:
-            delay_multiplier = 1.0
-        
-        time.sleep(base_delay * delay_multiplier)
-    
+            value = int(round(servo['start'] + (servo['target'] - servo['start']) * progress))
+            if value == servo['last']:
+                continue
+            if not set_servo_pwm(servo['channel'], value):
+                raise RuntimeError(f"Servo write failed on channel {servo['channel']}")
+            servo['last'] = value
+            servo_positions[servo['channel']] = value
+
+        remaining = started_at + frame * frame_period - time.monotonic()
+        if remaining > 0 and _movement_stop_event.wait(remaining):
+            raise MovementCancelled()
+
     for servo in servo_data:
         servo_positions[servo['channel']] = servo['target']
-    
-    _save_servo_positions()
-    
+
     signal_servo_activity()
-    
-    time.sleep(0.05)
+
+
+def move_servos_synchronized(movements, speed_factor, easing_strength=None):
+    """Backward-compatible speed API backed by synchronized timed motion."""
+    active = []
+    for channel, target_value in movements:
+        if target_value is None or target_value == -1:
+            continue
+        start = servo_positions.get(channel)
+        if start is not None:
+            active.append(abs(int(round(target_value)) - int(start)))
+
+    max_distance = max(active, default=0)
+    speed = max(0.05, min(1.0, float(speed_factor)))
+    ticks_per_second = 70.0 + 230.0 * speed
+    duration = max(0.10, max_distance / ticks_per_second)
+    move_servos_timed(movements, duration, easing_strength=easing_strength)
 
 def move_legs(left_height_percent=None, right_height_percent=None, left_leg_percent=None, right_leg_percent=None, speed_factor=1.0):
     """
@@ -558,6 +624,25 @@ def move_legs(left_height_percent=None, right_height_percent=None, left_leg_perc
         movements.append((3, target_value))
 
     move_servos_synchronized(movements, speed_factor)
+
+
+def move_legs_timed(left_height_percent=None, right_height_percent=None,
+                    left_leg_percent=None, right_leg_percent=None,
+                    duration=0.3, easing_strength=None):
+    """Move the four leg servos as one coordinated, duration-based pose."""
+    def percentage_to_value(percent, min_val, max_val):
+        if percent is None or percent == 0:
+            return None
+        normalized = (percent - 1) / 99.0
+        return int(round(min_val + (max_val - min_val) * normalized))
+
+    movements = [
+        (0, percentage_to_value(left_height_percent, leftUpHeight, leftDownHeight)),
+        (1, percentage_to_value(right_height_percent, rightUpHeight, rightDownHeight)),
+        (2, percentage_to_value(left_leg_percent, forwardLeftLeg, backLeftLeg)),
+        (3, percentage_to_value(right_leg_percent, forwardRightLeg, backRightLeg)),
+    ]
+    move_servos_timed(movements, duration, easing_strength=easing_strength)
 
 def move_arm(left_main=None, left_forearm=None, left_hand=None,
              right_main=None, right_forearm=None, right_hand=None, speed_factor=1.0):

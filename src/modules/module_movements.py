@@ -20,6 +20,7 @@ import time
 import modules.module_servoctl as servoctl
 
 move_legs = servoctl.move_legs
+move_legs_timed = servoctl.move_legs_timed
 move_arm = servoctl.move_arm
 disable_all_servos = servoctl.disable_all_servos
 HOLD = servoctl.HOLD
@@ -36,174 +37,75 @@ def get_swap_turn_directions() -> bool:
     return _swap_directions
 
 
+def _gait_profile(fast=False):
+    """Return conservative gait geometry and timing for this chassis."""
+    # Arms raise the centre of mass, so use a little more weight transfer but
+    # avoid the old 95% height extremes that made the robot lunge.
+    weight_shift = 18 if servoctl.ARMS_PRESENT else 15
+    stride = 21 if servoctl.ARMS_PRESENT else 18
+    if fast:
+        return weight_shift, stride, (0.18, 0.22, 0.16)
+    return weight_shift, stride, (0.30, 0.34, 0.24)
+
+
+def _run_walk(direction, cycles, fast=False):
+    """Run a balanced six-phase walking gait in either direction."""
+    if servoctl.MOVING:
+        return
+
+    servoctl.MOVING = True
+    servoctl._notify_movement_start()
+    try:
+        shift, stride, timings = _gait_profile(fast=fast)
+        transfer_time, swing_time, plant_time = timings
+        stride_target = 50 - stride if direction == "forward" else 50 + stride
+        left_up, left_down = 50 - shift, 50 + shift
+        right_up, right_down = 50 - shift, 50 + shift
+
+        move_legs_timed(50, 50, 50, 50, duration=0.24 if fast else 0.34)
+
+        for _ in range(cycles):
+            # Load the right side, advance the unloaded left foot, then plant.
+            move_legs_timed(left_up, right_down, 50, 50, duration=transfer_time)
+            move_legs_timed(left_up, right_down, stride_target, 50, duration=swing_time)
+            move_legs_timed(50, 50, stride_target, 50, duration=plant_time)
+
+            # Transfer onto the left side while the chassis advances, then
+            # swing and plant the right foot.
+            move_legs_timed(left_down, right_up, 50, 50, duration=transfer_time)
+            move_legs_timed(left_down, right_up, 50, stride_target, duration=swing_time)
+            move_legs_timed(50, 50, 50, stride_target, duration=plant_time)
+
+        # Unload the final advanced foot before bringing it home. This avoids
+        # dragging it across the floor from a fully weighted neutral stance.
+        move_legs_timed(left_down, right_up, 50, stride_target, duration=transfer_time)
+        move_legs_timed(left_down, right_up, 50, 50, duration=swing_time)
+        move_legs_timed(50, 50, 50, 50, duration=plant_time)
+        servoctl.wait_for_movement(0.12)
+        disable_all_servos()
+    finally:
+        servoctl.MOVING = False
+        servoctl._notify_movement_end()
+
+
 def step_forward():
-    if not servoctl.MOVING:
-        servoctl.MOVING = True
-        servoctl._notify_movement_start()
-        try:
-
-            if not servoctl.ARMS_PRESENT:
-                move_legs(50, 50, 50, 50, 0.9)
-                move_legs(42, 42, 40, 40, 0.9)
-                move_legs(70, 70, 23, 23, 0.9)
-                move_legs(30, 30, 30, 30, 0.8)
-                move_legs(70, 70, 35, 35, 0.9)
-                move_legs(60, 60, 50, 50, 0.9)
-                move_legs(50, 50, 50, 50, 0.9)
-            
-
-            if servoctl.ARMS_PRESENT:
-                move_legs(50, 50, 50, 50, 0.9)
-                move_legs(32, 32, 25, 25, 0.9)
-                move_legs(88, 88, 8, 8, 1)
-                move_legs(15, 15, 17, 17, 0.9)
-                move_legs(75, 75, 24, 24, 0.9)
-                move_legs(70, 70, 50, 50, 0.9)
-                move_legs(50, 50, 50, 50, 0.9)
-
-            time.sleep(0.1)
-            disable_all_servos()
-        finally:
-            servoctl.MOVING = False
-            servoctl._notify_movement_end()
+    """One quick, controlled forward gait cycle."""
+    _run_walk("forward", cycles=1, fast=True)
 
 
 def walk_forward():
-    if not servoctl.MOVING:
-        servoctl.MOVING = True
-        servoctl._notify_movement_start()
-        try:
-
-            if not servoctl.ARMS_PRESENT:
-                move_legs(50, 50, 50, 50, 0.8)
-                sequence = [
-                    (40, 70, 50, 50),
-                    (40, 70, 35, 50),
-                    (50, 50, 35, 50),
-                    (70, 40, 50, 50),
-                    (70, 40, 50, 35),
-                    (50, 50, 50, 35),
-                ]
-                for _ in range(2):
-                    for a, b, c, d in sequence:
-                        move_legs(a, b, c, d, 0.5)
-                for a, b, c, d in sequence[:3]:
-                    move_legs(a, b, c, d, 0.5)
-                move_legs(70, 40, 35, 50, 0.5)
-                move_legs(70, 40, 50, 50, 0.5)
-                move_legs(50, 50, 50, 50, 0.8)
-
-            if servoctl.ARMS_PRESENT:
-                move_legs(50, 50, 50, 50, 0.8)
-                sequence = [
-                    (50, 95, 50, 50),
-                    (50, 95, 25, 50),
-                    (50, 50, 25, 50),
-                    (95, 50, 50, 50),
-                    (95, 50, 50, 25),
-                    (50, 50, 50, 25),
-                ]
-                for _ in range(2):
-                    for a, b, c, d in sequence:
-                        move_legs(a, b, c, d, 0.9)
-                for a, b, c, d in sequence[:3]:
-                    move_legs(a, b, c, d, 0.9)
-                move_legs(95, 50, 25, 50, 0.9)
-                move_legs(95, 50, 50, 50, 0.9)
-                move_legs(50, 50, 50, 50, 0.8)
-
-
-            time.sleep(0.1)
-            disable_all_servos()
-        finally:
-            servoctl.MOVING = False
-            servoctl._notify_movement_end()
+    """Two stable forward gait cycles."""
+    _run_walk("forward", cycles=2, fast=False)
 
 
 def step_backward():
-    if not servoctl.MOVING:
-        servoctl.MOVING = True
-        servoctl._notify_movement_start()
-        try:
-
-            if not servoctl.ARMS_PRESENT:
-                move_legs(50, 50, 50, 50, 0.9)
-                move_legs(30, 30, 55, 55, 0.8)
-                move_legs(68, 68, 82, 82, 0.8)
-                move_legs(30, 30, 70, 70, 0.8)
-                move_legs(50, 50, 62, 62, 0.9)
-                move_legs(65, 65, 50, 50, 0.9)
-                move_legs(50, 50, 50, 50, 0.9)
-
-            
-            if servoctl.ARMS_PRESENT:
-                move_legs(50, 50, 50, 50, 0.9)
-                move_legs(22, 22, 50, 50, 0.9)
-                move_legs(22, 22, 80, 80, 0.9)
-                move_legs(68, 68, 92, 92, 0.9)
-                move_legs(15, 15, 83, 83, 0.9)
-                move_legs(75, 75, 76, 76, 0.9)
-                move_legs(70, 70, 50, 50, 0.9)
-                move_legs(50, 50, 50, 50, 0.9)
-            
-            
-            time.sleep(0.1)
-            disable_all_servos()
-        finally:
-            servoctl.MOVING = False
-            servoctl._notify_movement_end()
+    """One quick, controlled backward gait cycle."""
+    _run_walk("backward", cycles=1, fast=True)
 
 
 def walk_backward():
-    if not servoctl.MOVING:
-        servoctl.MOVING = True
-        servoctl._notify_movement_start()
-        try:
-
-            if not servoctl.ARMS_PRESENT:
-                move_legs(50, 50, 50, 50, 0.8)
-                sequence = [
-                    (50, 65, 50, 50),
-                    (50, 65, 50, 75),
-                    (50, 50, 50, 75),
-                    (65, 50, 50, 50),
-                    (65, 50, 75, 50),
-                    (50, 50, 75, 50),
-                ]
-                for _ in range(2):
-                    for a, b, c, d in sequence:
-                        move_legs(a, b, c, d, 0.5)
-                for a, b, c, d in sequence[:3]:
-                    move_legs(a, b, c, d, 0.5)
-                move_legs(65, 50, 50, 75, 0.5)
-                move_legs(65, 50, 50, 50, 0.5)
-                move_legs(50, 50, 50, 50, 0.8)
-
-            if servoctl.ARMS_PRESENT:
-                move_legs(50, 50, 50, 50, 0.8)
-                sequence = [
-                    (95, 40, 50, 50),
-                    (95, 40, 50, 75),
-                    (50, 40, 50, 75),
-                    (40, 95, 50, 50),
-                    (40, 95, 75, 50),
-                    (40, 50, 75, 50),
-                ]
-                for _ in range(2):
-                    for a, b, c, d in sequence:
-                        move_legs(a, b, c, d, 0.9)
-                for a, b, c, d in sequence[:3]:
-                    move_legs(a, b, c, d, 0.9)
-                move_legs(50, 95, 50, 75, 0.9)
-                move_legs(50, 95, 50, 50, 0.9)
-                move_legs(50, 50, 50, 50, 0.8)
-
-                
-            time.sleep(0.1)
-            disable_all_servos()
-        finally:
-            servoctl.MOVING = False
-            servoctl._notify_movement_end()
+    """Two stable backward gait cycles."""
+    _run_walk("backward", cycles=2, fast=False)
 
 
 def _turn_right_impl():
@@ -1156,3 +1058,21 @@ def ventilate_off():
             servoctl.MOVING = was_moving
             if not was_moving:
                 servoctl._notify_movement_end()
+
+
+# All user-facing presets share one non-blocking command lock. This prevents
+# controller, voice, and UI threads from entering two pose scripts at once.
+_SERIALIZED_MOVEMENTS = (
+    "step_forward", "walk_forward", "step_backward", "walk_backward",
+    "turn_right", "turn_right_slow", "turn_left", "turn_left_slow",
+    "right_hi", "left_hi", "laugh", "excited", "swing_legs",
+    "left_pezz_dispenser", "right_pezz_dispenser", "monster", "pose",
+    "bow", "tilt_right", "tilt_left", "side_side", "wave_right",
+    "wave_left", "neutral_legs", "left_point", "right_point",
+    "left_poke", "right_poke", "left_wave_open", "right_wave_open",
+    "left_shy_wave", "right_shy_wave", "happy_dance",
+)
+
+for _movement_name in _SERIALIZED_MOVEMENTS:
+    if _movement_name in globals():
+        globals()[_movement_name] = servoctl.movement_command(globals()[_movement_name])

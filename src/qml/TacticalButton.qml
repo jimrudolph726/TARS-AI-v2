@@ -4,54 +4,41 @@ Rectangle {
     id: root
     property string text: "BUTTON"
     property string iconText: ""
-    property color accent: "#d7e0e4"
-    property bool danger: false
+    property color accent: "#84939a"
     property bool primary: false
     property bool enabled: true
     signal clicked()
-
-    implicitHeight: 42
-    implicitWidth: 120
+    implicitHeight: 40
+    implicitWidth: 110
     radius: 5
-    color: mouse.pressed ? "#263139"
-          : mouse.containsMouse ? "#1a252b"
-          : primary ? Qt.rgba(accent.r, accent.g, accent.b, 0.12)
-          : "#111b20"
+    color: mouse.pressed ? "#28343a"
+          : mouse.containsMouse ? "#182329"
+          : primary ? Qt.rgba(accent.r, accent.g, accent.b, 0.13)
+          : "#10191e"
     border.width: primary ? 2 : 1
-    border.color: root.enabled ? root.accent : "#445058"
-    opacity: root.enabled ? 1.0 : 0.45
-
-    Rectangle {
-        anchors.fill: parent
-        radius: parent.radius
-        color: "transparent"
-        border.width: root.primary && mouse.containsMouse ? 1 : 0
-        border.color: "#ffffff"
-        opacity: 0.35
-    }
-
+    border.color: enabled ? accent : "#39454a"
+    opacity: enabled ? 1.0 : 0.42
     Row {
         anchors.centerIn: parent
-        spacing: 8
+        spacing: 6
         Text {
             visible: root.iconText.length > 0
             text: root.iconText
             color: root.accent
-            font.pixelSize: 20
+            font.pixelSize: 14
             font.bold: true
-            anchors.verticalCenter: parent.verticalCenter
         }
         Text {
+            width: Math.min(implicitWidth, root.width - (root.iconText.length > 0 ? 28 : 12))
             text: root.text
-            color: root.enabled ? "#edf2f4" : "#7b878d"
-            font.family: "Segoe UI"
-            font.pixelSize: 11
+            color: root.enabled ? "#e8eef0" : "#778288"
+            horizontalAlignment: Text.AlignHCenter
+            elide: Text.ElideRight
+            font.pixelSize: 10
             font.bold: true
-            font.letterSpacing: 0.7
-            anchors.verticalCenter: parent.verticalCenter
+            font.letterSpacing: 0.4
         }
     }
-
     MouseArea {
         id: mouse
         anchors.fill: parent

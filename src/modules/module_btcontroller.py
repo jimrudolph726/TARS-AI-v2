@@ -20,6 +20,7 @@ entire project or repository in which it may be included.
 
 import evdev
 import time
+import threading
 from evdev import InputDevice, list_devices
 
 from modules.module_config import load_config
@@ -41,6 +42,7 @@ last_dpad_time = 0
 DEBOUNCE_TIME = 0.1
 
 controller_search_notified = False
+_movement_thread = None
 
 def get_movement(name):
     return getattr(movements, name, None)
@@ -77,10 +79,23 @@ def find_controller(controller_name):
     return None
 
 def execute_movement(name):
+    global _movement_thread
     func = get_movement(name)
     if func:
+        if _movement_thread is not None and _movement_thread.is_alive():
+            queue_message(f"CTRL: Movement busy; ignored {MOVEMENTS[name]['name']}")
+            return
         queue_message(f"CTRL: {MOVEMENTS[name]['name']}")
-        func()
+        _movement_thread = threading.Thread(target=func, daemon=True, name=f"movement-{name}")
+        _movement_thread.start()
+
+
+def stop_active_movement():
+    try:
+        from modules.module_servoctl import request_movement_stop
+        request_movement_stop()
+    except Exception as exc:
+        queue_message(f"CTRL: Unable to stop movement: {exc}")
 
 def start_controls():
     global gamepad_path, l2_held, r1_held, r2_held, dpad_state, last_dpad_time
@@ -184,6 +199,8 @@ def start_controls():
                                 execute_movement("step_backward")
                             else:
                                 execute_movement("walk_backward")
+                        elif dpad_state["x"] == 0:
+                            stop_active_movement()
                 
                 elif event.code in [evdev.ecodes.ABS_HAT0X, evdev.ecodes.ABS_X]:
                     if dpad_state["y"] != 0:
@@ -205,6 +222,8 @@ def start_controls():
                                 execute_movement("turn_right")
                             else:
                                 execute_movement("turn_right_slow")
+                        elif dpad_state["y"] == 0:
+                            stop_active_movement()
 
     except (OSError, IOError) as e:
         queue_message(f"Controller disconnected: {e}")

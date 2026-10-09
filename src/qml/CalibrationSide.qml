@@ -1,25 +1,63 @@
 import QtQuick
 
-Panel {
+Rectangle {
     id: root
     required property var servoModel
     required property string sideName
-    property color panelAccent: "#ff3852"
-    accent: panelAccent
-    title: sideName + " SIDE"
-    subtitle: sideName + " LEG & " + sideName + " ARM CALIBRATION"
-    iconText: sideName === "LEFT" ? "◁" : "▷"
+    property color panelAccent: "#ff3b52"
+    color: "#091115"
+    radius: 7
+    border.color: "#28353b"
 
-    contentItem: Column {
-        anchors.fill: parent
-        spacing: 5
+    Rectangle {
+        id: sideHeader
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: 38
+        color: "#0d171b"
+        radius: 7
+        Rectangle {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width: 3
+            height: 22
+            color: root.panelAccent
+        }
+        Text {
+            anchors.left: parent.left
+            anchors.leftMargin: 13
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.sideName + " SIDE"
+            color: "#eef3f5"
+            font.pixelSize: 13
+            font.bold: true
+            font.letterSpacing: 1.4
+        }
+        Text {
+            anchors.right: parent.right
+            anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            text: "LEG · ARM"
+            color: "#7f8d93"
+            font.family: "Consolas"
+            font.pixelSize: 9
+        }
+    }
 
+    Column {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: sideHeader.bottom
+        anchors.bottom: parent.bottom
+        anchors.margins: 6
+        spacing: 4
         Repeater {
             model: root.servoModel
             delegate: ServoControl {
                 required property var modelData
                 width: parent.width
-                height: (parent.height - 20) / 5
+                height: (parent.height - 16) / 5
                 servoId: modelData.id
                 label: modelData.label
                 servoValue: modelData.value

@@ -23,6 +23,8 @@ class TarsRuntime(threading.Thread):
         self.shutdown_event = threading.Event()
         self._shutdown_device = False
         self._startup_failed = False
+        self._notify_lock = threading.Lock()
+        self._runtime_stopped_notified = False
 
         self.battery = None
         self.cpu_temp = None
@@ -34,13 +36,21 @@ class TarsRuntime(threading.Thread):
     def request_stop(self) -> None:
         self.shutdown_event.set()
         if not self.is_alive():
-            self.ui.notify_runtime_stopped()
+            self._notify_runtime_stopped_once()
 
     def request_shutdown(self) -> None:
         self._shutdown_device = True
         self.shutdown_event.set()
         if not self.is_alive():
             self._power_off()
+
+    def _notify_runtime_stopped_once(self) -> None:
+        """Emit the Qt completion signal at most once per process."""
+        with self._notify_lock:
+            if self._runtime_stopped_notified:
+                return
+            self._runtime_stopped_notified = True
+        self.ui.notify_runtime_stopped()
 
     def _status(self, text: str, ready: bool = False) -> None:
         self.ui.set_runtime_status(text, ready)
@@ -71,7 +81,7 @@ class TarsRuntime(threading.Thread):
             if self._shutdown_device:
                 self._power_off()
             elif self.shutdown_event.is_set():
-                self.ui.notify_runtime_stopped()
+                self._notify_runtime_stopped_once()
 
     def _initialize_and_run(self) -> None:
         from modules.module_messageQue import queue_message
@@ -366,5 +376,5 @@ class TarsRuntime(threading.Thread):
             subprocess.Popen(["sudo", "shutdown", "now"])
         except Exception as exc:
             self.ui.update_data("SYSTEM", f"Shutdown command failed: {exc}", "ERROR")
-            self.ui.notify_runtime_stopped()
+            self._notify_runtime_stopped_once()
 

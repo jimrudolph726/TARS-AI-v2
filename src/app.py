@@ -159,8 +159,10 @@ def main() -> int:
 
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
-    app.aboutToQuit.connect(runtime.request_stop)
-    app.aboutToQuit.connect(controller.stop)
+    # Do not connect aboutToQuit back into runtimeStopped -> app.quit.  If the
+    # runtime finishes between emitting runtimeStopped and Qt processing that
+    # signal, request_stop() sees a dead thread and emits runtimeStopped again,
+    # creating a recursive quit loop. Cleanup runs immediately after exec().
 
     runtime.start()
     exit_code = app.exec()

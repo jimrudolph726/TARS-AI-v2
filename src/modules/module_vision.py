@@ -80,7 +80,11 @@ def initialize_blip():
         if _processor is not None and _model is not None:
             return
         queue_message("INFO: Initializing BLIP model...")
-        _processor = BlipProcessor.from_pretrained(MODEL_NAME, cache_dir=str(CACHE_DIR), use_fast=False)
+        _processor = BlipProcessor.from_pretrained(
+            MODEL_NAME,
+            cache_dir=str(CACHE_DIR),
+            backend="pil",
+        )
         _model = BlipForConditionalGeneration.from_pretrained(MODEL_NAME, cache_dir=str(CACHE_DIR)).to(DEVICE)
         _model = torch.quantization.quantize_dynamic(_model, {torch.nn.Linear}, dtype=torch.qint8)
         queue_message("INFO: BLIP model initialized.")

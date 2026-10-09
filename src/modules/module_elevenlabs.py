@@ -10,6 +10,13 @@ from modules.module_messageQue import queue_message
 
 CONFIG = load_config()
 
+
+class ElevenLabsQuotaError(RuntimeError):
+    """The configured ElevenLabs account cannot accept more TTS requests."""
+
+
+_elevenlabs_unavailable_reason = None
+
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tts", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -71,6 +78,11 @@ def _request_speech(text, streaming=False):
     SDK, so selecting ElevenLabs cannot silently become unavailable merely
     because that otherwise-unused package is absent from the Pi environment.
     """
+    global _elevenlabs_unavailable_reason
+
+    if _elevenlabs_unavailable_reason:
+        raise ElevenLabsQuotaError(_elevenlabs_unavailable_reason)
+
     api_key = CONFIG['TTS']['elevenlabs_api_key']
     voice_id = CONFIG['TTS']['elevenlabs_voice_id']
     model_id = CONFIG['TTS']['elevenlabs_model']
@@ -101,6 +113,16 @@ def _request_speech(text, streaming=False):
     )
     if response.status_code != 200:
         detail = response.text[:500].replace("\n", " ")
+        try:
+            error_code = response.json().get("detail", {}).get("code", "")
+        except Exception:
+            error_code = ""
+        if error_code == "quota_exceeded":
+            _elevenlabs_unavailable_reason = (
+                "ElevenLabs quota is exhausted; custom voice is disabled until "
+                "credits are available and TARS is restarted"
+            )
+            raise ElevenLabsQuotaError(_elevenlabs_unavailable_reason)
         raise RuntimeError(f"ElevenLabs API returned {response.status_code}: {detail}")
     if not response.content:
         raise RuntimeError("ElevenLabs returned an empty audio response")
@@ -128,6 +150,9 @@ async def synthesize_elevenlabs_streaming(chunk):
         audio_buffer.seek(0)
         return audio_buffer
 
+    except ElevenLabsQuotaError as e:
+        queue_message(f"ERROR: {e}")
+        return None
     except Exception as e:
         queue_message(f"ERROR: ElevenLabs streaming failed: {e}")
         import traceback
@@ -154,6 +179,9 @@ async def synthesize_elevenlabs_complete(text):
         audio_buffer.seek(0)
         return audio_buffer
 
+    except ElevenLabsQuotaError as e:
+        queue_message(f"ERROR: {e}")
+        return None
     except Exception as e:
         queue_message(f"ERROR: ElevenLabs synthesis failed: {e}")
         import traceback

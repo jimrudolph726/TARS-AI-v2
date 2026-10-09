@@ -192,6 +192,7 @@ class TarsUIController(QObject):
         self._overlay_visible = False
         self._silence_progress = 0.0
         self._running = True
+        self._stopped = False
 
         self._audio_levels = [0.0] * 35
         self._pending_audio_levels = [0.0] * 35
@@ -570,6 +571,9 @@ class TarsUIController(QObject):
         self._running = True
 
     def stop(self) -> None:
+        if self._stopped:
+            return
+        self._stopped = True
         self._running = False
         self._wifi_stop.set()
         self._audio_timer.stop()

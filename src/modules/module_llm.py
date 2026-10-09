@@ -259,11 +259,18 @@ def _prepare_request_data(llm_backend, prompt, image_b64=None, *, stream=True, j
             {"role": "system", "content": CONFIG['LLM']['systemprompt']},
             {"role": "user", "content": user_content}
         ],
-        "max_tokens": CONFIG['LLM']['max_tokens'],
-        "temperature": CONFIG['LLM']['temperature'],
-        "top_p": CONFIG['LLM']['top_p'],
         "stream": stream
     }
+
+    # gpt-6-luna uses the newer completion-token parameter and does not
+    # accept the legacy sampling controls used by the other configured
+    # backends. Preserve the Pi-tested request format for this model.
+    if llm_backend == "openai" and model == "gpt-6-luna":
+        data["max_completion_tokens"] = CONFIG['LLM']['max_tokens']
+    else:
+        data["max_tokens"] = CONFIG['LLM']['max_tokens']
+        data["temperature"] = CONFIG['LLM']['temperature']
+        data["top_p"] = CONFIG['LLM']['top_p']
 
     if json_mode and llm_backend in ["openai", "grok", "deepinfra"]:
         data["response_format"] = {"type": "json_object"}

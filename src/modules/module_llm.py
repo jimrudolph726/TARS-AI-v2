@@ -229,7 +229,7 @@ def get_completion(user_prompt, istext=True, image_b64=None, source="voice"):
         queue_message(f"ERROR: LLM request failed: {e}")
         return None
 
-def _prepare_request_data(llm_backend, prompt, image_b64=None):
+def _prepare_request_data(llm_backend, prompt, image_b64=None, *, stream=True, json_mode=True):
 
     # Build user content — multimodal if image provided, plain text otherwise
     if image_b64:
@@ -262,12 +262,12 @@ def _prepare_request_data(llm_backend, prompt, image_b64=None):
         "max_tokens": CONFIG['LLM']['max_tokens'],
         "temperature": CONFIG['LLM']['temperature'],
         "top_p": CONFIG['LLM']['top_p'],
-        "stream": True
+        "stream": stream
     }
 
-    if llm_backend in ["openai", "grok", "deepinfra"]:
+    if json_mode and llm_backend in ["openai", "grok", "deepinfra"]:
         data["response_format"] = {"type": "json_object"}
-    else:
+    elif json_mode:
         if CONFIG['LLM'].get('json_mode', True):
             data["response_format"] = {"type": "json_object"}  
 
@@ -789,7 +789,16 @@ def raw_complete_llm(user_prompt, istext=True):
         "Authorization": f"Bearer {CONFIG['LLM']['api_key']}"
     }
     llm_backend = CONFIG['LLM']['llm_backend']
-    url, data = _prepare_request_data(llm_backend, user_prompt)
+    # This helper is used for short, plain-text follow-up passes such as
+    # turning a camera caption into a natural answer.  It is intentionally
+    # non-streaming and does not force JSON mode; the normal conversation
+    # pipeline still streams structured JSON through process_completion().
+    url, data = _prepare_request_data(
+        llm_backend,
+        user_prompt,
+        stream=False,
+        json_mode=False,
+    )
 
     try:
         response = _http_session.post(url, headers=headers, json=data)
@@ -798,7 +807,15 @@ def raw_complete_llm(user_prompt, istext=True):
         return bot_reply
 
     except requests.RequestException as e:
-        queue_message(f"ERROR: LLM request failed: {e}")
+        response = getattr(e, "response", None)
+        detail = ""
+        if response is not None:
+            try:
+                detail = response.text.strip().replace("\n", " ")[:500]
+            except Exception:
+                pass
+        suffix = f" | {detail}" if detail else ""
+        queue_message(f"ERROR: LLM request failed: {e}{suffix}")
         return None
 
 def initialize_manager_llm(mem_manager, char_manager):

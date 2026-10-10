@@ -39,23 +39,24 @@ def get_swap_turn_directions() -> bool:
 
 def _body_swing_profile(direction, fast=False):
     """Return the paired-leg body-swing gait used by the original chassis."""
-    # Both feet remain planted while the leg-drive servos swing the chassis.
+    # A lower height percentage raises the chassis. Lift first, then drive both
+    # leg servos together so the body swings while both feet remain planted.
     # The feet are then unloaded together and returned beneath the body. Arms
     # add mass above the pivot, so that build gets a little more plant pressure
     # and travel while staying inside the original 8-92% motion envelope.
     if servoctl.ARMS_PRESENT:
         stride = 38
-        preload_height, planted_height, unloaded_height = 62, 78, 22
+        raised_height, planted_height, unloaded_height = 32, 78, 22
     else:
         stride = 32
-        preload_height, planted_height, unloaded_height = 60, 72, 28
+        raised_height, planted_height, unloaded_height = 38, 72, 28
 
     stride_target = 50 - stride if direction == "forward" else 50 + stride
     if fast:
-        timings = (0.16, 0.28, 0.18, 0.24, 0.18, 0.18)
+        timings = (0.22, 0.35, 0.22, 0.30, 0.22, 0.22)
     else:
-        timings = (0.24, 0.42, 0.26, 0.34, 0.24, 0.24)
-    return stride_target, preload_height, planted_height, unloaded_height, timings
+        timings = (0.30, 0.50, 0.31, 0.41, 0.30, 0.30)
+    return stride_target, raised_height, planted_height, unloaded_height, timings
 
 
 def _run_body_swing(direction, cycles, fast=False):
@@ -67,16 +68,16 @@ def _run_body_swing(direction, cycles, fast=False):
     servoctl._notify_movement_start()
     try:
         profile = _body_swing_profile(direction, fast=fast)
-        stride_target, preload_height, planted_height, unloaded_height, timings = profile
-        preload_time, swing_time, unload_time, follow_time, replant_time, neutral_time = timings
+        stride_target, raised_height, planted_height, unloaded_height, timings = profile
+        raise_time, swing_time, unload_time, follow_time, replant_time, neutral_time = timings
 
-        move_legs_timed(50, 50, 50, 50, duration=0.20 if fast else 0.30)
+        move_legs_timed(50, 50, 50, 50, duration=0.25 if fast else 0.36)
 
         for _ in range(cycles):
-            # 1. Press both feet into the floor without changing horizontal
-            # position. 2. Drive both leg servos together so the planted feet
-            # carry the chassis forward or backward.
-            move_legs_timed(preload_height, preload_height, 50, 50, duration=preload_time)
+            # 1. Raise the chassis fully without changing horizontal position.
+            # 2. Drive both leg servos together while lowering onto the planted
+            # feet, carrying the chassis forward or backward.
+            move_legs_timed(raised_height, raised_height, 50, 50, duration=raise_time)
             move_legs_timed(
                 planted_height, planted_height, stride_target, stride_target,
                 duration=swing_time,
@@ -95,7 +96,7 @@ def _run_body_swing(direction, cycles, fast=False):
 
             # 5. Replant the feet, then return to a balanced neutral height.
             move_legs_timed(
-                preload_height, preload_height, 50, 50,
+                raised_height, raised_height, 50, 50,
                 duration=replant_time,
             )
             move_legs_timed(50, 50, 50, 50, duration=neutral_time)

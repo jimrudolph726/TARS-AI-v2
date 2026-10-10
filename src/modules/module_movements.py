@@ -39,12 +39,11 @@ def get_swap_turn_directions() -> bool:
 
 def _body_swing_profile(direction, fast=False):
     """Return the paired-leg body-swing gait used by the original chassis."""
-    # A lower height percentage raises the chassis. Lift first, then drive both
-    # leg servos together so the body swings while both feet remain planted.
-    # The feet are then lifted well clear of the floor before they are returned
-    # beneath the body. Keep the stride conservative so the feet do not drag or
-    # pull the chassis past its balance point as the legs catch up. Arms add
-    # mass above the pivot, so that build gets a little more plant pressure.
+    # A lower height percentage raises the chassis. Each vertical and horizontal
+    # action is a separate keyframe: raise, swing, lower, lift, then leg return.
+    # This matches the stable manual gait and avoids moving the center of mass
+    # diagonally through the body's forward pivot. Keep the stride conservative
+    # so the feet do not drag as the legs catch up.
     if servoctl.ARMS_PRESENT:
         stride = 30
         raised_height, planted_height, unloaded_height = 32, 78, 16
@@ -54,9 +53,9 @@ def _body_swing_profile(direction, fast=False):
 
     stride_target = 50 - stride if direction == "forward" else 50 + stride
     if fast:
-        timings = (0.22, 0.35, 0.38, 0.48, 0.30, 0.26)
+        timings = (0.22, 0.35, 0.36, 0.38, 0.48, 0.30, 0.26)
     else:
-        timings = (0.30, 0.50, 0.54, 0.66, 0.40, 0.34)
+        timings = (0.30, 0.50, 0.48, 0.54, 0.66, 0.40, 0.34)
     return stride_target, raised_height, planted_height, unloaded_height, timings
 
 
@@ -70,23 +69,32 @@ def _run_body_swing(direction, cycles, fast=False):
     try:
         profile = _body_swing_profile(direction, fast=fast)
         stride_target, raised_height, planted_height, unloaded_height, timings = profile
-        raise_time, swing_time, unload_time, follow_time, replant_time, neutral_time = timings
+        (
+            raise_time, swing_time, lower_time, unload_time,
+            follow_time, replant_time, neutral_time,
+        ) = timings
 
         move_legs_timed(50, 50, 50, 50, duration=0.25 if fast else 0.36)
 
         for _ in range(cycles):
             # 1. Raise the chassis fully without changing horizontal position.
-            # 2. Drive both leg servos together while lowering onto the planted
-            # feet, carrying the chassis forward or backward.
+            # 2. Swing the raised chassis horizontally without changing height.
+            # 3. Lower the chassis vertically at the completed swing position,
+            # then let it settle securely before lifting the legs.
             move_legs_timed(raised_height, raised_height, 50, 50, duration=raise_time)
             move_legs_timed(
-                planted_height, planted_height, stride_target, stride_target,
+                raised_height, raised_height, stride_target, stride_target,
                 duration=swing_time,
             )
+            move_legs_timed(
+                planted_height, planted_height, stride_target, stride_target,
+                duration=lower_time,
+            )
+            servoctl.wait_for_movement(0.12 if fast else 0.16)
 
-            # 3. Lift both feet completely clear while preserving the chassis
+            # 4. Lift both feet completely clear while preserving the chassis
             # position. Pause briefly at full clearance before moving them.
-            # 4. Bring both legs back underneath the body with minimal drag.
+            # 5. Bring both legs back underneath the body with minimal drag.
             move_legs_timed(
                 unloaded_height, unloaded_height, stride_target, stride_target,
                 duration=unload_time,
@@ -97,7 +105,7 @@ def _run_body_swing(direction, cycles, fast=False):
                 duration=follow_time,
             )
 
-            # 5. Replant the feet, then return to a balanced neutral height.
+            # 6. Replant the feet, then return to a balanced neutral height.
             move_legs_timed(
                 raised_height, raised_height, 50, 50,
                 duration=replant_time,

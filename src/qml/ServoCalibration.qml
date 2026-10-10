@@ -344,7 +344,7 @@ ApplicationWindow {
                             Text {
                                 text: controller.diagnosticPhase < 0
                                       ? "NOT INITIALIZED"
-                                      : controller.diagnosticPhase === 8
+                                      : controller.diagnosticPhase === controller.diagnosticPhases.length
                                         ? "SEQUENCE COMPLETE"
                                         : "HOLDING PHASE " + controller.diagnosticPhase
                                 color: controller.diagnosticPhase < 0 ? window.textMuted : window.textPrimary
@@ -356,7 +356,7 @@ ApplicationWindow {
                                 wrapMode: Text.WordWrap
                                 text: controller.diagnosticPhase < 0
                                       ? "Support TARS, then start at neutral."
-                                      : controller.diagnosticPhase === 8
+                                      : controller.diagnosticPhase === controller.diagnosticPhases.length
                                         ? "Restart to repeat the test."
                                         : "Inspect stability, then press the highlighted phase."
                                 color: window.textMuted
@@ -431,7 +431,7 @@ ApplicationWindow {
                     clip: true
                     model: controller.diagnosticPhases
                     cellWidth: width / 2
-                    cellHeight: height / 4
+                    cellHeight: height / Math.ceil(Math.max(1, count) / 2)
                     interactive: false
 
                     delegate: Item {

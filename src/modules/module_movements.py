@@ -18,6 +18,7 @@ This license applies only to this file and does not override licenses of other f
 """
 import time
 import modules.module_servoctl as servoctl
+from modules.module_gait import body_swing_profile
 
 move_legs = servoctl.move_legs
 move_legs_timed = servoctl.move_legs_timed
@@ -39,24 +40,7 @@ def get_swap_turn_directions() -> bool:
 
 def _body_swing_profile(direction, fast=False):
     """Return the paired-leg body-swing gait used by the original chassis."""
-    # A lower height percentage raises the chassis. Each vertical and horizontal
-    # action is a separate keyframe: raise, swing, lower, lift, then leg return.
-    # This matches the stable manual gait and avoids moving the center of mass
-    # diagonally through the body's forward pivot. Keep the stride conservative
-    # so the feet do not drag as the legs catch up.
-    if servoctl.ARMS_PRESENT:
-        stride = 30
-        raised_height, planted_height, unloaded_height = 32, 78, 16
-    else:
-        stride = 26
-        raised_height, planted_height, unloaded_height = 38, 72, 22
-
-    stride_target = 50 - stride if direction == "forward" else 50 + stride
-    if fast:
-        timings = (0.22, 0.35, 0.36, 0.38, 0.48, 0.30, 0.26)
-    else:
-        timings = (0.30, 0.50, 0.48, 0.54, 0.66, 0.40, 0.34)
-    return stride_target, raised_height, planted_height, unloaded_height, timings
+    return body_swing_profile(direction, servoctl.ARMS_PRESENT, fast=fast)
 
 
 def _run_body_swing(direction, cycles, fast=False):

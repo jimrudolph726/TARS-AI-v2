@@ -15,10 +15,13 @@ import threading
 from copy import deepcopy
 from pathlib import Path
 
+from modules.module_gait import body_swing_diagnostic_phases
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="TARS servo calibration QML app")
     parser.add_argument("--fullscreen", action="store_true", help="open full screen")
+    parser.add_argument("--diagnostic", action="store_true", help="open the gait diagnostic tab")
     parser.add_argument("--screenshot", type=Path, help="save a screenshot and exit")
     parser.add_argument("--window-size", metavar="WIDTHxHEIGHT", help=argparse.SUPPRESS)
     backend = parser.add_mutually_exclusive_group()
@@ -146,6 +149,7 @@ class ServoCalibrationController(QObject):
     statusChanged = Signal()
     profileChanged = Signal()
     movementsChanged = Signal()
+    diagnosticsChanged = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -156,6 +160,8 @@ class ServoCalibrationController(QObject):
         self._hardware_error = ""
         self._movement_active = False
         self._movement_category = "Locomotion"
+        self._diagnostic_direction = "forward"
+        self._diagnostic_phase = -1
 
         self._servos = {}
         for servo_id, definition in SERVO_DEFINITIONS.items():
@@ -282,6 +288,36 @@ class ServoCalibrationController(QObject):
             })
         return presets
 
+    @Property(str, notify=diagnosticsChanged)
+    def diagnosticDirection(self) -> str:
+        return self._diagnostic_direction
+
+    @Property(int, notify=diagnosticsChanged)
+    def diagnosticPhase(self) -> int:
+        return self._diagnostic_phase
+
+    @Property(str, notify=diagnosticsChanged)
+    def diagnosticProfileText(self) -> str:
+        return "ARMS PROFILE" if self._arms_present() else "NO-ARMS PROFILE"
+
+    @Property("QVariantList", notify=diagnosticsChanged)
+    def diagnosticPhases(self) -> list[dict]:
+        phases = body_swing_diagnostic_phases(
+            self._diagnostic_direction,
+            self._arms_present(),
+        )
+        result = []
+        for phase in phases:
+            item = dict(phase)
+            left_height, right_height, left_leg, right_leg = item.pop("pose")
+            item["poseText"] = (
+                f"H {left_height}/{right_height}  ·  L {left_leg}/{right_leg}"
+            )
+            item["completed"] = item["index"] <= self._diagnostic_phase
+            item["next"] = item["index"] == self._diagnostic_phase + 1
+            result.append(item)
+        return result
+
     @Property(QUrl, constant=True)
     def tarsImageUrl(self) -> QUrl:
         image_path = PROJECT_ROOT / "media" / "2026-02-03 192140.png"
@@ -301,6 +337,11 @@ class ServoCalibrationController(QObject):
             return int(self._servo_config.get(key, default))
         except (TypeError, ValueError):
             return default
+
+    def _arms_present(self) -> bool:
+        return str(self._servo_config.get("arms_present", "false")).lower() in (
+            "1", "true", "yes", "on"
+        )
 
     def _target_pulse(self, servo_id: str, offset: int) -> int:
         definition = SERVO_DEFINITIONS[servo_id]
@@ -359,6 +400,8 @@ class ServoCalibrationController(QObject):
             servo["value"] = old_value
             self.servosChanged.emit()
             return
+        self._diagnostic_phase = -1
+        self.diagnosticsChanged.emit()
         self.servosChanged.emit()
         self._set_dirty(self._servos != self._saved_servos)
         mode = "Moved" if self._hardware_connected else "Previewing"
@@ -406,6 +449,8 @@ class ServoCalibrationController(QObject):
             self._set_status("Movement already in progress")
             return
         self._movement_active = True
+        self._diagnostic_phase = -1
+        self.diagnosticsChanged.emit()
         self.stateChanged.emit()
         self._set_status(f"Running movement · {label}")
         threading.Thread(
@@ -421,6 +466,103 @@ class ServoCalibrationController(QObject):
         self._movement_category = category
         self.movementsChanged.emit()
 
+    @Slot(str)
+    def setDiagnosticDirection(self, direction: str) -> None:
+        direction = direction.lower()
+        if direction not in ("forward", "backward"):
+            return
+        if self._movement_active:
+            self._set_status("Finish or stop the active movement before changing direction")
+            return
+        if self._diagnostic_phase > 0:
+            self._set_status("Return the diagnostic to neutral before changing direction")
+            return
+        if direction == self._diagnostic_direction:
+            return
+        self._diagnostic_direction = direction
+        self._diagnostic_phase = -1
+        self.diagnosticsChanged.emit()
+        self._set_status(f"Diagnostic direction: {direction} · start from neutral")
+
+    def _complete_mock_diagnostic_phase(self, index: int, name: str) -> None:
+        self._diagnostic_phase = index
+        self.diagnosticsChanged.emit()
+        self._set_status(f"Mock diagnostic phase {index} · {name}")
+
+    def _run_diagnostic_pose(
+        self,
+        index: int,
+        name: str,
+        pose: tuple[int, int, int, int],
+        duration: float,
+    ) -> None:
+        if not self._hardware_connected:
+            self._complete_mock_diagnostic_phase(index, name)
+            return
+        if not self._servo_power:
+            self._set_status("Diagnostic blocked · servo power is disabled")
+            return
+        if self._movement_active:
+            self._set_status("Movement already in progress")
+            return
+
+        def diagnostic_worker() -> None:
+            def apply_pose() -> None:
+                self._servoctl.move_legs_timed(*pose, duration=duration)
+
+            guarded_pose = self._servoctl.movement_command(apply_pose)
+            try:
+                completed = guarded_pose()
+                if completed:
+                    self._diagnostic_phase = index
+                    self._set_status(f"Diagnostic phase {index} held · {name}")
+                else:
+                    self._set_status(f"Diagnostic phase stopped · {name}")
+            except Exception as exc:
+                self._set_status(f"Diagnostic phase failed · {exc}")
+            finally:
+                self._movement_active = False
+                self.stateChanged.emit()
+                self.diagnosticsChanged.emit()
+
+        self._movement_active = True
+        self.stateChanged.emit()
+        self._set_status(f"Applying diagnostic phase {index} · {name}")
+        threading.Thread(target=diagnostic_worker, daemon=True).start()
+
+    @Slot()
+    def startDiagnostic(self) -> None:
+        self._run_diagnostic_pose(
+            0,
+            "NEUTRAL START",
+            (50, 50, 50, 50),
+            0.40,
+        )
+
+    @Slot(int)
+    def runDiagnosticPhase(self, index: int) -> None:
+        expected = self._diagnostic_phase + 1
+        if self._diagnostic_phase < 0:
+            self._set_status("Start the diagnostic at neutral before applying phase 1")
+            return
+        if index != expected:
+            self._set_status(f"Apply phase {expected} next · diagnostic phases must stay in order")
+            return
+        phases = body_swing_diagnostic_phases(
+            self._diagnostic_direction,
+            self._arms_present(),
+        )
+        phase = next((item for item in phases if item["index"] == index), None)
+        if phase is None:
+            self._set_status(f"Unknown diagnostic phase · {index}")
+            return
+        self._run_diagnostic_pose(
+            phase["index"],
+            phase["name"],
+            phase["pose"],
+            phase["duration"],
+        )
+
     @Slot()
     def stopMovement(self) -> None:
         if self._hardware_connected and self._servoctl is not None:
@@ -433,13 +575,17 @@ class ServoCalibrationController(QObject):
             self._servoctl.request_movement_stop()
             self._servoctl.disable_all_servos()
         self._servo_power = False
+        self._diagnostic_phase = -1
         self.stateChanged.emit()
+        self.diagnosticsChanged.emit()
         self._set_status("Servo output disabled")
 
     @Slot()
     def enableServos(self) -> None:
         self._servo_power = True
+        self._diagnostic_phase = -1
         self.stateChanged.emit()
+        self.diagnosticsChanged.emit()
         self._preview_all()
         self._set_status("Servo output enabled at current calibration positions")
 
@@ -457,6 +603,7 @@ class ServoCalibrationController(QObject):
 
         def reset_worker() -> None:
             guarded_reset = self._servoctl.movement_command(self._servoctl.reset_positions)
+            completed = False
             try:
                 completed = guarded_reset()
                 self._set_status("Neutral position restored" if completed else "Neutral reset stopped")
@@ -465,6 +612,9 @@ class ServoCalibrationController(QObject):
             finally:
                 self._movement_active = False
                 self.stateChanged.emit()
+                if completed:
+                    self._diagnostic_phase = 0
+                    self.diagnosticsChanged.emit()
 
         self._movement_active = True
         self.stateChanged.emit()
@@ -558,6 +708,8 @@ def main() -> int:
     if not engine.rootObjects():
         return 1
     window = engine.rootObjects()[0]
+    if ARGS.diagnostic:
+        window.setProperty("currentPage", 2)
     if ARGS.window_size:
         try:
             width, height = (int(part) for part in ARGS.window_size.lower().split("x", 1))

@@ -94,7 +94,7 @@ ApplicationWindow {
             height: parent.height
             spacing: 4
             Repeater {
-                model: ["CALIBRATION", "MOVEMENTS"]
+                model: ["CALIBRATION", "MOVEMENTS", "GAIT DIAGNOSTIC"]
                 delegate: Rectangle {
                     required property string modelData
                     required property int index
@@ -258,6 +258,249 @@ ApplicationWindow {
                         }
                     }
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                }
+            }
+        }
+
+        RowLayout {
+            anchors.fill: parent
+            spacing: 10
+            visible: window.currentPage === 2
+
+            Rectangle {
+                Layout.preferredWidth: 205
+                Layout.fillHeight: true
+                radius: 7
+                color: "#091115"
+                border.color: "#28353b"
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    spacing: 6
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "MANUAL GAIT TEST"
+                        color: window.textPrimary
+                        font.pixelSize: 12
+                        font.bold: true
+                        font.letterSpacing: 1.2
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: controller.diagnosticProfileText
+                        color: window.green
+                        font.family: "Consolas"
+                        font.pixelSize: 9
+                        font.bold: true
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        TacticalButton {
+                            Layout.fillWidth: true
+                            height: 32
+                            text: "FORWARD"
+                            primary: controller.diagnosticDirection === "forward"
+                            accent: window.accent
+                            enabled: controller.diagnosticPhase <= 0 && !controller.movementActive
+                            onClicked: controller.setDiagnosticDirection("forward")
+                        }
+                        TacticalButton {
+                            Layout.fillWidth: true
+                            height: 32
+                            text: "BACKWARD"
+                            primary: controller.diagnosticDirection === "backward"
+                            accent: window.accent
+                            enabled: controller.diagnosticPhase <= 0 && !controller.movementActive
+                            onClicked: controller.setDiagnosticDirection("backward")
+                        }
+                    }
+
+                    TacticalButton {
+                        Layout.fillWidth: true
+                        height: 36
+                        text: controller.diagnosticPhase < 0 ? "START AT NEUTRAL" : "RESTART AT NEUTRAL"
+                        accent: "#8b9ca4"
+                        enabled: !controller.movementActive
+                        onClicked: controller.startDiagnostic()
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 62
+                        radius: 5
+                        color: "#0c1519"
+                        border.color: controller.diagnosticPhase < 0 ? "#46545a" : window.accent
+                        Column {
+                            anchors.fill: parent
+                            anchors.margins: 7
+                            spacing: 3
+                            Text {
+                                text: controller.diagnosticPhase < 0
+                                      ? "NOT INITIALIZED"
+                                      : controller.diagnosticPhase === 8
+                                        ? "SEQUENCE COMPLETE"
+                                        : "HOLDING PHASE " + controller.diagnosticPhase
+                                color: controller.diagnosticPhase < 0 ? window.textMuted : window.textPrimary
+                                font.pixelSize: 10
+                                font.bold: true
+                            }
+                            Text {
+                                width: parent.width
+                                wrapMode: Text.WordWrap
+                                text: controller.diagnosticPhase < 0
+                                      ? "Support TARS, then start at neutral."
+                                      : controller.diagnosticPhase === 8
+                                        ? "Restart to repeat the test."
+                                        : "Inspect stability, then press the highlighted phase."
+                                color: window.textMuted
+                                font.pixelSize: 8
+                            }
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        wrapMode: Text.WordWrap
+                        text: "SAFETY\nKeep one hand ready to support TARS. Each phase holds its pose until you choose the next one. POWER OFF releases servo torque immediately."
+                        color: "#b6c0c4"
+                        font.pixelSize: 8
+                        lineHeight: 1.15
+                    }
+
+                    TacticalButton {
+                        Layout.fillWidth: true
+                        height: 36
+                        text: "STOP ACTIVE PHASE"
+                        iconText: "■"
+                        accent: window.accent
+                        primary: true
+                        enabled: controller.movementActive
+                        onClicked: controller.stopMovement()
+                    }
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                radius: 7
+                color: "#091115"
+                border.color: "#28353b"
+
+                Text {
+                    id: diagnosticTitle
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.margins: 10
+                    text: controller.diagnosticDirection.toUpperCase() + " SUPPORT TRANSFER"
+                    color: window.textPrimary
+                    font.pixelSize: 12
+                    font.bold: true
+                    font.letterSpacing: 1.1
+                }
+                Text {
+                    id: diagnosticHint
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: diagnosticTitle.bottom
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
+                    anchors.topMargin: 2
+                    text: "Only the next phase is enabled. H = height servos · L = leg swing servos."
+                    color: window.textMuted
+                    font.family: "Consolas"
+                    font.pixelSize: 8
+                }
+
+                GridView {
+                    id: diagnosticGrid
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: diagnosticHint.bottom
+                    anchors.bottom: parent.bottom
+                    anchors.margins: 7
+                    anchors.topMargin: 6
+                    clip: true
+                    model: controller.diagnosticPhases
+                    cellWidth: width / 2
+                    cellHeight: height / 4
+                    interactive: false
+
+                    delegate: Item {
+                        required property var modelData
+                        width: diagnosticGrid.cellWidth
+                        height: diagnosticGrid.cellHeight
+
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.margins: 3
+                            radius: 5
+                            color: modelData.next ? Qt.rgba(window.accent.r, window.accent.g, window.accent.b, 0.13)
+                                  : modelData.completed ? "#0d1b18" : "#0d1519"
+                            border.width: modelData.next ? 2 : 1
+                            border.color: modelData.next ? window.accent
+                                        : modelData.completed ? window.green : "#344148"
+                            opacity: modelData.next || modelData.completed ? 1.0 : 0.55
+
+                            Row {
+                                anchors.fill: parent
+                                anchors.margins: 7
+                                spacing: 8
+                                Rectangle {
+                                    width: 25
+                                    height: 25
+                                    radius: 13
+                                    color: modelData.completed ? window.green
+                                          : modelData.next ? window.accent : "#263238"
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: modelData.completed ? "✓" : modelData.index
+                                        color: modelData.completed ? "#04110a" : window.textPrimary
+                                        font.pixelSize: 10
+                                        font.bold: true
+                                    }
+                                }
+                                Column {
+                                    width: parent.width - 34
+                                    spacing: 2
+                                    Text {
+                                        width: parent.width
+                                        text: modelData.name
+                                        color: window.textPrimary
+                                        elide: Text.ElideRight
+                                        font.pixelSize: 9
+                                        font.bold: true
+                                    }
+                                    Text {
+                                        width: parent.width
+                                        text: modelData.description
+                                        color: window.textMuted
+                                        elide: Text.ElideRight
+                                        font.pixelSize: 7
+                                    }
+                                    Text {
+                                        width: parent.width
+                                        text: modelData.poseText
+                                        color: modelData.next ? window.accent : "#829097"
+                                        font.family: "Consolas"
+                                        font.pixelSize: 7
+                                    }
+                                }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                enabled: modelData.next && !controller.movementActive
+                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                onClicked: controller.runDiagnosticPhase(modelData.index)
+                            }
+                        }
+                    }
                 }
             }
         }

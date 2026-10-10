@@ -37,50 +37,69 @@ def get_swap_turn_directions() -> bool:
     return _swap_directions
 
 
-def _gait_profile(fast=False):
-    """Return conservative gait geometry and timing for this chassis."""
-    # Arms raise the centre of mass, so use a little more weight transfer but
-    # avoid the old 95% height extremes that made the robot lunge.
-    weight_shift = 18 if servoctl.ARMS_PRESENT else 15
-    stride = 21 if servoctl.ARMS_PRESENT else 18
+def _body_swing_profile(direction, fast=False):
+    """Return the paired-leg body-swing gait used by the original chassis."""
+    # Both feet remain planted while the leg-drive servos swing the chassis.
+    # The feet are then unloaded together and returned beneath the body. Arms
+    # add mass above the pivot, so that build gets a little more plant pressure
+    # and travel while staying inside the original 8-92% motion envelope.
+    if servoctl.ARMS_PRESENT:
+        stride = 38
+        preload_height, planted_height, unloaded_height = 62, 78, 22
+    else:
+        stride = 32
+        preload_height, planted_height, unloaded_height = 60, 72, 28
+
+    stride_target = 50 - stride if direction == "forward" else 50 + stride
     if fast:
-        return weight_shift, stride, (0.18, 0.22, 0.16)
-    return weight_shift, stride, (0.30, 0.34, 0.24)
+        timings = (0.16, 0.28, 0.18, 0.24, 0.18, 0.18)
+    else:
+        timings = (0.24, 0.42, 0.26, 0.34, 0.24, 0.24)
+    return stride_target, preload_height, planted_height, unloaded_height, timings
 
 
-def _run_walk(direction, cycles, fast=False):
-    """Run a balanced six-phase walking gait in either direction."""
+def _run_body_swing(direction, cycles, fast=False):
+    """Swing the chassis first, then bring both legs underneath it."""
     if servoctl.MOVING:
         return
 
     servoctl.MOVING = True
     servoctl._notify_movement_start()
     try:
-        shift, stride, timings = _gait_profile(fast=fast)
-        transfer_time, swing_time, plant_time = timings
-        stride_target = 50 - stride if direction == "forward" else 50 + stride
-        left_up, left_down = 50 - shift, 50 + shift
-        right_up, right_down = 50 - shift, 50 + shift
+        profile = _body_swing_profile(direction, fast=fast)
+        stride_target, preload_height, planted_height, unloaded_height, timings = profile
+        preload_time, swing_time, unload_time, follow_time, replant_time, neutral_time = timings
 
-        move_legs_timed(50, 50, 50, 50, duration=0.24 if fast else 0.34)
+        move_legs_timed(50, 50, 50, 50, duration=0.20 if fast else 0.30)
 
         for _ in range(cycles):
-            # Load the right side, advance the unloaded left foot, then plant.
-            move_legs_timed(left_up, right_down, 50, 50, duration=transfer_time)
-            move_legs_timed(left_up, right_down, stride_target, 50, duration=swing_time)
-            move_legs_timed(50, 50, stride_target, 50, duration=plant_time)
+            # 1. Press both feet into the floor without changing horizontal
+            # position. 2. Drive both leg servos together so the planted feet
+            # carry the chassis forward or backward.
+            move_legs_timed(preload_height, preload_height, 50, 50, duration=preload_time)
+            move_legs_timed(
+                planted_height, planted_height, stride_target, stride_target,
+                duration=swing_time,
+            )
 
-            # Transfer onto the left side while the chassis advances, then
-            # swing and plant the right foot.
-            move_legs_timed(left_down, right_up, 50, 50, duration=transfer_time)
-            move_legs_timed(left_down, right_up, 50, stride_target, duration=swing_time)
-            move_legs_timed(50, 50, 50, stride_target, duration=plant_time)
+            # 3. Lift/unload both feet while preserving the chassis position.
+            # 4. Bring both legs back underneath the body with minimal drag.
+            move_legs_timed(
+                unloaded_height, unloaded_height, stride_target, stride_target,
+                duration=unload_time,
+            )
+            move_legs_timed(
+                unloaded_height, unloaded_height, 50, 50,
+                duration=follow_time,
+            )
 
-        # Unload the final advanced foot before bringing it home. This avoids
-        # dragging it across the floor from a fully weighted neutral stance.
-        move_legs_timed(left_down, right_up, 50, stride_target, duration=transfer_time)
-        move_legs_timed(left_down, right_up, 50, 50, duration=swing_time)
-        move_legs_timed(50, 50, 50, 50, duration=plant_time)
+            # 5. Replant the feet, then return to a balanced neutral height.
+            move_legs_timed(
+                preload_height, preload_height, 50, 50,
+                duration=replant_time,
+            )
+            move_legs_timed(50, 50, 50, 50, duration=neutral_time)
+
         servoctl.wait_for_movement(0.12)
         disable_all_servos()
     finally:
@@ -89,23 +108,23 @@ def _run_walk(direction, cycles, fast=False):
 
 
 def step_forward():
-    """One quick, controlled forward gait cycle."""
-    _run_walk("forward", cycles=1, fast=True)
+    """One quick body-first forward swing followed by both legs."""
+    _run_body_swing("forward", cycles=1, fast=True)
 
 
 def walk_forward():
-    """Two stable forward gait cycles."""
-    _run_walk("forward", cycles=2, fast=False)
+    """Two full body-first forward swings for greater travel."""
+    _run_body_swing("forward", cycles=2, fast=False)
 
 
 def step_backward():
-    """One quick, controlled backward gait cycle."""
-    _run_walk("backward", cycles=1, fast=True)
+    """One quick body-first backward swing followed by both legs."""
+    _run_body_swing("backward", cycles=1, fast=True)
 
 
 def walk_backward():
-    """Two stable backward gait cycles."""
-    _run_walk("backward", cycles=2, fast=False)
+    """Two full body-first backward swings for greater travel."""
+    _run_body_swing("backward", cycles=2, fast=False)
 
 
 def _turn_right_impl():

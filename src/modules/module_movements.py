@@ -41,22 +41,22 @@ def _body_swing_profile(direction, fast=False):
     """Return the paired-leg body-swing gait used by the original chassis."""
     # A lower height percentage raises the chassis. Lift first, then drive both
     # leg servos together so the body swings while both feet remain planted.
-    # The feet are then unloaded together and returned beneath the body. Keep
-    # the stride conservative and the recovery lift close to the initial raised
-    # pose so the chassis does not pitch over as the legs catch up. Arms add
+    # The feet are then lifted well clear of the floor before they are returned
+    # beneath the body. Keep the stride conservative so the feet do not drag or
+    # pull the chassis past its balance point as the legs catch up. Arms add
     # mass above the pivot, so that build gets a little more plant pressure.
     if servoctl.ARMS_PRESENT:
         stride = 30
-        raised_height, planted_height, unloaded_height = 32, 78, 30
+        raised_height, planted_height, unloaded_height = 32, 78, 16
     else:
         stride = 26
-        raised_height, planted_height, unloaded_height = 38, 72, 34
+        raised_height, planted_height, unloaded_height = 38, 72, 22
 
     stride_target = 50 - stride if direction == "forward" else 50 + stride
     if fast:
-        timings = (0.22, 0.35, 0.30, 0.46, 0.30, 0.26)
+        timings = (0.22, 0.35, 0.38, 0.48, 0.30, 0.26)
     else:
-        timings = (0.30, 0.50, 0.42, 0.62, 0.40, 0.34)
+        timings = (0.30, 0.50, 0.54, 0.66, 0.40, 0.34)
     return stride_target, raised_height, planted_height, unloaded_height, timings
 
 
@@ -84,12 +84,14 @@ def _run_body_swing(direction, cycles, fast=False):
                 duration=swing_time,
             )
 
-            # 3. Lift/unload both feet while preserving the chassis position.
+            # 3. Lift both feet completely clear while preserving the chassis
+            # position. Pause briefly at full clearance before moving them.
             # 4. Bring both legs back underneath the body with minimal drag.
             move_legs_timed(
                 unloaded_height, unloaded_height, stride_target, stride_target,
                 duration=unload_time,
             )
+            servoctl.wait_for_movement(0.10 if fast else 0.14)
             move_legs_timed(
                 unloaded_height, unloaded_height, 50, 50,
                 duration=follow_time,

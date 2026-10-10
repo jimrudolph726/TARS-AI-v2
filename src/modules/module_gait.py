@@ -57,7 +57,6 @@ def body_swing_diagnostic_phases(direction: str, arms_present: bool) -> list[dic
     raised_height = profile["raised_height"]
     planted_height = profile["planted_height"]
     contact_height = profile["diagnostic_contact_height"]
-    unloaded_height = profile["unloaded_height"]
     (
         raise_time, swing_time, lower_time, transfer_time, unload_time,
         follow_time, replant_time, neutral_time,
@@ -112,25 +111,25 @@ def body_swing_diagnostic_phases(direction: str, arms_present: bool) -> list[dic
         {
             "index": 6,
             "key": "lift",
-            "name": "LIFT LEGS",
-            "description": "Retract the unloaded feet while easing off the support angle.",
-            "pose": (unloaded_height, unloaded_height, unload_target, unload_target),
+            "name": "LIFT LEGS · ROTATE",
+            "description": "Hold body-contact height; rotate legs away from the support angle.",
+            "pose": (contact_height, contact_height, unload_target, unload_target),
             "duration": unload_time,
         },
         {
             "index": 7,
             "key": "partial_follow",
             "name": "PARTIAL FOLLOW",
-            "description": "Move raised legs 25% toward the body.",
-            "pose": (unloaded_height, unloaded_height, partial_target, partial_target),
+            "description": "Keep height fixed; rotate legs 25% toward the body.",
+            "pose": (contact_height, contact_height, partial_target, partial_target),
             "duration": max(0.30, follow_time * 0.35),
         },
         {
             "index": 8,
             "key": "finish_legs",
             "name": "FINISH LEGS",
-            "description": "Bring the raised legs fully underneath the body.",
-            "pose": (unloaded_height, unloaded_height, 50, 50),
+            "description": "Keep height fixed; rotate legs fully underneath the body.",
+            "pose": (contact_height, contact_height, 50, 50),
             "duration": max(0.36, follow_time * 0.65),
         },
         {

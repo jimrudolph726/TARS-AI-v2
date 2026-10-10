@@ -41,21 +41,22 @@ def _body_swing_profile(direction, fast=False):
     """Return the paired-leg body-swing gait used by the original chassis."""
     # A lower height percentage raises the chassis. Lift first, then drive both
     # leg servos together so the body swings while both feet remain planted.
-    # The feet are then unloaded together and returned beneath the body. Arms
-    # add mass above the pivot, so that build gets a little more plant pressure
-    # and travel while staying inside the original 8-92% motion envelope.
+    # The feet are then unloaded together and returned beneath the body. Keep
+    # the stride conservative and the recovery lift close to the initial raised
+    # pose so the chassis does not pitch over as the legs catch up. Arms add
+    # mass above the pivot, so that build gets a little more plant pressure.
     if servoctl.ARMS_PRESENT:
-        stride = 38
-        raised_height, planted_height, unloaded_height = 32, 78, 22
+        stride = 30
+        raised_height, planted_height, unloaded_height = 32, 78, 30
     else:
-        stride = 32
-        raised_height, planted_height, unloaded_height = 38, 72, 28
+        stride = 26
+        raised_height, planted_height, unloaded_height = 38, 72, 34
 
     stride_target = 50 - stride if direction == "forward" else 50 + stride
     if fast:
-        timings = (0.22, 0.35, 0.22, 0.30, 0.22, 0.22)
+        timings = (0.22, 0.35, 0.30, 0.46, 0.30, 0.26)
     else:
-        timings = (0.30, 0.50, 0.31, 0.41, 0.30, 0.30)
+        timings = (0.30, 0.50, 0.42, 0.62, 0.40, 0.34)
     return stride_target, raised_height, planted_height, unloaded_height, timings
 
 

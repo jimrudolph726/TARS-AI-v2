@@ -184,7 +184,10 @@ class ServoCalibrationController(QObject):
             self._connect_hardware()
 
         if self._hardware_connected:
-            self._status = "PCA9685 online · move a slider to preview that servo"
+            # Connecting over I2C does not imply that PWM outputs are active.
+            # Start explicitly disabled so POWER ON always performs real writes.
+            self._servo_power = False
+            self._status = "PCA9685 online · support TARS, then press POWER ON"
         elif wants_hardware:
             self._status = f"Hardware unavailable · {self._hardware_error}"
             self._servo_power = False
@@ -587,7 +590,7 @@ class ServoCalibrationController(QObject):
         self.stateChanged.emit()
         self.diagnosticsChanged.emit()
         self._preview_all()
-        self._set_status("Servo output enabled at current calibration positions")
+        self._set_status("Servo output enabled at calibrated neutral positions")
 
     @Slot()
     def resetPositions(self) -> None:

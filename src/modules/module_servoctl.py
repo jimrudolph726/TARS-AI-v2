@@ -114,7 +114,10 @@ def _save_servo_positions():
 
 servo_positions = _load_servo_positions()
 
-_channels_initialized = set(servo_positions.keys())
+# Saved positions describe where each servo was last commanded, not whether
+# the PCA9685 output is currently energized. Every process starts with unknown
+# hardware-output state and must issue at least one PWM write per active channel.
+_channels_initialized = set()
 
 pca = None
 MAX_RETRIES = 3
@@ -131,12 +134,13 @@ def signal_servo_activity():
 
 def initialize_pca9685():
     
-    global pca
+    global pca, _channels_initialized
     
     try:
         i2c = busio.I2C(board.SCL, board.SDA)
         pca = PCA9685(i2c, address=0x40)
         pca.frequency = 50
+        _channels_initialized.clear()
         queue_message("LOAD: PCA9685 initialized successfully")
         return True
         
@@ -359,6 +363,8 @@ def pulse_to_duty_cycle(pulse_value):
     return duty_cycle
 
 def set_servo_pwm(channel, pwm_value):
+    global _channels_initialized
+
     if pca is None:
         return False
     
@@ -367,6 +373,7 @@ def set_servo_pwm(channel, pwm_value):
     for attempt in range(MAX_RETRIES):
         try:
             pca.channels[channel].duty_cycle = duty_cycle
+            _channels_initialized.add(channel)
             return True
             
         except OSError as e:
@@ -410,7 +417,10 @@ def initialize_servos():
     print("All servos initialized")
 
 def disable_all_servos():
+    global _channels_initialized
+
     if pca is None:
+        _channels_initialized.clear()
         return
     
     try:
@@ -418,6 +428,8 @@ def disable_all_servos():
             pca.channels[channel].duty_cycle = 0
     except Exception as e:
         queue_message(f"Error disabling servos: {e}")
+
+    _channels_initialized.clear()
     
     time.sleep(0.05)
 
@@ -481,9 +493,6 @@ def move_servos_timed(movements, duration, easing_strength=None):
         if target_value is None:
             continue
 
-        if channel not in _channels_initialized:
-            _channels_initialized.add(channel)
-
         current_value = servo_positions.get(channel, None)
 
         if current_value is None:
@@ -513,6 +522,11 @@ def move_servos_timed(movements, duration, easing_strength=None):
                 f"allowed range is {SERVO_MIN_PULSE}-{SERVO_MAX_PULSE}"
             )
         if current_value == target_value:
+            # The channel may have been disabled after this position was saved.
+            # Reissue the PWM value so an equal-target move also restores torque.
+            if channel not in _channels_initialized:
+                if not set_servo_pwm(channel, current_value):
+                    raise RuntimeError(f"Unable to energize servo channel {channel}")
             continue
 
         servo_data.append({

@@ -6,7 +6,6 @@ Rectangle {
     property string iconText: ""
     property color accent: "#84939a"
     property bool primary: false
-    property bool enabled: true
     signal clicked()
     implicitHeight: 40
     implicitWidth: 110

@@ -18,7 +18,10 @@ ApplicationWindow {
     readonly property color textMuted: "#8f9ba1"
     property int currentPage: 0
 
-    Keys.onEscapePressed: window.close()
+    Shortcut {
+        sequence: "Esc"
+        onActivated: window.close()
+    }
 
     Rectangle {
         id: header

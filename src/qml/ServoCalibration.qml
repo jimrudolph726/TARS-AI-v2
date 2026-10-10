@@ -65,7 +65,7 @@ ApplicationWindow {
                 }
             }
             Rectangle {
-                Layout.preferredWidth: 138
+                Layout.preferredWidth: 170
                 Layout.preferredHeight: 28
                 radius: 5
                 color: "#0e171b"
@@ -75,7 +75,7 @@ ApplicationWindow {
                     text: controller.hardwareModeText
                     color: controller.hardwareConnected ? window.green : "#a8b2b7"
                     font.family: "Consolas"
-                    font.pixelSize: 11
+                    font.pixelSize: 10
                     font.bold: true
                 }
             }
@@ -533,7 +533,7 @@ ApplicationWindow {
             TacticalButton {
                 Layout.preferredWidth: 112
                 Layout.preferredHeight: 34
-                text: controller.servoPower ? "POWER OFF" : "POWER ON"
+                text: controller.servoPower ? "DISABLE PWM" : "ENABLE PWM"
                 iconText: "⏻"
                 accent: window.accent
                 onClicked: controller.servoPower ? controller.disableServos() : controller.enableServos()

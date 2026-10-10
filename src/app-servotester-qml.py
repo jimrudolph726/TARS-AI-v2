@@ -156,6 +156,11 @@ class ServoCalibrationController(QObject):
         self._config_path = _find_config_path()
         self._servo_config = _read_servo_config(self._config_path)
         self._servoctl = None
+        # Keep strong references to the standalone tester's I2C/PCA objects.
+        # The working legacy tester owns this hardware session directly, so the
+        # QML tester does the same instead of relying on module import state.
+        self._i2c = None
+        self._pca = None
         self._hardware_connected = False
         self._hardware_error = ""
         self._movement_active = False
@@ -196,14 +201,26 @@ class ServoCalibrationController(QObject):
 
     def _connect_hardware(self) -> None:
         try:
+            import board
+            import busio
+            from adafruit_pca9685 import PCA9685
             import modules.module_servoctl as servoctl
 
-            if servoctl.pca is None and not servoctl.initialize_pca9685():
-                raise RuntimeError("PCA9685 initialization failed; check I2C and servo power")
+            # Match the hardware path used by the original, known-working
+            # servotester: open a fresh bus/controller for this standalone app
+            # and explicitly give that controller to module_servoctl.
+            self._i2c = busio.I2C(board.SCL, board.SDA)
+            self._pca = PCA9685(self._i2c, address=0x40)
+            self._pca.frequency = 50
+            servoctl.pca = self._pca
+            servoctl._channels_initialized.clear()
             self._servoctl = servoctl
-            self._hardware_connected = servoctl.pca is not None
+            self._hardware_connected = self._pca is not None
             if not self._hardware_connected:
                 raise RuntimeError("PCA9685 was not detected")
+            # Begin from a known, torque-free state. POWER ON will issue fresh
+            # PWM writes to every installed servo.
+            servoctl.disable_all_servos()
         except Exception as exc:
             self._hardware_error = str(exc)
             self._hardware_connected = False
@@ -232,9 +249,11 @@ class ServoCalibrationController(QObject):
     def hardwareConnected(self) -> bool:
         return self._hardware_connected
 
-    @Property(str, constant=True)
+    @Property(str, notify=stateChanged)
     def hardwareModeText(self) -> str:
-        return "CONNECTED" if self._hardware_connected else "MOCK MODE"
+        if not self._hardware_connected:
+            return "MOCK MODE"
+        return "CONNECTED · PWM ON" if self._servo_power else "CONNECTED · PWM OFF"
 
     @Property(str, notify=statusChanged)
     def statusText(self) -> str:
@@ -328,6 +347,7 @@ class ServoCalibrationController(QObject):
 
     def _set_status(self, message: str) -> None:
         self._status = message
+        print(f"[SERVO TESTER] {message}", flush=True)
         self.statusChanged.emit()
 
     def _set_dirty(self, dirty: bool) -> None:
@@ -379,10 +399,14 @@ class ServoCalibrationController(QObject):
             self._set_status(f"Servo preview failed · {exc}")
             return False
 
-    def _preview_all(self) -> None:
-        for servo_id in self._servos:
+    def _preview_all(self) -> bool:
+        servo_ids = list(self._servos)
+        if not self._arms_present():
+            servo_ids = [servo_id for servo_id in servo_ids if "_height" in servo_id or "_leg" in servo_id]
+        for servo_id in servo_ids:
             if not self._preview_servo(servo_id):
-                break
+                return False
+        return True
 
     @Slot(str, float)
     def setServoValue(self, servo_id: str, raw_value: float) -> None:
@@ -585,12 +609,26 @@ class ServoCalibrationController(QObject):
 
     @Slot()
     def enableServos(self) -> None:
+        if not self._hardware_connected or self._servoctl is None:
+            self._servo_power = False
+            self.stateChanged.emit()
+            self._set_status(f"Servo output unavailable · {self._hardware_error or 'PCA9685 not connected'}")
+            return
+        if self._movement_active:
+            self._set_status("Finish or stop the active movement before enabling servo output")
+            return
         self._servo_power = True
         self._diagnostic_phase = -1
         self.stateChanged.emit()
         self.diagnosticsChanged.emit()
-        self._preview_all()
-        self._set_status("Servo output enabled at calibrated neutral positions")
+        if self._preview_all():
+            self._set_status("Servo output enabled · calibrated positions written to PCA9685")
+        else:
+            try:
+                self._servoctl.disable_all_servos()
+            finally:
+                self._servo_power = False
+                self.stateChanged.emit()
 
     @Slot()
     def resetPositions(self) -> None:
@@ -697,6 +735,11 @@ class ServoCalibrationController(QObject):
                 self._servoctl.disable_all_servos()
             except Exception as exc:
                 print(f"[SERVO TESTER] Shutdown warning: {exc}", file=sys.stderr)
+        if self._pca is not None:
+            try:
+                self._pca.deinit()
+            except Exception:
+                pass
 
 
 def main() -> int:

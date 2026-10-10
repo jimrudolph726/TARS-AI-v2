@@ -325,10 +325,20 @@ ApplicationWindow {
                     TacticalButton {
                         Layout.fillWidth: true
                         height: 36
-                        text: controller.diagnosticPhase < 0 ? "START AT NEUTRAL" : "RESTART AT NEUTRAL"
+                        text: controller.diagnosticPhase < 0 ? "START AT NEUTRAL" : "RESET TO NEUTRAL"
                         accent: "#8b9ca4"
                         enabled: !controller.movementActive
                         onClicked: controller.startDiagnostic()
+                    }
+
+                    TacticalButton {
+                        Layout.fillWidth: true
+                        height: 36
+                        text: "RUN ORIGINAL STEP"
+                        accent: window.green
+                        primary: true
+                        enabled: !controller.movementActive
+                        onClicked: controller.runOriginalStepReplay()
                     }
 
                     Rectangle {
@@ -358,7 +368,7 @@ ApplicationWindow {
                                       ? "Support TARS, then start at neutral."
                                       : controller.diagnosticPhase === controller.diagnosticPhases.length
                                         ? "Restart to repeat the test."
-                                        : "Inspect stability, then press the highlighted phase."
+                                        : "Choose any phase to replay the original sequence through it."
                                 color: window.textMuted
                                 font.pixelSize: 8
                             }
@@ -369,7 +379,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         wrapMode: Text.WordWrap
-                        text: "SAFETY\nKeep one hand ready to support TARS. Each phase holds its pose until you choose the next one. POWER OFF releases servo torque immediately."
+                        text: "SAFETY\nKeep one hand ready to support TARS. A phase replays the untouched original step from neutral, then holds at that phase. DISABLE PWM releases torque immediately."
                         color: "#b6c0c4"
                         font.pixelSize: 8
                         lineHeight: 1.15
@@ -414,7 +424,7 @@ ApplicationWindow {
                     anchors.leftMargin: 10
                     anchors.rightMargin: 10
                     anchors.topMargin: 2
-                    text: "Only the next phase is enabled. H = height servos · L = leg swing servos."
+                    text: "Select any phase to replay continuously from neutral through that original pose."
                     color: window.textMuted
                     font.family: "Consolas"
                     font.pixelSize: 8
@@ -443,12 +453,12 @@ ApplicationWindow {
                             anchors.fill: parent
                             anchors.margins: 3
                             radius: 5
-                            color: modelData.next ? Qt.rgba(window.accent.r, window.accent.g, window.accent.b, 0.13)
+                            color: modelData.selected ? Qt.rgba(window.accent.r, window.accent.g, window.accent.b, 0.13)
                                   : modelData.completed ? "#0d1b18" : "#0d1519"
-                            border.width: modelData.next ? 2 : 1
-                            border.color: modelData.next ? window.accent
+                            border.width: modelData.selected ? 2 : 1
+                            border.color: modelData.selected ? window.accent
                                         : modelData.completed ? window.green : "#344148"
-                            opacity: modelData.next || modelData.completed ? 1.0 : 0.55
+                            opacity: controller.diagnosticPhase >= 0 ? 1.0 : 0.55
 
                             Row {
                                 anchors.fill: parent
@@ -459,7 +469,7 @@ ApplicationWindow {
                                     height: 25
                                     radius: 13
                                     color: modelData.completed ? window.green
-                                          : modelData.next ? window.accent : "#263238"
+                                          : modelData.selected ? window.accent : "#263238"
                                     Text {
                                         anchors.centerIn: parent
                                         text: modelData.completed ? "✓" : modelData.index
@@ -489,7 +499,7 @@ ApplicationWindow {
                                     Text {
                                         width: parent.width
                                         text: modelData.poseText
-                                        color: modelData.next ? window.accent : "#829097"
+                                        color: modelData.selected ? window.accent : "#829097"
                                         font.family: "Consolas"
                                         font.pixelSize: 7
                                     }
@@ -498,7 +508,7 @@ ApplicationWindow {
 
                             MouseArea {
                                 anchors.fill: parent
-                                enabled: modelData.next && !controller.movementActive
+                                enabled: controller.diagnosticPhase >= 0 && !controller.movementActive
                                 cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                                 onClicked: controller.runDiagnosticPhase(modelData.index)
                             }

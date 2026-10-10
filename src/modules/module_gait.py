@@ -49,103 +49,61 @@ def body_swing_profile(direction: str, arms_present: bool, fast: bool = False):
 
 
 def body_swing_diagnostic_phases(direction: str, arms_present: bool) -> list[dict]:
-    """Build manually triggered poses that expose each support-transfer step."""
-    profile = body_swing_profile(direction, arms_present, fast=False)
-    stride_target = profile["stride_target"]
-    support_target = profile["support_target"]
-    unload_target = profile["unload_target"]
-    raised_height = profile["raised_height"]
-    planted_height = profile["planted_height"]
-    contact_height = profile["diagnostic_contact_height"]
-    (
-        raise_time, swing_time, lower_time, transfer_time, unload_time,
-        follow_time, replant_time, neutral_time,
-    ) = profile["timings"]
+    """Return the untouched original step poses for prefix replay diagnostics.
 
-    # Split the unloaded leg recovery so the diagnostic can reveal whether
-    # instability begins as soon as the feet start following the chassis.
-    partial_target = round(unload_target + (50 - unload_target) * 0.25)
-    direction_word = "forward" if direction == "forward" else "backward"
+    Each pose includes the original ``move_legs`` speed factor. The diagnostic
+    runner replays neutral through the selected pose without pausing between
+    transitions, then holds that pose for inspection.
+    """
+    if direction not in ("forward", "backward"):
+        raise ValueError(f"Unsupported gait direction: {direction}")
+
+    if direction == "forward" and arms_present:
+        raw_phases = [
+            ("BODY SWING", "Original raised forward swing.", (32, 32, 25, 25), 0.9),
+            ("SUPPORT TRANSFER", "Original chassis support-transfer pose.", (88, 88, 8, 8), 1.0),
+            ("LEG RECOVERY", "Original leg recovery after the body advances.", (15, 15, 17, 17), 0.9),
+            ("LEG PLANT", "Original intermediate leg plant.", (75, 75, 24, 24), 0.9),
+            ("LEGS FOLLOW", "Original legs-under-body recovery.", (70, 70, 50, 50), 0.9),
+            ("FINAL NEUTRAL", "Original balanced finishing pose.", (50, 50, 50, 50), 0.9),
+        ]
+    elif direction == "forward":
+        raw_phases = [
+            ("BODY SWING", "Original raised forward swing.", (42, 42, 40, 40), 0.9),
+            ("SUPPORT TRANSFER", "Original chassis support-transfer pose.", (70, 70, 23, 23), 0.9),
+            ("LEG RECOVERY", "Original leg recovery after the body advances.", (30, 30, 30, 30), 0.8),
+            ("LEG PLANT", "Original intermediate leg plant.", (70, 70, 35, 35), 0.9),
+            ("LEGS FOLLOW", "Original legs-under-body recovery.", (60, 60, 50, 50), 0.9),
+            ("FINAL NEUTRAL", "Original balanced finishing pose.", (50, 50, 50, 50), 0.9),
+        ]
+    elif arms_present:
+        raw_phases = [
+            ("BODY RAISE", "Original raised backward starting pose.", (22, 22, 50, 50), 0.9),
+            ("BODY SWING", "Original raised backward swing.", (22, 22, 80, 80), 0.9),
+            ("SUPPORT TRANSFER", "Original backward chassis support pose.", (68, 68, 92, 92), 0.9),
+            ("LEG RECOVERY", "Original backward leg recovery.", (15, 15, 83, 83), 0.9),
+            ("LEG PLANT", "Original intermediate backward leg plant.", (75, 75, 76, 76), 0.9),
+            ("LEGS FOLLOW", "Original legs-under-body recovery.", (70, 70, 50, 50), 0.9),
+            ("FINAL NEUTRAL", "Original balanced finishing pose.", (50, 50, 50, 50), 0.9),
+        ]
+    else:
+        raw_phases = [
+            ("BODY RAISE", "Original raised backward starting pose.", (30, 30, 55, 55), 0.8),
+            ("SUPPORT TRANSFER", "Original backward chassis support pose.", (68, 68, 82, 82), 0.8),
+            ("LEG RECOVERY", "Original backward leg recovery.", (30, 30, 70, 70), 0.8),
+            ("LEG PLANT", "Original intermediate backward leg plant.", (50, 50, 62, 62), 0.9),
+            ("LEGS FOLLOW", "Original legs-under-body recovery.", (65, 65, 50, 50), 0.9),
+            ("FINAL NEUTRAL", "Original balanced finishing pose.", (50, 50, 50, 50), 0.9),
+        ]
 
     return [
         {
-            "index": 1,
-            "key": "raise",
-            "name": "RAISE BODY",
-            "description": "Raise vertically; legs remain centered.",
-            "pose": (raised_height, raised_height, 50, 50),
-            "duration": raise_time,
-        },
-        {
-            "index": 2,
-            "key": "swing",
-            "name": "SWING BODY",
-            "description": f"Swing {direction_word}; hold raised height.",
-            "pose": (raised_height, raised_height, stride_target, stride_target),
-            "duration": swing_time,
-        },
-        {
-            "index": 3,
-            "key": "lower",
-            "name": "LOWER + SETTLE",
-            "description": "Lower vertically at the completed swing position.",
-            "pose": (planted_height, planted_height, stride_target, stride_target),
-            "duration": lower_time,
-        },
-        {
-            "index": 4,
-            "key": "body_contact",
-            "name": "BODY CONTACT",
-            "description": "Lower farther without rotating to establish chassis contact.",
-            "pose": (contact_height, contact_height, stride_target, stride_target),
-            "duration": max(0.42, lower_time * 0.9),
-        },
-        {
-            "index": 5,
-            "key": "support_transfer",
-            "name": "ROLL ONTO BODY",
-            "description": "Rotate farther and transfer weight from feet to chassis.",
-            "pose": (contact_height, contact_height, support_target, support_target),
-            "duration": transfer_time,
-        },
-        {
-            "index": 6,
-            "key": "lift",
-            "name": "LIFT LEGS · ROTATE",
-            "description": "Hold body-contact height; rotate legs away from the support angle.",
-            "pose": (contact_height, contact_height, unload_target, unload_target),
-            "duration": unload_time,
-        },
-        {
-            "index": 7,
-            "key": "partial_follow",
-            "name": "PARTIAL FOLLOW",
-            "description": "Keep height fixed; rotate legs 25% toward the body.",
-            "pose": (contact_height, contact_height, partial_target, partial_target),
-            "duration": max(0.30, follow_time * 0.35),
-        },
-        {
-            "index": 8,
-            "key": "finish_legs",
-            "name": "FINISH LEGS",
-            "description": "Keep height fixed; rotate legs fully underneath the body.",
-            "pose": (contact_height, contact_height, 50, 50),
-            "duration": max(0.36, follow_time * 0.65),
-        },
-        {
-            "index": 9,
-            "key": "replant",
-            "name": "REPLANT",
-            "description": "Extend the centered feet and take weight off the chassis.",
-            "pose": (planted_height, planted_height, 50, 50),
-            "duration": replant_time,
-        },
-        {
-            "index": 10,
-            "key": "finish_neutral",
-            "name": "NEUTRAL BODY",
-            "description": "Return body height to neutral and finish.",
-            "pose": (50, 50, 50, 50),
-            "duration": neutral_time,
-        },
+            "index": index,
+            "key": f"original_{direction}_{index}",
+            "name": name,
+            "description": description,
+            "pose": pose,
+            "speed": speed,
+        }
+        for index, (name, description, pose, speed) in enumerate(raw_phases, start=1)
     ]

@@ -21,6 +21,7 @@ import modules.module_servoctl as servoctl
 from modules.module_gait import body_swing_profile
 
 move_legs = servoctl.move_legs
+move_legs_original = servoctl.move_legs_original
 move_legs_timed = servoctl.move_legs_timed
 move_arm = servoctl.move_arm
 disable_all_servos = servoctl.disable_all_servos
@@ -123,8 +124,36 @@ def _run_body_swing(direction, cycles, fast=False):
 
 
 def step_forward():
-    """One quick body-first forward swing followed by both legs."""
-    _run_body_swing("forward", cycles=1, fast=True)
+    """Execute the original, field-proven single forward step unchanged."""
+    if servoctl.MOVING:
+        return
+
+    servoctl.MOVING = True
+    servoctl._notify_movement_start()
+    try:
+        if not servoctl.ARMS_PRESENT:
+            move_legs_original(50, 50, 50, 50, 0.9)
+            move_legs_original(42, 42, 40, 40, 0.9)
+            move_legs_original(70, 70, 23, 23, 0.9)
+            move_legs_original(30, 30, 30, 30, 0.8)
+            move_legs_original(70, 70, 35, 35, 0.9)
+            move_legs_original(60, 60, 50, 50, 0.9)
+            move_legs_original(50, 50, 50, 50, 0.9)
+
+        if servoctl.ARMS_PRESENT:
+            move_legs_original(50, 50, 50, 50, 0.9)
+            move_legs_original(32, 32, 25, 25, 0.9)
+            move_legs_original(88, 88, 8, 8, 1.0)
+            move_legs_original(15, 15, 17, 17, 0.9)
+            move_legs_original(75, 75, 24, 24, 0.9)
+            move_legs_original(70, 70, 50, 50, 0.9)
+            move_legs_original(50, 50, 50, 50, 0.9)
+
+        servoctl.wait_for_movement(0.1)
+        disable_all_servos()
+    finally:
+        servoctl.MOVING = False
+        servoctl._notify_movement_end()
 
 
 def walk_forward():

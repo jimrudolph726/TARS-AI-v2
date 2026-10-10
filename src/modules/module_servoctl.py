@@ -600,6 +600,142 @@ def move_servos_synchronized(movements, speed_factor, easing_strength=None):
     duration = max(0.10, max_distance / ticks_per_second)
     move_servos_timed(movements, duration, easing_strength=easing_strength)
 
+
+def move_servos_original(movements, speed_factor, easing_strength=None):
+    """Run the original tick-by-tick synchronized movement algorithm.
+
+    The proven original step gait depends on this transition behavior as well
+    as its target poses. Safety checks and cooperative cancellation are kept,
+    but the stepping, delay curve, and final settling delay match the original
+    servotester implementation.
+    """
+    effective_easing = easing_strength if easing_strength is not None else global_easing_strength
+    effective_easing = max(0.0, min(1.0, float(effective_easing)))
+    signal_servo_activity()
+
+    servo_data = []
+    hold_channels = []
+    has_uninitialized_channel = False
+    neutral_positions = {
+        0: leftNeutralHeight,
+        1: rightNeutralHeight,
+        2: neutralLeftLeg,
+        3: neutralRightLeg,
+        4: leftMainMin,
+        5: leftForarmMin,
+        6: leftHandMin,
+        7: rightMainMin,
+        8: rightForarmMin,
+        9: rightHandMin,
+    }
+
+    for channel, target_value in movements:
+        if target_value is None:
+            continue
+        if _movement_stop_event.is_set():
+            raise MovementCancelled()
+
+        current_value = int(servo_positions.get(channel, neutral_positions.get(channel, 300)))
+        servo_positions[channel] = current_value
+        if channel not in _channels_initialized:
+            has_uninitialized_channel = True
+
+        if target_value == -1:
+            hold_channels.append((channel, current_value))
+            continue
+
+        target_value = int(round(target_value))
+        if not SERVO_MIN_PULSE <= target_value <= SERVO_MAX_PULSE:
+            raise ValueError(
+                f"Unsafe PWM target {target_value} on channel {channel}; "
+                f"allowed range is {SERVO_MIN_PULSE}-{SERVO_MAX_PULSE}"
+            )
+        if current_value == target_value:
+            if channel not in _channels_initialized and not set_servo_pwm(channel, current_value):
+                raise RuntimeError(f"Unable to energize servo channel {channel}")
+            continue
+
+        servo_data.append({
+            "channel": channel,
+            "current": current_value,
+            "target": target_value,
+            "step": 1 if target_value > current_value else -1,
+            "distance": abs(target_value - current_value),
+            "steps_taken": 0,
+        })
+
+    for channel, value in hold_channels:
+        if not set_servo_pwm(channel, value):
+            raise RuntimeError(f"Unable to hold servo channel {channel}")
+
+    if not servo_data:
+        return
+
+    try:
+        from modules.module_cputemp import record_movement
+        record_movement()
+    except Exception:
+        pass
+
+    max_distance = max(item["distance"] for item in servo_data)
+    effective_speed = min(float(speed_factor), 0.3) if has_uninitialized_channel else float(speed_factor)
+    effective_speed = max(0.0, min(1.0, effective_speed))
+    base_delay = 0.02 * (1.0 - effective_speed)
+
+    while any(item["current"] != item["target"] for item in servo_data):
+        if _movement_stop_event.is_set():
+            raise MovementCancelled()
+
+        for item in servo_data:
+            if item["current"] == item["target"]:
+                continue
+            item["current"] += item["step"]
+            if not set_servo_pwm(item["channel"], item["current"]):
+                raise RuntimeError(f"Servo write failed on channel {item['channel']}")
+            item["steps_taken"] += 1
+
+        progress = (
+            min(item["steps_taken"] for item in servo_data) / max_distance
+            if max_distance > 0 else 1.0
+        )
+        if effective_easing > 0:
+            if progress < 0.5:
+                eased = 2 * progress * progress
+            else:
+                eased = 1 - 2 * (1 - progress) * (1 - progress)
+            delay_multiplier = 1.0 + effective_easing * (1.0 - 4 * (eased - 0.5) ** 2)
+        else:
+            delay_multiplier = 1.0
+
+        delay = base_delay * delay_multiplier
+        if delay > 0 and _movement_stop_event.wait(delay):
+            raise MovementCancelled()
+
+    for item in servo_data:
+        servo_positions[item["channel"]] = item["target"]
+    _save_servo_positions()
+    signal_servo_activity()
+    wait_for_movement(0.05)
+
+
+def move_legs_original(left_height_percent=None, right_height_percent=None,
+                       left_leg_percent=None, right_leg_percent=None,
+                       speed_factor=1.0):
+    """Map leg percentages through calibration, then use the original mover."""
+    def percentage_to_value(percent, min_val, max_val):
+        if percent is None or percent == 0:
+            return None
+        normalized = (percent - 1) / 99.0
+        return int(round(min_val + (max_val - min_val) * normalized))
+
+    movements = [
+        (0, percentage_to_value(left_height_percent, leftUpHeight, leftDownHeight)),
+        (1, percentage_to_value(right_height_percent, rightUpHeight, rightDownHeight)),
+        (2, percentage_to_value(left_leg_percent, forwardLeftLeg, backLeftLeg)),
+        (3, percentage_to_value(right_leg_percent, forwardRightLeg, backRightLeg)),
+    ]
+    move_servos_original(movements, speed_factor)
+
 def move_legs(left_height_percent=None, right_height_percent=None, left_leg_percent=None, right_leg_percent=None, speed_factor=1.0):
     """
     Move leg servos to specified positions.

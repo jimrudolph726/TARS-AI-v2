@@ -35,7 +35,7 @@ def _execute_movement(movements):
     try:
         from modules.module_servoctl import (
             request_movement_stop,
-            walk_forward,
+            step_forward,
             walk_backward,
             turn_right_slow,
             turn_left_slow,
@@ -45,7 +45,9 @@ def _execute_movement(movements):
         return
 
     action_map = {
-        "forward": walk_forward,
+        # The original single-step gait is the physically validated forward
+        # movement. Repeated forward requests can safely build longer travel.
+        "forward": step_forward,
         "backward": walk_backward,
         "left": turn_left_slow,
         "right": turn_right_slow,

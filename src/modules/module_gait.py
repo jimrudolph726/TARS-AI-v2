@@ -21,10 +21,12 @@ def body_swing_profile(direction: str, arms_present: bool, fast: bool = False):
     if arms_present:
         stride = 30
         raised_height, planted_height, unloaded_height = 32, 78, 16
+        diagnostic_contact_height = 88
         support_forward, unload_forward = 8, 17
     else:
         stride = 26
         raised_height, planted_height, unloaded_height = 38, 72, 22
+        diagnostic_contact_height = planted_height
         support_forward, unload_forward = 18, 28
 
     stride_target = 50 - stride if direction == "forward" else 50 + stride
@@ -40,6 +42,7 @@ def body_swing_profile(direction: str, arms_present: bool, fast: bool = False):
         "unload_target": unload_target,
         "raised_height": raised_height,
         "planted_height": planted_height,
+        "diagnostic_contact_height": diagnostic_contact_height,
         "unloaded_height": unloaded_height,
         "timings": timings,
     }
@@ -53,6 +56,7 @@ def body_swing_diagnostic_phases(direction: str, arms_present: bool) -> list[dic
     unload_target = profile["unload_target"]
     raised_height = profile["raised_height"]
     planted_height = profile["planted_height"]
+    contact_height = profile["diagnostic_contact_height"]
     unloaded_height = profile["unloaded_height"]
     (
         raise_time, swing_time, lower_time, transfer_time, unload_time,
@@ -85,20 +89,28 @@ def body_swing_diagnostic_phases(direction: str, arms_present: bool) -> list[dic
             "index": 3,
             "key": "lower",
             "name": "LOWER + SETTLE",
-            "description": "Lower vertically onto the chassis support edge.",
+            "description": "Lower vertically at the completed swing position.",
             "pose": (planted_height, planted_height, stride_target, stride_target),
             "duration": lower_time,
         },
         {
             "index": 4,
-            "key": "support_transfer",
-            "name": "ROLL ONTO BODY",
-            "description": "Rotate farther and transfer weight from feet to chassis.",
-            "pose": (planted_height, planted_height, support_target, support_target),
-            "duration": transfer_time,
+            "key": "body_contact",
+            "name": "BODY CONTACT",
+            "description": "Lower farther without rotating to establish chassis contact.",
+            "pose": (contact_height, contact_height, stride_target, stride_target),
+            "duration": max(0.42, lower_time * 0.9),
         },
         {
             "index": 5,
+            "key": "support_transfer",
+            "name": "ROLL ONTO BODY",
+            "description": "Rotate farther and transfer weight from feet to chassis.",
+            "pose": (contact_height, contact_height, support_target, support_target),
+            "duration": transfer_time,
+        },
+        {
+            "index": 6,
             "key": "lift",
             "name": "LIFT LEGS",
             "description": "Retract the unloaded feet while easing off the support angle.",
@@ -106,7 +118,7 @@ def body_swing_diagnostic_phases(direction: str, arms_present: bool) -> list[dic
             "duration": unload_time,
         },
         {
-            "index": 6,
+            "index": 7,
             "key": "partial_follow",
             "name": "PARTIAL FOLLOW",
             "description": "Move raised legs 25% toward the body.",
@@ -114,7 +126,7 @@ def body_swing_diagnostic_phases(direction: str, arms_present: bool) -> list[dic
             "duration": max(0.30, follow_time * 0.35),
         },
         {
-            "index": 7,
+            "index": 8,
             "key": "finish_legs",
             "name": "FINISH LEGS",
             "description": "Bring the raised legs fully underneath the body.",
@@ -122,7 +134,7 @@ def body_swing_diagnostic_phases(direction: str, arms_present: bool) -> list[dic
             "duration": max(0.36, follow_time * 0.65),
         },
         {
-            "index": 8,
+            "index": 9,
             "key": "replant",
             "name": "REPLANT",
             "description": "Extend the centered feet and take weight off the chassis.",
@@ -130,7 +142,7 @@ def body_swing_diagnostic_phases(direction: str, arms_present: bool) -> list[dic
             "duration": replant_time,
         },
         {
-            "index": 9,
+            "index": 10,
             "key": "finish_neutral",
             "name": "NEUTRAL BODY",
             "description": "Return body height to neutral and finish.",

@@ -292,7 +292,7 @@ ApplicationWindow {
             TarsPanel {
                 id: conversationPanel
                 Layout.fillWidth: true
-                Layout.preferredHeight: 169 * scene.uiScale
+                Layout.preferredHeight: 207 * scene.uiScale
 
                 ListView {
                     id: conversationList
@@ -315,7 +315,7 @@ ApplicationWindow {
 
                     delegate: ConversationCard {
                         width: conversationList.width - (conversationList.ScrollBar.vertical.visible ? 7 * scene.uiScale : 0)
-                        height: 70 * scene.uiScale
+                        height: 89 * scene.uiScale
                         speaker: model.speaker
                         message: model.message
                         messageTime: model.messageTime
@@ -372,7 +372,7 @@ ApplicationWindow {
             RowLayout {
                 id: nav
                 Layout.fillWidth: true
-                Layout.preferredHeight: 101 * scene.uiScale
+                Layout.preferredHeight: 63 * scene.uiScale
                 spacing: 6 * scene.uiScale
 
                 TarsButton {
@@ -547,17 +547,28 @@ ApplicationWindow {
                             border.color: controller.cameraReady ? window.red : "#42606c"
                             clip: true
 
-                            Image {
+                            Item {
                                 id: cameraFeed
                                 anchors.fill: parent
                                 anchors.margins: 2 * scene.uiScale
-                                source: controller.cameraReady
-                                    ? "image://camera/frame/" + controller.cameraFrameRevision
-                                    : ""
-                                cache: false
-                                asynchronous: false
-                                fillMode: Image.PreserveAspectCrop
                                 visible: controller.cameraReady
+
+                                // The display is mounted in portrait orientation. Swap the
+                                // source dimensions before rotating so the feed fills the
+                                // viewport without being stretched or clipped incorrectly.
+                                Image {
+                                    id: rotatedCameraImage
+                                    width: parent.height
+                                    height: parent.width
+                                    anchors.centerIn: parent
+                                    rotation: 90
+                                    source: controller.cameraReady
+                                        ? "image://camera/frame/" + controller.cameraFrameRevision
+                                        : ""
+                                    cache: false
+                                    asynchronous: false
+                                    fillMode: Image.PreserveAspectCrop
+                                }
                             }
 
                             Repeater {
@@ -614,7 +625,7 @@ ApplicationWindow {
                                 visible: controller.cameraReady
                                 Text {
                                     anchors.centerIn: parent
-                                    text: "LIVE OPTICAL FEED  ·  " + cameraFeed.sourceSize.width + "×" + cameraFeed.sourceSize.height
+                                    text: "LIVE OPTICAL FEED  ·  " + rotatedCameraImage.sourceSize.width + "×" + rotatedCameraImage.sourceSize.height
                                     color: "#d5dfe3"
                                     font.family: monoFontFamily
                                     font.pixelSize: 6.5 * scene.uiScale

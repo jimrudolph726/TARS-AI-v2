@@ -17,7 +17,7 @@ Rectangle {
 
     Rectangle {
         id: avatar
-        width: 48 * root.uiScale
+        width: 52 * root.uiScale
         height: width
         radius: 6 * root.uiScale
         anchors.left: parent.left
@@ -46,7 +46,7 @@ Rectangle {
         text: root.speaker
         color: root.accent
         font.family: displayFontFamily
-        font.pixelSize: 11 * root.uiScale
+        font.pixelSize: 12 * root.uiScale
         font.bold: true
         font.letterSpacing: 1.8 * root.uiScale
     }
@@ -73,10 +73,10 @@ Rectangle {
         text: root.message
         color: "#edf3f5"
         font.family: monoFontFamily
-        font.pixelSize: 13 * root.uiScale
+        font.pixelSize: 14 * root.uiScale
         verticalAlignment: Text.AlignVCenter
         wrapMode: Text.WordWrap
         elide: Text.ElideRight
-        maximumLineCount: 2
+        maximumLineCount: 3
     }
 }

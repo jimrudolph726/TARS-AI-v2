@@ -399,6 +399,10 @@ def load_config():
             "stt_processor": config['STT']['stt_processor'],
             "language": config['STT']['language'],
             "external_url": config['STT']['external_url'],
+            "openai_stt_model": config.get('STT', 'openai_stt_model', fallback='gpt-live-transcribe'),
+            "openai_stt_delay": config.get('STT', 'openai_stt_delay', fallback='low'),
+            "openai_stt_fallback": config.get('STT', 'openai_stt_fallback', fallback='sherpa-onnx'),
+            "openai_stt_timeout": config.getfloat('STT', 'openai_stt_timeout', fallback=12.0),
             "sherpa_onnx_denoise": config.get('STT', 'sherpa_onnx_denoise', fallback='False'),
             "sherpa_onnx_punctuation": config.get('STT', 'sherpa_onnx_punctuation', fallback='False'),
             "wake_word": config['STT']['wake_word'],
@@ -733,13 +737,27 @@ CONFIG_METADATA = {
             'group': 'stt', 'group_label': 'Speech Recognition',
             'label': 'STT Engine',
             'options': ['sherpa-onnx', 'fastrtc', 'openai', 'external', 'silero'],
-            'description': 'How TARS converts your speech to text after the wake word triggers. "sherpa-onnx" is fast and offline (Pi5/Pi4, recommended). "fastrtc" is cloud-based, very accurate. "openai" uses OpenAI Whisper (best for non-English, requires API key). "silero" runs on-device (Pi5 only). "external" forwards audio to your own STT server.'
+            'description': 'How TARS converts your speech to text after the wake word triggers. "openai" uses GPT Live Transcribe and automatically falls back to a local recognizer if the network or API is unavailable. "sherpa-onnx" is fast and offline. "fastrtc" and "silero" are alternate engines. "external" forwards audio to your own STT server.'
         },
         'language': {
             'group': 'stt',
             'label': 'Spoken Language',
             'options': ['english', 'spanish', 'french', 'german', 'italian', 'portuguese', 'dutch', 'russian', 'chinese', 'japanese', 'korean'],
-            'description': 'The language you speak to TARS. For non-English languages, set STT Engine to "openai" — most local on-device models only work well in English.'
+            'description': 'The language you speak to TARS. GPT Live Transcribe uses this as a language hint; most local on-device models work best in English.'
+        },
+        'openai_stt_delay': {
+            'group': 'stt',
+            'label': 'GPT Live Delay',
+            'options': ['minimal', 'low', 'medium', 'high', 'xhigh'],
+            'depends_on': [{'field': 'stt_processor', 'values': ['openai']}],
+            'description': 'Latency versus accuracy for GPT Live Transcribe. Start with "low" for responsive conversation; use "medium" if recognition accuracy needs more context.'
+        },
+        'openai_stt_fallback': {
+            'group': 'stt',
+            'label': 'Offline STT Fallback',
+            'options': ['sherpa-onnx', 'fastrtc', 'none'],
+            'depends_on': [{'field': 'stt_processor', 'values': ['openai']}],
+            'description': 'Recognizer used automatically when GPT Live Transcribe cannot connect or complete a turn. Sherpa-ONNX is recommended on Raspberry Pi 5.'
         },
         'external_url': {
             'group': 'stt',

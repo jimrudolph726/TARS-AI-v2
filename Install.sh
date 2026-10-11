@@ -577,6 +577,7 @@ generate_requirements() {
 
 # LLM Tools
 openai                          # External LLM API
+websocket-client                # OpenAI GPT Live transcription transport
 tiktoken                        # Token counting for OpenAI models
 
 # Sound Processing Tools

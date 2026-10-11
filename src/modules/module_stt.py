@@ -30,6 +30,10 @@ import soundfile as sf
 import requests
 
 from modules.module_mic import ResamplingInputStream, get_native_rate
+from modules.module_openai_live_stt import (
+    OpenAILiveTranscriber,
+    OpenAILiveTranscriptionError,
+)
 
 from modules.module_messageQue import queue_message
 from modules.module_config import load_config, get_capabilities
@@ -237,6 +241,10 @@ class STTManager:
 
         # Last recorded audio for speaker ID (set by transcription backends)
         self._last_audio_float32 = None
+
+        # Briefly prefer the local fallback after a live API failure instead
+        # of making every follow-up turn wait for another network timeout.
+        self._openai_live_retry_after = 0.0
 
         # Cache progress bar, webui port, and character name so they aren't recreated per frame
         self._progress_bar_funcs = None
@@ -570,7 +578,8 @@ class STTManager:
     # === Shared Recording ===
 
     def _record_audio_chunks(self, use_pre_roll=True, min_speech_frames=5,
-                             pre_roll_frames=10, vad_method=None):
+                             pre_roll_frames=10, vad_method=None,
+                             on_audio_chunk=None):
         """Record audio until end-of-speech detected.
 
         Returns (audio_chunks, speech_frames) where audio_chunks is a list of
@@ -647,8 +656,13 @@ class STTManager:
                     if speech_frames == 0 and pre_roll_buffer:
                         pre_roll_added = len(pre_roll_buffer)
                         audio_chunks.extend(pre_roll_buffer)
+                        if on_audio_chunk is not None:
+                            for pre_roll_chunk in pre_roll_buffer:
+                                on_audio_chunk(pre_roll_chunk)
                         pre_roll_buffer = []
                     audio_chunks.append(data)
+                    if on_audio_chunk is not None:
+                        on_audio_chunk(data)
                     if not is_silence:
                         speech_frames += 1
             else:
@@ -1046,7 +1060,126 @@ class STTManager:
         return None
 
     def _transcribe_with_openai(self):
-        """Transcribe and translate audio using OpenAI's Whisper API."""
+        """Stream an utterance to GPT Live Transcribe with local fallback."""
+        stt_config = self.config.get("STT", {})
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            try:
+                api_key = self.config["TTS"].openai_api_key or ""
+            except (AttributeError, KeyError, TypeError):
+                api_key = ""
+
+        # When the service just failed, record once and go straight to the
+        # local backend. This keeps a multi-turn conversation responsive.
+        if time.monotonic() < self._openai_live_retry_after:
+            chunks, _ = self._record_audio_chunks()
+            return self._transcribe_openai_local_fallback(chunks, "live STT cooldown")
+
+        language_codes = {
+            "english": "en", "spanish": "es", "french": "fr",
+            "german": "de", "italian": "it", "portuguese": "pt",
+            "dutch": "nl", "russian": "ru", "chinese": "zh",
+            "japanese": "ja", "korean": "ko",
+        }
+        language = language_codes.get(str(stt_config.get("language", "english")).lower(), "en")
+        model = stt_config.get("openai_stt_model", "gpt-live-transcribe")
+        delay = stt_config.get("openai_stt_delay", "low")
+        timeout = float(stt_config.get("openai_stt_timeout", 12.0))
+        prompt = (
+            f"Conversation with {self._character_name}, a TARS robot running on a "
+            "Raspberry Pi. Preserve names, commands, numbers, and robotics terminology."
+        )
+        keywords = [
+            self._character_name, self.WAKE_WORD, "TARS", "CASE", "KIPP",
+            "Raspberry Pi", "servo", "PCA9685", "INA260", "ElevenLabs",
+        ]
+        live = OpenAILiveTranscriber(
+            api_key,
+            model=model,
+            delay=delay,
+            language=language,
+            prompt=prompt,
+            keywords=keywords,
+            connect_timeout=min(timeout, 5.0),
+            response_timeout=timeout,
+        )
+        stream_error = [None]
+        chunks = None
+
+        try:
+            live.connect()
+
+            def _stream_chunk(chunk):
+                if stream_error[0] is not None:
+                    return
+                try:
+                    # Match the gain used by the former OpenAI file backend.
+                    live.send_pcm16_16k(self.amplify_audio(chunk))
+                except Exception as exc:
+                    stream_error[0] = exc
+
+            chunks, _ = self._record_audio_chunks(on_audio_chunk=_stream_chunk)
+            if chunks is None:
+                return None
+            if stream_error[0] is not None:
+                raise OpenAILiveTranscriptionError(str(stream_error[0]))
+
+            transcription = live.commit_and_wait()
+            if not transcription:
+                raise OpenAILiveTranscriptionError("OpenAI returned an empty transcript")
+
+            self._openai_live_retry_after = 0.0
+            queue_message("INFO: GPT Live transcription completed")
+            return self._emit_result(transcription)
+        except Exception as exc:
+            self._openai_live_retry_after = time.monotonic() + 30.0
+            queue_message(f"WARNING: GPT Live transcription unavailable: {exc}")
+
+            # If connection failed before recording started, capture the turn
+            # now. If it failed while streaming, reuse the audio already held
+            # in memory so the user never has to repeat the question.
+            if chunks is None:
+                chunks, _ = self._record_audio_chunks()
+            return self._transcribe_openai_local_fallback(chunks, str(exc))
+        finally:
+            live.close()
+
+    def _transcribe_openai_local_fallback(self, chunks, reason=""):
+        """Transcribe already-recorded audio locally after live STT fails."""
+        if not chunks:
+            return None
+
+        fallback = str(
+            self.config.get("STT", {}).get("openai_stt_fallback", "sherpa-onnx")
+        ).strip().lower()
+        if fallback in ("", "none", "off", "disabled"):
+            return None
+
+        queue_message(f"INFO: Using local STT fallback '{fallback}'")
+        transcript = None
+
+        if fallback == "sherpa-onnx":
+            if self.sherpa_recognizer is None:
+                self._load_sherpa_onnx_model()
+            if self.sherpa_recognizer is not None:
+                transcript = self._sherpa_transcribe_audio(chunks, self.MODEL_RATE)
+        elif fallback == "fastrtc":
+            if self.fastrtc_model is None:
+                self._load_fastrtc_model()
+            if self.fastrtc_model is not None:
+                audio_data = self._chunks_to_float32(chunks)
+                transcript = self.fastrtc_model.stt((self.MODEL_RATE, audio_data)).strip()
+        else:
+            queue_message(f"WARNING: Unknown OpenAI STT fallback '{fallback}'")
+
+        if not transcript:
+            suffix = f" after: {reason}" if reason else ""
+            queue_message(f"ERROR: Local STT fallback produced no transcript{suffix}")
+            return None
+        return self._emit_result(transcript)
+
+    def _transcribe_with_openai_file(self):
+        """Legacy bounded-file transcription retained for troubleshooting."""
         language = CONFIG['STT']['language']
         client = OpenAI(api_key=CONFIG["TTS"]["openai_api_key"])
 

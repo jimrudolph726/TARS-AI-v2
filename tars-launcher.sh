@@ -48,4 +48,21 @@ if [ "$1" = "--reboot" ]; then
     exit 0
 fi
 
-python "$DIR/App-Start.py" "$@"
+# Start the PySide6/QML TARS V2 interface directly.  The old Pygame launcher
+# remains available as an explicit troubleshooting option:
+#   ./tars-launcher.sh --menu
+if [ "${1:-}" = "--menu" ]; then
+    shift
+    exec python "$DIR/App-Start.py" "$@"
+fi
+
+# A command-line-only launch is also available when needed:
+#   ./tars-launcher.sh --terminal
+if [ "${1:-}" = "--terminal" ]; then
+    shift
+    cd "$DIR/src" || exit 1
+    exec python "$DIR/src/app.py" show_ui=false "$@"
+fi
+
+cd "$DIR/src" || exit 1
+exec python "$DIR/src/app.py" show_ui=true "$@"

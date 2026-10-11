@@ -31,11 +31,16 @@ ApplicationWindow {
 
     Item {
         id: scene
+        objectName: "scene"
 
         property string overlayMode: ""
+        property string activeApp: ""
         focus: true
         Keys.onEscapePressed: {
-            if (scene.overlayMode.length > 0) {
+            if (scene.overlayMode === "app") {
+                scene.activeApp = ""
+                scene.overlayMode = "apps"
+            } else if (scene.overlayMode.length > 0) {
                 if (scene.overlayMode === "camera")
                     controller.closeCamera()
                 scene.overlayMode = ""
@@ -466,7 +471,10 @@ ApplicationWindow {
             TarsPanel {
                 id: modal
                 width: parent.width - 42 * scene.uiScale
-                height: parent.height * 0.68
+                height: scene.overlayMode === "app" ? parent.height * 0.82
+                    : scene.overlayMode === "apps" ? Math.min(parent.height * 0.68, 280 * scene.controlScale)
+                    : scene.overlayMode === "menu" ? Math.min(parent.height * 0.68, 310 * scene.controlScale)
+                    : parent.height * 0.68
                 anchors.centerIn: parent
                 strongBorder: true
                 accent: window.red
@@ -474,68 +482,75 @@ ApplicationWindow {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 15 * scene.uiScale
-                    spacing: 10 * scene.uiScale
+                    anchors.margins: 15 * scene.controlScale
+                    spacing: 10 * scene.controlScale
 
                     RowLayout {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 38 * scene.uiScale
+                        Layout.preferredHeight: 38 * scene.controlScale
 
                         Column {
                             Layout.fillWidth: true
                             Text {
                                 text: scene.overlayMode === "camera" ? "CAMERA"
                                     : scene.overlayMode === "apps" ? "APPLICATIONS"
+                                    : scene.overlayMode === "app" ? scene.activeApp.toUpperCase()
                                     : scene.overlayMode === "menu" ? "SYSTEM MENU"
                                     : "POWER CONTROL"
                                 color: window.pale
                                 font.family: displayFontFamily
-                                font.pixelSize: 17 * scene.uiScale
+                                font.pixelSize: 17 * scene.controlScale
                                 font.bold: true
-                                font.letterSpacing: 2 * scene.uiScale
+                                font.letterSpacing: 2 * scene.controlScale
                             }
                             Text {
                                 text: "TARS-AI · NATIVE QML CONTROL"
                                 color: "#91a2aa"
                                 font.family: monoFontFamily
-                                font.pixelSize: 6.5 * scene.uiScale
-                                font.letterSpacing: 1.2 * scene.uiScale
+                                font.pixelSize: 6.5 * scene.controlScale
+                                font.letterSpacing: 1.2 * scene.controlScale
                             }
                         }
 
                         Button {
                             id: closeOverlayButton
-                            Layout.preferredWidth: 72 * scene.uiScale
-                            Layout.preferredHeight: 28 * scene.uiScale
+                            Layout.preferredWidth: 72 * scene.controlScale
+                            Layout.preferredHeight: 28 * scene.controlScale
                             Layout.alignment: Qt.AlignVCenter
                             hoverEnabled: true
                             onClicked: {
                                 if (scene.overlayMode === "camera")
                                     controller.closeCamera()
-                                scene.overlayMode = ""
+                                if (scene.overlayMode === "app") {
+                                    scene.activeApp = ""
+                                    scene.overlayMode = "apps"
+                                } else {
+                                    scene.activeApp = ""
+                                    scene.overlayMode = ""
+                                }
                             }
 
                             contentItem: Row {
                                 anchors.centerIn: parent
-                                spacing: 5 * scene.uiScale
+                                spacing: 5 * scene.controlScale
                                 Text {
-                                    text: "×"
+                                    text: scene.overlayMode === "app" ? "‹" : "×"
                                     color: window.red
                                     font.family: displayFontFamily
-                                    font.pixelSize: 11 * scene.uiScale
+                                    font.pixelSize: 11 * scene.controlScale
                                     font.bold: true
                                 }
                                 Text {
-                                    text: "CLOSE"
+                                    text: scene.overlayMode === "app" ? "BACK" : "CLOSE"
                                     color: window.pale
                                     font.family: displayFontFamily
-                                    font.pixelSize: 7 * scene.uiScale
+                                    font.pixelSize: 7 * scene.controlScale
                                     font.bold: true
-                                    font.letterSpacing: 0.7 * scene.uiScale
+                                    font.letterSpacing: 0.7 * scene.controlScale
                                 }
                             }
                             background: Rectangle {
-                                radius: 4 * scene.uiScale
+                                radius: 4 * scene.controlScale
                                 color: closeOverlayButton.down ? "#2b171d" : "#09141a"
                                 border.color: window.red
                             }
@@ -649,72 +664,124 @@ ApplicationWindow {
                         }
 
                         GridLayout {
-                            anchors.fill: parent
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
                             visible: scene.overlayMode === "apps"
                             columns: 2
-                            rowSpacing: 9 * scene.uiScale
-                            columnSpacing: 9 * scene.uiScale
+                            rowSpacing: 7 * scene.controlScale
+                            columnSpacing: 7 * scene.controlScale
 
                             Repeater {
                                 model: [
-                                    { "label": "AVATAR", "icon": "T" },
                                     { "label": "CLOCK", "icon": "CLK" },
-                                    { "label": "REMOTE", "icon": "RMT" },
-                                    { "label": "SERVO TEST", "icon": "SRV" }
+                                    { "label": "DASHBOARD", "icon": "SYS" },
+                                    { "label": "EYES", "icon": "00" },
+                                    { "label": "AVATAR", "icon": "T" },
+                                    { "label": "REMOTE ACCESS", "icon": "LINK" },
+                                    { "label": "AUDIO TIMELINE", "icon": "WAVE" }
                                 ]
                                 delegate: TarsButton {
                                     required property var modelData
                                     Layout.fillWidth: true
-                                    Layout.fillHeight: true
+                                    Layout.minimumHeight: 48 * scene.controlScale
+                                    Layout.preferredHeight: 48 * scene.controlScale
+                                    Layout.maximumHeight: 48 * scene.controlScale
                                     text: modelData.label
                                     iconText: modelData.icon
+                                    iconPixelSize: 12 * scene.controlScale
+                                    labelPixelSize: 6.5 * scene.controlScale
                                     accent: window.red
                                     onClicked: {
-                                        controller.launchApp(modelData.label)
-                                        scene.overlayMode = ""
+                                        scene.activeApp = modelData.label
+                                        scene.overlayMode = "app"
                                     }
                                 }
                             }
                         }
 
-                        ColumnLayout {
+                        Loader {
+                            id: appLoader
                             anchors.fill: parent
+                            visible: scene.overlayMode === "app"
+                            active: visible
+                            source: scene.activeApp === "CLOCK" ? "ClockApp.qml"
+                                : scene.activeApp === "DASHBOARD" ? "DashboardApp.qml"
+                                : scene.activeApp === "EYES" ? "EyesApp.qml"
+                                : scene.activeApp === "AVATAR" ? "AvatarApp.qml"
+                                : scene.activeApp === "REMOTE ACCESS" ? "RemoteApp.qml"
+                                : scene.activeApp === "AUDIO TIMELINE" ? "AudioApp.qml"
+                                : ""
+                            onLoaded: {
+                                if (item && item.hasOwnProperty("uiScale"))
+                                    item.uiScale = Qt.binding(function() { return scene.controlScale })
+                            }
+                        }
+
+                        ColumnLayout {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
                             visible: scene.overlayMode === "menu"
-                            spacing: 8 * scene.uiScale
+                            spacing: 7 * scene.controlScale
 
                             TarsButton {
                                 Layout.fillWidth: true
-                                Layout.fillHeight: true
+                                Layout.minimumHeight: 45 * scene.controlScale
+                                Layout.preferredHeight: 45 * scene.controlScale
+                                Layout.maximumHeight: 45 * scene.controlScale
                                 text: "SYSTEM STATUS"
                                 iconText: "SYS"
+                                iconPixelSize: 11 * scene.controlScale
+                                labelPixelSize: 6.5 * scene.controlScale
                                 accent: window.red
                                 onClicked: {
-                                    controller.activateFeature("System status")
+                                    scene.activeApp = "DASHBOARD"
+                                    scene.overlayMode = "app"
+                                }
+                            }
+                            TarsButton {
+                                Layout.fillWidth: true
+                                Layout.minimumHeight: 45 * scene.controlScale
+                                Layout.preferredHeight: 45 * scene.controlScale
+                                Layout.maximumHeight: 45 * scene.controlScale
+                                text: "WI-FI & REMOTE ACCESS"
+                                iconText: "LINK"
+                                iconPixelSize: 11 * scene.controlScale
+                                labelPixelSize: 6.5 * scene.controlScale
+                                accent: window.red
+                                onClicked: {
+                                    scene.activeApp = "REMOTE ACCESS"
+                                    scene.overlayMode = "app"
+                                }
+                            }
+                            TarsButton {
+                                Layout.fillWidth: true
+                                Layout.minimumHeight: 45 * scene.controlScale
+                                Layout.preferredHeight: 45 * scene.controlScale
+                                Layout.maximumHeight: 45 * scene.controlScale
+                                text: "SERVO CALIBRATION"
+                                iconText: "SRV"
+                                iconPixelSize: 11 * scene.controlScale
+                                labelPixelSize: 6.5 * scene.controlScale
+                                accent: window.red
+                                onClicked: {
+                                    controller.launchApp("SERVO TEST")
                                     scene.overlayMode = ""
                                 }
                             }
                             TarsButton {
                                 Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                text: controller.wifiOnline
-                                    ? "WI-FI · " + (controller.wifiSsid.length > 0 ? controller.wifiSsid : "ONLINE")
-                                    : "WI-FI · OFFLINE"
-                                iconText: "WIFI"
-                                accent: window.red
-                                onClicked: {
-                                    controller.activateFeature("Wi-Fi")
-                                    scene.overlayMode = ""
-                                }
-                            }
-                            TarsButton {
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
+                                Layout.minimumHeight: 45 * scene.controlScale
+                                Layout.preferredHeight: 45 * scene.controlScale
+                                Layout.maximumHeight: 45 * scene.controlScale
                                 text: "EXIT TARS"
                                 iconText: "EXIT"
+                                iconPixelSize: 11 * scene.controlScale
+                                labelPixelSize: 6.5 * scene.controlScale
                                 accent: window.red
                                 onClicked: {
-                                    scene.overlayMode = ""
-                                    controller.exitProgram()
+                                    scene.overlayMode = "power"
                                 }
                             }
                         }

@@ -144,6 +144,8 @@ class TarsUIController(QObject):
     silenceChanged = Signal()
     audioChanged = Signal()
     cameraChanged = Signal()
+    avatarChanged = Signal()
+    remoteChanged = Signal()
 
     runtimeStopped = Signal()
 
@@ -158,6 +160,7 @@ class TarsUIController(QObject):
     _telemetryRequested = Signal(object)
     _silenceRequested = Signal(float)
     _cameraStartedRequested = Signal(object, object, str)
+    _remoteUpdateRequested = Signal(str, str, str, object)
     _exitRequested = Signal()
     _shutdownRequested = Signal()
 
@@ -209,6 +212,16 @@ class TarsUIController(QObject):
         self._camera_frame_revision = 0
         self._camera_lock = threading.Lock()
 
+        self._avatar_character = "TARS"
+        self._avatar_emotion = "neutral"
+        self._avatar_frame_source = ""
+
+        self._remote_state = "idle"
+        self._remote_status = "Remote access is ready"
+        self._remote_url = ""
+        self._remote_error = ""
+        self._wifi_networks: list[dict[str, object]] = []
+
         self._battery_source = None
         self._cpu_source = None
         self._stt_manager = None
@@ -228,6 +241,7 @@ class TarsUIController(QObject):
         self._telemetryRequested.connect(self._apply_network_telemetry)
         self._silenceRequested.connect(self._apply_silence)
         self._cameraStartedRequested.connect(self._apply_camera_started)
+        self._remoteUpdateRequested.connect(self._apply_remote_update)
         self._exitRequested.connect(self.exitProgram)
         self._shutdownRequested.connect(self.requestShutdown)
 
@@ -258,6 +272,13 @@ class TarsUIController(QObject):
         self._camera_timer.setInterval(100)
         self._camera_timer.timeout.connect(self._refresh_camera_frame)
 
+        self._avatar_timer = QTimer(self)
+        self._avatar_timer.setInterval(120)
+        self._avatar_timer.timeout.connect(self._refresh_avatar_frame)
+        self._avatar_timer.start()
+        self._load_avatar_character()
+        self._refresh_avatar_frame()
+
         threading.Thread(
             target=self._wifi_poll_loop,
             name="QMLWiFiTelemetry",
@@ -276,6 +297,10 @@ class TarsUIController(QObject):
     @Property(str, notify=clockChanged)
     def currentDate(self) -> str:
         return datetime.now().strftime("%b %d %Y").upper()
+
+    @Property(str, notify=clockChanged)
+    def currentTimeSeconds(self) -> str:
+        return datetime.now().strftime("%H:%M:%S")
 
     @Property(str, notify=stateChanged)
     def tarsState(self) -> str:
@@ -373,6 +398,38 @@ class TarsUIController(QObject):
     def cameraFrameRevision(self) -> int:
         return self._camera_frame_revision
 
+    @Property(str, notify=avatarChanged)
+    def avatarFrameSource(self) -> str:
+        return self._avatar_frame_source
+
+    @Property(str, notify=avatarChanged)
+    def avatarCharacter(self) -> str:
+        return self._avatar_character
+
+    @Property(str, notify=avatarChanged)
+    def avatarEmotion(self) -> str:
+        return self._avatar_emotion.upper()
+
+    @Property(str, notify=remoteChanged)
+    def remoteState(self) -> str:
+        return self._remote_state
+
+    @Property(str, notify=remoteChanged)
+    def remoteStatus(self) -> str:
+        return self._remote_status
+
+    @Property(str, notify=remoteChanged)
+    def remoteUrl(self) -> str:
+        return self._remote_url
+
+    @Property(str, notify=remoteChanged)
+    def remoteError(self) -> str:
+        return self._remote_error
+
+    @Property("QVariantList", notify=remoteChanged)
+    def wifiNetworks(self) -> list[dict[str, object]]:
+        return self._wifi_networks
+
     @Property(QObject, constant=True)
     def conversationModel(self) -> QObject:
         return self._conversation
@@ -440,6 +497,66 @@ class TarsUIController(QObject):
     def camera_image(self) -> QImage:
         with self._camera_lock:
             return self._camera_frame.copy()
+
+    def _load_avatar_character(self) -> None:
+        try:
+            from modules.module_config import load_config
+
+            char_cfg = load_config().get("CHAR", {})
+            card_path = str(char_cfg.get("character_card_path", ""))
+            self._avatar_character = Path(card_path).stem or str(
+                char_cfg.get("character_name", "TARS")
+            )
+        except Exception:
+            self._avatar_character = "TARS"
+
+    @Slot()
+    def _refresh_avatar_frame(self) -> None:
+        module = sys.modules.get("modules.module_chatui")
+        requested_emotion = str(getattr(module, "emotion", "neutral") or "neutral")
+        requested_emotion = "".join(
+            char for char in requested_emotion if char.isalnum() or char in "-_"
+        ) or "neutral"
+        animation_dir = (
+            self._base_dir
+            / "character"
+            / self._avatar_character
+            / "images"
+            / requested_emotion
+            / "animation"
+        )
+        if not animation_dir.is_dir():
+            requested_emotion = "neutral"
+            animation_dir = (
+                self._base_dir
+                / "character"
+                / self._avatar_character
+                / "images"
+                / requested_emotion
+                / "animation"
+            )
+
+        now = time.monotonic()
+        talking = self._state in ("TALKING", "SPEAKING")
+        blinking = int(now * 10) % 48 in (0, 1, 2)
+        if talking:
+            suffix = "talking_eyes_closed" if blinking else (
+                "talking_eyes_open" if int(now * 10) % 2 else "nottalking_eyes_open"
+            )
+        else:
+            suffix = "nottalking_eyes_closed" if blinking else "nottalking_eyes_open"
+
+        frame = animation_dir / f"{self._avatar_character}_{requested_emotion}_{suffix}.png"
+        if not frame.is_file():
+            fallback = animation_dir / (
+                f"{self._avatar_character}_{requested_emotion}_nottalking_eyes_open.png"
+            )
+            frame = fallback if fallback.is_file() else frame
+        source = QUrl.fromLocalFile(str(frame)).toString() if frame.is_file() else ""
+        if source != self._avatar_frame_source or requested_emotion != self._avatar_emotion:
+            self._avatar_frame_source = source
+            self._avatar_emotion = requested_emotion
+            self.avatarChanged.emit()
 
     def _camera_start_worker(self) -> None:
         try:
@@ -578,6 +695,7 @@ class TarsUIController(QObject):
         self._wifi_stop.set()
         self._audio_timer.stop()
         self._camera_timer.stop()
+        self._avatar_timer.stop()
         if self._audio_stream is not None:
             try:
                 self._audio_stream.close()
@@ -641,6 +759,224 @@ class TarsUIController(QObject):
             self.openCamera()
         else:
             self._apply_notice(f"{feature.upper()} SELECTED", 2400)
+
+    def _queue_remote_update(
+        self,
+        state: str,
+        status: str,
+        url: str = "",
+        payload: Optional[dict] = None,
+    ) -> None:
+        self._remoteUpdateRequested.emit(state, status, url, payload or {})
+
+    @Slot(str, str, str, object)
+    def _apply_remote_update(
+        self, state: str, status: str, url: str, payload: object
+    ) -> None:
+        self._remote_state = state
+        self._remote_status = status
+        self._remote_url = url
+        data = payload if isinstance(payload, dict) else {}
+        self._remote_error = str(data.get("error", ""))
+        if "networks" in data:
+            self._wifi_networks = list(data.get("networks") or [])
+        self.remoteChanged.emit()
+
+    @staticmethod
+    def _remote_local_url() -> str:
+        try:
+            from modules.module_config import load_config
+            from modules.module_wifi import WiFiManager
+
+            port = int(load_config().get("ACCESS", {}).get("webui_port", 80))
+            host = WiFiManager.HOTSPOT_IP
+            return f"http://{host}:{port}" if port != 80 else f"http://{host}"
+        except Exception:
+            return "http://10.42.0.1"
+
+    def _refresh_remote_worker(self) -> None:
+        try:
+            from modules.module_wifi import _get_manager
+
+            status = _get_manager().get_status()
+            mode = str(status.get("mode", "disconnected"))
+            if mode == "hotspot":
+                self._queue_remote_update(
+                    "hotspot",
+                    "TARS setup hotspot is active",
+                    self._remote_local_url(),
+                )
+                return
+            if mode == "client":
+                try:
+                    from modules.module_chatui import _get_tunnel_status
+
+                    tunnel = _get_tunnel_status()
+                    if tunnel.get("state") == "active" and tunnel.get("url"):
+                        self._queue_remote_update(
+                            "active", "Remote tunnel is online", str(tunnel["url"])
+                        )
+                        return
+                except Exception:
+                    pass
+                ssid = str(status.get("ssid") or "Wi-Fi")
+                self._queue_remote_update("ready", f"Connected to {ssid}")
+                return
+            self._queue_remote_update("offline", "No Wi-Fi connection")
+        except Exception as exc:
+            self._queue_remote_update(
+                "error", "Unable to read remote-access status", "", {"error": str(exc)}
+            )
+
+    @Slot()
+    def refreshRemoteAccess(self) -> None:
+        self._queue_remote_update("checking", "Checking network and tunnel status")
+        threading.Thread(
+            target=self._refresh_remote_worker,
+            name="QMLRemoteStatus",
+            daemon=True,
+        ).start()
+
+    def _scan_wifi_worker(self) -> None:
+        try:
+            from modules.module_wifi import _get_manager
+
+            networks = _get_manager().scan_networks(rescan=True)
+            self._queue_remote_update(
+                "networks",
+                f"{len(networks)} network{'s' if len(networks) != 1 else ''} found",
+                "",
+                {"networks": networks},
+            )
+        except Exception as exc:
+            self._queue_remote_update(
+                "error", "Wi-Fi scan failed", "", {"error": str(exc)}
+            )
+
+    @Slot()
+    def scanWifiNetworks(self) -> None:
+        self._queue_remote_update("scanning", "Scanning for Wi-Fi networks")
+        threading.Thread(
+            target=self._scan_wifi_worker,
+            name="QMLWiFiScan",
+            daemon=True,
+        ).start()
+
+    def _connect_wifi_worker(self, ssid: str, password: str) -> None:
+        try:
+            from modules.module_wifi import _get_manager
+
+            manager = _get_manager()
+            if manager.get_status().get("mode") == "hotspot":
+                manager.stop_hotspot()
+            if manager.connect(ssid, password):
+                self._queue_remote_update("ready", f"Connected to {ssid}")
+            else:
+                self._queue_remote_update(
+                    "error",
+                    f"Could not connect to {ssid}",
+                    "",
+                    {"error": "Check the password and try again."},
+                )
+        except Exception as exc:
+            self._queue_remote_update(
+                "error", f"Could not connect to {ssid}", "", {"error": str(exc)}
+            )
+
+    @Slot(str, str)
+    def connectWifiNetwork(self, ssid: str, password: str) -> None:
+        ssid = ssid.strip()
+        if not ssid:
+            self._apply_notice("SELECT A WI-FI NETWORK", 2400)
+            return
+        self._queue_remote_update("connecting", f"Connecting to {ssid}")
+        threading.Thread(
+            target=self._connect_wifi_worker,
+            args=(ssid, password),
+            name="QMLWiFiConnect",
+            daemon=True,
+        ).start()
+
+    def _start_remote_worker(self) -> None:
+        try:
+            from modules.module_wifi import _get_manager
+
+            manager = _get_manager()
+            wifi_status = manager.get_status()
+            if wifi_status.get("mode") != "client":
+                self._queue_remote_update("starting", "Starting TARS setup hotspot")
+                if not manager.start_hotspot():
+                    raise RuntimeError("NetworkManager could not start the hotspot")
+                self._queue_remote_update(
+                    "hotspot",
+                    "TARS setup hotspot is active",
+                    self._remote_local_url(),
+                )
+                return
+
+            from modules.module_chatui import (
+                _cloudflared_bin,
+                _get_tunnel_status,
+                _install_cloudflared,
+                _start_tunnel,
+            )
+
+            tunnel = _get_tunnel_status()
+            if tunnel.get("state") == "active" and tunnel.get("url"):
+                self._queue_remote_update(
+                    "active", "Remote tunnel is online", str(tunnel["url"])
+                )
+                return
+            if not _cloudflared_bin():
+                self._queue_remote_update("starting", "Installing remote-access service")
+                ok, error = _install_cloudflared()
+                if not ok:
+                    raise RuntimeError(str(error))
+            self._queue_remote_update("starting", "Starting encrypted remote tunnel")
+            ok, result = _start_tunnel()
+            if not ok:
+                raise RuntimeError(str(result))
+            self._queue_remote_update("active", "Remote tunnel is online", str(result))
+        except Exception as exc:
+            self._queue_remote_update(
+                "error", "Remote access failed", "", {"error": str(exc)}
+            )
+
+    @Slot()
+    def startRemoteAccess(self) -> None:
+        self._queue_remote_update("starting", "Preparing remote access")
+        threading.Thread(
+            target=self._start_remote_worker,
+            name="QMLRemoteStart",
+            daemon=True,
+        ).start()
+
+    def _stop_remote_worker(self, stop_hotspot: bool) -> None:
+        try:
+            if stop_hotspot:
+                from modules.module_wifi import _get_manager
+
+                _get_manager().stop_hotspot()
+            else:
+                from modules.module_chatui import _stop_tunnel
+
+                _stop_tunnel()
+            self._queue_remote_update("idle", "Remote access stopped")
+        except Exception as exc:
+            self._queue_remote_update(
+                "error", "Unable to stop remote access", "", {"error": str(exc)}
+            )
+
+    @Slot()
+    def stopRemoteAccess(self) -> None:
+        stop_hotspot = self._remote_state == "hotspot"
+        self._queue_remote_update("stopping", "Stopping remote access")
+        threading.Thread(
+            target=self._stop_remote_worker,
+            args=(stop_hotspot,),
+            name="QMLRemoteStop",
+            daemon=True,
+        ).start()
 
     @Slot(str)
     def launchApp(self, app_name: str) -> None:

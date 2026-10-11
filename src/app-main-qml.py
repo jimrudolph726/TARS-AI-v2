@@ -138,6 +138,8 @@ class MainInterfaceController(QObject):
     noticeChanged = Signal()
     audioChanged = Signal()
     cameraChanged = Signal()
+    avatarChanged = Signal()
+    remoteChanged = Signal()
 
     STATES = (
         ("LISTENING", "TARS READY"),
@@ -160,6 +162,14 @@ class MainInterfaceController(QObject):
         self._audio_levels = [0.0] * 35
         self._camera_active = False
         self._camera_error = ""
+        self._remote_state = "ready"
+        self._remote_status = "Connected to TARS-NET"
+        self._remote_url = ""
+        self._remote_error = ""
+        self._wifi_networks = [
+            {"ssid": "TARS-NET", "signal": 92, "security": "WPA2", "in_use": True},
+            {"ssid": "ENDURANCE", "signal": 68, "security": "WPA2", "in_use": False},
+        ]
 
         self._clock_timer = QTimer(self)
         self._clock_timer.setInterval(1000)
@@ -193,6 +203,10 @@ class MainInterfaceController(QObject):
     @Property(str, notify=clockChanged)
     def currentDate(self) -> str:
         return datetime.now().strftime("%b %d %Y").upper()
+
+    @Property(str, notify=clockChanged)
+    def currentTimeSeconds(self) -> str:
+        return datetime.now().strftime("%H:%M:%S")
 
     @Property(str, notify=stateChanged)
     def tarsState(self) -> str:
@@ -278,6 +292,39 @@ class MainInterfaceController(QObject):
     def cameraFrameRevision(self) -> int:
         return 0
 
+    @Property(str, constant=True)
+    def avatarFrameSource(self) -> str:
+        path = ROOT / "character" / "TARS" / "images" / "neutral" / "animation" / "TARS_neutral_nottalking_eyes_open.png"
+        return QUrl.fromLocalFile(str(path)).toString() if path.is_file() else ""
+
+    @Property(str, constant=True)
+    def avatarCharacter(self) -> str:
+        return "TARS"
+
+    @Property(str, constant=True)
+    def avatarEmotion(self) -> str:
+        return "NEUTRAL"
+
+    @Property(str, notify=remoteChanged)
+    def remoteState(self) -> str:
+        return self._remote_state
+
+    @Property(str, notify=remoteChanged)
+    def remoteStatus(self) -> str:
+        return self._remote_status
+
+    @Property(str, notify=remoteChanged)
+    def remoteUrl(self) -> str:
+        return self._remote_url
+
+    @Property(str, notify=remoteChanged)
+    def remoteError(self) -> str:
+        return self._remote_error
+
+    @Property("QVariantList", notify=remoteChanged)
+    def wifiNetworks(self) -> list[dict[str, object]]:
+        return self._wifi_networks
+
     @Property(QObject, constant=True)
     def conversationModel(self) -> QObject:
         return self._conversation
@@ -333,6 +380,39 @@ class MainInterfaceController(QObject):
     @Slot(str)
     def launchApp(self, app_name: str) -> None:
         self._set_notice(f"Mock app selected: {app_name}")
+
+    @Slot()
+    def refreshRemoteAccess(self) -> None:
+        self._remote_state = "ready"
+        self._remote_status = "Connected to TARS-NET"
+        self._remote_url = ""
+        self.remoteChanged.emit()
+
+    @Slot()
+    def scanWifiNetworks(self) -> None:
+        self._remote_state = "networks"
+        self._remote_status = "2 networks found"
+        self.remoteChanged.emit()
+
+    @Slot(str, str)
+    def connectWifiNetwork(self, ssid: str, _password: str) -> None:
+        self._remote_state = "ready"
+        self._remote_status = f"Connected to {ssid} (prototype)"
+        self.remoteChanged.emit()
+
+    @Slot()
+    def startRemoteAccess(self) -> None:
+        self._remote_state = "active"
+        self._remote_status = "Remote tunnel is online (prototype)"
+        self._remote_url = "https://tars-demo.example"
+        self.remoteChanged.emit()
+
+    @Slot()
+    def stopRemoteAccess(self) -> None:
+        self._remote_state = "idle"
+        self._remote_status = "Remote access stopped (prototype)"
+        self._remote_url = ""
+        self.remoteChanged.emit()
 
     @Slot()
     def addDemoExchange(self) -> None:

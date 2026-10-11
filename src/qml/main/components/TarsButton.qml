@@ -8,6 +8,8 @@ Button {
     property color accent: "#ff3852"
     property bool selected: false
     property bool danger: false
+    property real iconPixelSize: Math.max(14, root.height * 0.30)
+    property real labelPixelSize: Math.max(8, root.height * 0.13)
 
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
@@ -20,7 +22,7 @@ Button {
             text: root.iconText
             color: root.enabled ? (root.selected || root.down ? root.accent : "#dce6ea") : "#59666d"
             font.family: displayFontFamily
-            font.pixelSize: Math.max(14, root.height * 0.30)
+            font.pixelSize: root.iconPixelSize
             font.bold: true
             horizontalAlignment: Text.AlignHCenter
         }
@@ -30,7 +32,7 @@ Button {
             text: root.text
             color: root.enabled ? "#eef4f6" : "#59666d"
             font.family: displayFontFamily
-            font.pixelSize: Math.max(8, root.height * 0.13)
+            font.pixelSize: root.labelPixelSize
             font.bold: true
             font.letterSpacing: 1.2
             horizontalAlignment: Text.AlignHCenter

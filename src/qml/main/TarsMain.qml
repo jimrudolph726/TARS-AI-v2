@@ -45,6 +45,9 @@ ApplicationWindow {
         }
         readonly property bool rotated: displayRotation === 90 || displayRotation === 270
         readonly property real uiScale: Math.min(width / 480, height / 720)
+        // Controls should remain comfortably touchable without growing into
+        // oversized tiles on high-resolution fullscreen/VNC displays.
+        readonly property real controlScale: Math.min(uiScale, 1.35)
         readonly property color stateColor: controller.tarsState === "STANDBY" ? "#829199"
                                             : controller.tarsState === "THINKING" ? window.amber
                                             : window.red
@@ -292,6 +295,7 @@ ApplicationWindow {
             TarsPanel {
                 id: conversationPanel
                 Layout.fillWidth: true
+                Layout.fillHeight: true
                 Layout.preferredHeight: 207 * scene.uiScale
 
                 ListView {
@@ -372,14 +376,18 @@ ApplicationWindow {
             RowLayout {
                 id: nav
                 Layout.fillWidth: true
-                Layout.preferredHeight: 63 * scene.uiScale
-                spacing: 6 * scene.uiScale
+                Layout.minimumHeight: 52 * scene.controlScale
+                Layout.preferredHeight: 52 * scene.controlScale
+                Layout.maximumHeight: 52 * scene.controlScale
+                spacing: 6 * scene.controlScale
 
                 TarsButton {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     text: "CAMERA"
                     iconText: "[]"
+                    iconPixelSize: 15 * scene.controlScale
+                    labelPixelSize: 7 * scene.controlScale
                     accent: window.red
                     onClicked: {
                         controller.openCamera()
@@ -391,6 +399,8 @@ ApplicationWindow {
                     Layout.fillHeight: true
                     text: "APPS"
                     iconText: "::"
+                    iconPixelSize: 15 * scene.controlScale
+                    labelPixelSize: 7 * scene.controlScale
                     accent: window.red
                     onClicked: scene.overlayMode = "apps"
                 }
@@ -399,6 +409,8 @@ ApplicationWindow {
                     Layout.fillHeight: true
                     text: controller.muted ? "UNMUTE" : "MUTE"
                     iconText: controller.muted ? "X" : "//"
+                    iconPixelSize: 15 * scene.controlScale
+                    labelPixelSize: 7 * scene.controlScale
                     accent: window.red
                     selected: controller.muted
                     onClicked: controller.toggleMute()
@@ -408,6 +420,8 @@ ApplicationWindow {
                     Layout.fillHeight: true
                     text: "MENU"
                     iconText: "="
+                    iconPixelSize: 15 * scene.controlScale
+                    labelPixelSize: 7 * scene.controlScale
                     accent: window.red
                     onClicked: scene.overlayMode = "menu"
                 }

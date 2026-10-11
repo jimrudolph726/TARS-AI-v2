@@ -1083,7 +1083,6 @@ class STTManager:
         }
         language = language_codes.get(str(stt_config.get("language", "english")).lower(), "en")
         model = stt_config.get("openai_stt_model", "gpt-live-transcribe")
-        session_model = stt_config.get("openai_stt_session_model", "gpt-realtime")
         delay = stt_config.get("openai_stt_delay", "low")
         timeout = float(stt_config.get("openai_stt_timeout", 12.0))
         prompt = (
@@ -1097,7 +1096,6 @@ class STTManager:
         live = OpenAILiveTranscriber(
             api_key,
             model=model,
-            session_model=session_model,
             delay=delay,
             language=language,
             prompt=prompt,

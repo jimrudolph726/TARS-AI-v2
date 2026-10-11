@@ -11,8 +11,6 @@ import base64
 import json
 import time
 from typing import Callable, Iterable, Optional
-from urllib.parse import quote
-
 import numpy as np
 
 try:
@@ -49,14 +47,16 @@ def _pcm16_16k_to_24k(samples: np.ndarray) -> bytes:
 class OpenAILiveTranscriber:
     """One OpenAI realtime transcription session for one user utterance."""
 
-    DEFAULT_URL = "wss://api.openai.com/v1/realtime?model={session_model}"
+    # A transcription-only WebSocket is selected by intent.  Supplying a
+    # ``model=`` query creates a conversational Realtime session instead,
+    # which rejects transcription-session updates.
+    DEFAULT_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 
     def __init__(
         self,
         api_key: str,
         *,
         model: str = "gpt-live-transcribe",
-        session_model: str = "gpt-realtime",
         delay: str = "low",
         language: str = "en",
         prompt: str = "",
@@ -66,9 +66,6 @@ class OpenAILiveTranscriber:
         websocket_factory: Optional[Callable] = None,
     ):
         self.api_key = (api_key or "").strip()
-        # The outer WebSocket must use a Realtime session model.  The speech
-        # recognition model is configured separately inside session.update.
-        self.session_model = session_model.strip() or "gpt-realtime"
         self.model = model.strip() or "gpt-live-transcribe"
         self.delay = delay if delay in {"minimal", "low", "medium", "high", "xhigh"} else "low"
         self.language = (language or "en").strip().lower()
@@ -110,12 +107,9 @@ class OpenAILiveTranscriber:
                 )
             factory = websocket.create_connection
 
-        url = self.DEFAULT_URL.format(
-            session_model=quote(self.session_model, safe="-._")
-        )
         try:
             self._ws = factory(
-                url,
+                self.DEFAULT_URL,
                 header=[f"Authorization: Bearer {self.api_key}"],
                 timeout=self.connect_timeout,
                 enable_multithread=True,

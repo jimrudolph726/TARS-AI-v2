@@ -400,7 +400,6 @@ def load_config():
             "language": config['STT']['language'],
             "external_url": config['STT']['external_url'],
             "openai_stt_model": config.get('STT', 'openai_stt_model', fallback='gpt-live-transcribe'),
-            "openai_stt_session_model": config.get('STT', 'openai_stt_session_model', fallback='gpt-realtime'),
             "openai_stt_delay": config.get('STT', 'openai_stt_delay', fallback='low'),
             "openai_stt_fallback": config.get('STT', 'openai_stt_fallback', fallback='sherpa-onnx'),
             "openai_stt_timeout": config.getfloat('STT', 'openai_stt_timeout', fallback=12.0),

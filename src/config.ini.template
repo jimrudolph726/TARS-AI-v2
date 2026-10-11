@@ -84,9 +84,6 @@ sensitivity = 7
 # falls back to the configured local engine if the API is unavailable.
 stt_processor = openai
 # GPT Live transcription settings (stt_processor = openai only)
-# The outer WebSocket uses a Realtime session model; the transcription model
-# below performs speech recognition inside that session.
-openai_stt_session_model = gpt-realtime
 openai_stt_model = gpt-live-transcribe
 # minimal | low | medium | high | xhigh
 openai_stt_delay = low

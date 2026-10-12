@@ -35,6 +35,7 @@ ApplicationWindow {
 
         property string overlayMode: ""
         property string activeApp: ""
+        property string appReturnMode: "apps"
         property string confirmationAction: ""
         readonly property string confirmationTitle: confirmationAction === "servo" ? "OPEN SERVO CALIBRATION?"
             : confirmationAction === "restart" ? "RESTART TARS?"
@@ -61,6 +62,18 @@ ApplicationWindow {
             overlayMode = "confirm"
         }
 
+        function openApp(appName, returnMode) {
+            activeApp = appName
+            appReturnMode = returnMode || "apps"
+            overlayMode = "app"
+        }
+
+        function closeApp() {
+            activeApp = ""
+            overlayMode = appReturnMode
+            appReturnMode = "apps"
+        }
+
         function executeConfirmation() {
             var action = confirmationAction
             confirmationAction = ""
@@ -78,8 +91,7 @@ ApplicationWindow {
         focus: true
         Keys.onEscapePressed: {
             if (scene.overlayMode === "app") {
-                scene.activeApp = ""
-                scene.overlayMode = "apps"
+                scene.closeApp()
             } else if (scene.overlayMode.length > 0) {
                 if (scene.overlayMode === "camera")
                     controller.closeCamera()
@@ -573,10 +585,10 @@ ApplicationWindow {
                                 if (scene.overlayMode === "camera")
                                     controller.closeCamera()
                                 if (scene.overlayMode === "app") {
-                                    scene.activeApp = ""
-                                    scene.overlayMode = "apps"
+                                    scene.closeApp()
                                 } else {
                                     scene.activeApp = ""
+                                    scene.appReturnMode = "apps"
                                     scene.confirmationAction = ""
                                     scene.overlayMode = ""
                                 }
@@ -744,10 +756,7 @@ ApplicationWindow {
                                     iconPixelSize: 12 * scene.controlScale
                                     labelPixelSize: 6.5 * scene.controlScale
                                     accent: window.red
-                                    onClicked: {
-                                        scene.activeApp = modelData.label
-                                        scene.overlayMode = "app"
-                                    }
+                                    onClicked: scene.openApp(modelData.label, "apps")
                                 }
                             }
                         }
@@ -791,10 +800,7 @@ ApplicationWindow {
                                 iconPixelSize: 11 * scene.controlScale
                                 labelPixelSize: 6.5 * scene.controlScale
                                 accent: window.red
-                                onClicked: {
-                                    scene.activeApp = "DASHBOARD"
-                                    scene.overlayMode = "app"
-                                }
+                                onClicked: scene.openApp("DASHBOARD", "menu")
                             }
                             TarsButton {
                                 Layout.fillWidth: true
@@ -808,10 +814,7 @@ ApplicationWindow {
                                 iconPixelSize: 11 * scene.controlScale
                                 labelPixelSize: 6.5 * scene.controlScale
                                 accent: window.red
-                                onClicked: {
-                                    scene.activeApp = "REMOTE ACCESS"
-                                    scene.overlayMode = "app"
-                                }
+                                onClicked: scene.openApp("REMOTE ACCESS", "menu")
                             }
                             TarsButton {
                                 Layout.fillWidth: true

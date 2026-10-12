@@ -16,46 +16,21 @@ Item {
         anchors.margins: 7 * root.uiScale
         spacing: 7 * root.uiScale
 
-        Rectangle {
+        StatusCard {
             Layout.fillWidth: true
-            Layout.preferredHeight: 52 * root.uiScale
-            radius: 5 * root.uiScale
-            color: "#071116"
-            border.color: controller.remoteState === "error" ? "#ff3852" : "#31444d"
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.margins: 8 * root.uiScale
-                spacing: 8 * root.uiScale
-                Rectangle {
-                    width: 9 * root.uiScale; height: width; radius: width / 2
-                    color: controller.remoteState === "active" || controller.remoteState === "hotspot" ? "#2aff8a"
-                         : controller.remoteState === "error" ? "#ff3852" : "#ffc857"
-                }
-                Column {
-                    Layout.fillWidth: true
-                    spacing: 2 * root.uiScale
-                    Text {
-                        text: controller.remoteStatus
-                        color: "#edf3f5"
-                        font.family: displayFontFamily
-                        font.pixelSize: 9 * root.uiScale
-                        font.bold: true
-                        elide: Text.ElideRight
-                        width: parent.width
-                    }
-                    Text {
-                        text: controller.remoteUrl.length ? controller.remoteUrl
-                            : controller.remoteError.length ? controller.remoteError
-                            : "SECURE WEB CONTROL"
-                        color: controller.remoteError.length ? "#ff7385" : "#81949d"
-                        font.family: monoFontFamily
-                        font.pixelSize: 6.5 * root.uiScale
-                        elide: Text.ElideMiddle
-                        width: parent.width
-                    }
-                }
-            }
+            Layout.preferredHeight: 62 * root.uiScale
+            label: "REMOTE LINK"
+            value: controller.remoteStatus
+            detail: controller.remoteUrl.length ? controller.remoteUrl
+                : controller.remoteError.length ? controller.remoteError
+                : "SECURE WEB CONTROL"
+            badgeText: controller.remoteState.toUpperCase()
+            accent: controller.remoteState === "active" || controller.remoteState === "hotspot" ? "#2aff8a"
+                : controller.remoteState === "error" ? "#ff3852" : "#ffc857"
+            labelPixelSize: 6 * root.uiScale
+            valuePixelSize: 9 * root.uiScale
+            detailPixelSize: 6 * root.uiScale
+            uiScale: root.uiScale
         }
 
         Item {
@@ -79,6 +54,8 @@ Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
+                    visible: controller.remoteState === "networks"
+                        && controller.wifiNetworks.length > 0
                     Column {
                         width: parent.width
                         spacing: 4 * root.uiScale
@@ -121,6 +98,18 @@ Item {
                         }
                     }
                 }
+                AppStateView {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    visible: controller.remoteState === "scanning"
+                        || (controller.remoteState === "networks" && controller.wifiNetworks.length === 0)
+                    state: controller.remoteState === "scanning" ? "loading" : "empty"
+                    title: controller.remoteState === "scanning" ? "SCANNING WI-FI" : "NO NETWORKS FOUND"
+                    detail: controller.remoteState === "scanning"
+                        ? "Searching for nearby wireless networks."
+                        : "Refresh the scan or check that Wi-Fi is enabled."
+                    uiScale: root.uiScale
+                }
                 TextField {
                     id: passwordField
                     Layout.fillWidth: true
@@ -147,33 +136,45 @@ Item {
                 }
             }
 
-            Column {
-                anchors.centerIn: parent
-                width: parent.width
+            AppStateView {
+                anchors.fill: parent
                 visible: controller.remoteState !== "networks"
                       && controller.remoteState !== "scanning"
-                spacing: 8 * root.uiScale
-
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: controller.remoteState === "active" ? "REMOTE LINK ACTIVE"
-                        : controller.remoteState === "hotspot" ? "TARS SETUP NETWORK"
-                        : controller.remoteState === "offline" ? "NETWORK REQUIRED"
-                        : controller.remoteState === "error" ? "REMOTE LINK ERROR"
-                        : "REMOTE ACCESS"
-                    color: controller.remoteState === "error" ? "#ff3852" : "#edf3f5"
-                    font.family: displayFontFamily
-                    font.pixelSize: 15 * root.uiScale
-                    font.bold: true
-                }
-                Text {
-                    visible: controller.remoteState === "hotspot"
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: "Wi-Fi: TARS-Setup  ·  Password: tars1234"
-                    color: "#2aff8a"
-                    font.family: monoFontFamily
-                    font.pixelSize: 7 * root.uiScale
-                }
+                state: controller.remoteState === "error" ? "error"
+                    : controller.remoteState === "offline" ? "disabled"
+                    : controller.remoteState === "connecting"
+                        || controller.remoteState === "starting"
+                        || controller.remoteState === "stopping" ? "loading"
+                    : "empty"
+                iconText: controller.remoteState === "active" ? "LINK"
+                    : controller.remoteState === "hotspot" ? "WIFI"
+                    : controller.remoteState === "error" ? "!"
+                    : controller.remoteState === "offline" ? "OFF"
+                    : controller.remoteState === "connecting"
+                        || controller.remoteState === "starting"
+                        || controller.remoteState === "stopping" ? "..."
+                    : "--"
+                title: controller.remoteState === "active" ? "REMOTE LINK ACTIVE"
+                    : controller.remoteState === "hotspot" ? "TARS SETUP NETWORK"
+                    : controller.remoteState === "offline" ? "NETWORK REQUIRED"
+                    : controller.remoteState === "error" ? "REMOTE LINK ERROR"
+                    : controller.remoteState === "connecting" ? "CONNECTING WI-FI"
+                    : controller.remoteState === "starting" ? "STARTING REMOTE ACCESS"
+                    : controller.remoteState === "stopping" ? "STOPPING REMOTE ACCESS"
+                    : "REMOTE ACCESS READY"
+                detail: controller.remoteState === "hotspot"
+                    ? "Wi-Fi: TARS-Setup  ·  Password: tars1234"
+                    : controller.remoteState === "active" ? controller.remoteUrl
+                    : controller.remoteState === "error" ? controller.remoteError
+                    : controller.remoteState === "offline" ? "Connect TARS to a network before starting remote access."
+                    : "Start remote access or scan for a Wi-Fi network."
+                accent: controller.remoteState === "active" || controller.remoteState === "hotspot" ? "#2aff8a"
+                    : controller.remoteState === "error" ? "#ff3852"
+                    : controller.remoteState === "connecting"
+                        || controller.remoteState === "starting"
+                        || controller.remoteState === "stopping" ? "#ffc857"
+                    : "#829199"
+                uiScale: root.uiScale
             }
         }
 

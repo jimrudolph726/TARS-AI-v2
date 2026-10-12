@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import "components"
+import "AppRegistry.js" as AppRegistry
 
 ApplicationWindow {
     id: window
@@ -34,7 +35,7 @@ ApplicationWindow {
         objectName: "scene"
 
         property string overlayMode: ""
-        property string activeApp: ""
+        property string activeAppId: ""
         property string appReturnMode: "apps"
         property string confirmationAction: ""
         readonly property string confirmationTitle: confirmationAction === "servo" ? "OPEN SERVO CALIBRATION?"
@@ -63,15 +64,42 @@ ApplicationWindow {
         }
 
         function openApp(appName, returnMode) {
-            activeApp = appName
+            var definition = AppRegistry.find(appName)
+            if (!definition || !definition.enabled)
+                return
+            activeAppId = appName
             appReturnMode = returnMode || "apps"
             overlayMode = "app"
         }
 
         function closeApp() {
-            activeApp = ""
+            activeAppId = ""
             overlayMode = appReturnMode
             appReturnMode = "apps"
+        }
+
+        function launcherBadge(app) {
+            if (app.badgeKey === "remote") {
+                if (controller.remoteState === "active" || controller.remoteState === "hotspot")
+                    return "ONLINE"
+                if (controller.remoteState === "error")
+                    return "ERROR"
+                if (controller.remoteState === "scanning" || controller.remoteState === "starting")
+                    return "WAIT"
+                return "READY"
+            }
+            if (app.badgeKey === "avatar")
+                return controller.avatarFrameSource.length > 0 ? "LIVE" : "SETUP"
+            return app.badgeKey === "live" ? "LIVE" : "READY"
+        }
+
+        function launcherBadgeColor(app) {
+            var badge = launcherBadge(app)
+            if (badge === "ERROR")
+                return window.red
+            if (badge === "WAIT" || badge === "SETUP")
+                return window.amber
+            return window.green
         }
 
         function executeConfirmation() {
@@ -556,7 +584,7 @@ ApplicationWindow {
                             Text {
                                 text: scene.overlayMode === "camera" ? "CAMERA"
                                     : scene.overlayMode === "apps" ? "APPLICATIONS"
-                                    : scene.overlayMode === "app" ? scene.activeApp.toUpperCase()
+                                    : scene.overlayMode === "app" ? AppRegistry.titleFor(scene.activeAppId)
                                     : scene.overlayMode === "menu" ? "SYSTEM MENU"
                                     : scene.overlayMode === "confirm" ? "CONFIRM ACTION"
                                     : "SYSTEM CONTROL"
@@ -587,7 +615,7 @@ ApplicationWindow {
                                 if (scene.overlayMode === "app") {
                                     scene.closeApp()
                                 } else {
-                                    scene.activeApp = ""
+                                    scene.activeAppId = ""
                                     scene.appReturnMode = "apps"
                                     scene.confirmationAction = ""
                                     scene.overlayMode = ""
@@ -737,26 +765,24 @@ ApplicationWindow {
                             columnSpacing: 7 * scene.controlScale
 
                             Repeater {
-                                model: [
-                                    { "label": "CLOCK", "icon": "CLK" },
-                                    { "label": "DASHBOARD", "icon": "SYS" },
-                                    { "label": "EYES", "icon": "00" },
-                                    { "label": "AVATAR", "icon": "T" },
-                                    { "label": "REMOTE ACCESS", "icon": "LINK" },
-                                    { "label": "AUDIO TIMELINE", "icon": "WAVE" }
-                                ]
+                                model: AppRegistry.applications
                                 delegate: TarsButton {
                                     required property var modelData
                                     Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    Layout.preferredWidth: 1
                                     Layout.minimumHeight: 48 * scene.controlScale
                                     Layout.preferredHeight: 48 * scene.controlScale
                                     Layout.maximumHeight: 48 * scene.controlScale
-                                    text: modelData.label
+                                    text: modelData.title
                                     iconText: modelData.icon
+                                    badgeText: scene.launcherBadge(modelData)
+                                    badgeColor: scene.launcherBadgeColor(modelData)
                                     iconPixelSize: 12 * scene.controlScale
                                     labelPixelSize: 6.5 * scene.controlScale
                                     accent: window.red
-                                    onClicked: scene.openApp(modelData.label, "apps")
+                                    enabled: modelData.enabled
+                                    onClicked: scene.openApp(modelData.id, "apps")
                                 }
                             }
                         }
@@ -766,17 +792,22 @@ ApplicationWindow {
                             anchors.fill: parent
                             visible: scene.overlayMode === "app"
                             active: visible
-                            source: scene.activeApp === "CLOCK" ? "ClockApp.qml"
-                                : scene.activeApp === "DASHBOARD" ? "DashboardApp.qml"
-                                : scene.activeApp === "EYES" ? "EyesApp.qml"
-                                : scene.activeApp === "AVATAR" ? "AvatarApp.qml"
-                                : scene.activeApp === "REMOTE ACCESS" ? "RemoteApp.qml"
-                                : scene.activeApp === "AUDIO TIMELINE" ? "AudioApp.qml"
-                                : ""
+                            source: AppRegistry.sourceFor(scene.activeAppId)
                             onLoaded: {
                                 if (item && item.hasOwnProperty("uiScale"))
                                     item.uiScale = Qt.binding(function() { return scene.controlScale })
                             }
+                        }
+
+                        AppStateView {
+                            anchors.fill: parent
+                            visible: scene.overlayMode === "app" && appLoader.status !== Loader.Ready
+                            state: appLoader.status === Loader.Loading ? "loading" : "error"
+                            title: appLoader.status === Loader.Loading ? "LOADING APPLICATION" : "APPLICATION UNAVAILABLE"
+                            detail: appLoader.status === Loader.Error
+                                ? "The selected QML pane could not be loaded. Check the terminal for details."
+                                : "Preparing " + AppRegistry.titleFor(scene.activeAppId) + "."
+                            uiScale: scene.controlScale
                         }
 
                         GridLayout {
@@ -800,7 +831,7 @@ ApplicationWindow {
                                 iconPixelSize: 11 * scene.controlScale
                                 labelPixelSize: 6.5 * scene.controlScale
                                 accent: window.red
-                                onClicked: scene.openApp("DASHBOARD", "menu")
+                                onClicked: scene.openApp("dashboard", "menu")
                             }
                             TarsButton {
                                 Layout.fillWidth: true
@@ -814,7 +845,7 @@ ApplicationWindow {
                                 iconPixelSize: 11 * scene.controlScale
                                 labelPixelSize: 6.5 * scene.controlScale
                                 accent: window.red
-                                onClicked: scene.openApp("REMOTE ACCESS", "menu")
+                                onClicked: scene.openApp("remote", "menu")
                             }
                             TarsButton {
                                 Layout.fillWidth: true
@@ -876,67 +907,20 @@ ApplicationWindow {
                             }
                         }
 
-                        Column {
-                            anchors.centerIn: parent
+                        ConfirmationDialog {
+                            anchors.fill: parent
                             visible: scene.overlayMode === "confirm"
-                            width: parent.width
-                            spacing: 13 * scene.controlScale
-
-                            Text {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                text: scene.confirmationIcon
-                                color: scene.confirmationAction === "restart" ? window.amber : window.red
-                                font.family: displayFontFamily
-                                font.pixelSize: 30 * scene.controlScale
-                                font.bold: true
+                            iconText: scene.confirmationIcon
+                            title: scene.confirmationTitle
+                            message: scene.confirmationMessage
+                            confirmText: scene.confirmationButtonText
+                            accent: scene.confirmationAction === "restart" ? window.amber : window.red
+                            uiScale: scene.controlScale
+                            onRejected: {
+                                scene.confirmationAction = ""
+                                scene.overlayMode = ""
                             }
-                            Text {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                text: scene.confirmationTitle
-                                color: window.pale
-                                font.family: displayFontFamily
-                                font.pixelSize: 13 * scene.controlScale
-                                font.bold: true
-                                font.letterSpacing: 1.3 * scene.controlScale
-                            }
-                            Text {
-                                width: parent.width - 24 * scene.controlScale
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                text: scene.confirmationMessage
-                                color: "#97a7ae"
-                                font.family: monoFontFamily
-                                font.pixelSize: 7 * scene.controlScale
-                                wrapMode: Text.Wrap
-                                horizontalAlignment: Text.AlignHCenter
-                            }
-                            Row {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                spacing: 9 * scene.controlScale
-                                TarsButton {
-                                    width: 120 * scene.controlScale
-                                    height: 48 * scene.controlScale
-                                    text: "CANCEL"
-                                    iconText: "<"
-                                    iconPixelSize: 10 * scene.controlScale
-                                    labelPixelSize: 6.5 * scene.controlScale
-                                    accent: "#829199"
-                                    onClicked: {
-                                        scene.confirmationAction = ""
-                                        scene.overlayMode = ""
-                                    }
-                                }
-                                TarsButton {
-                                    width: 150 * scene.controlScale
-                                    height: 48 * scene.controlScale
-                                    text: scene.confirmationButtonText
-                                    iconText: scene.confirmationIcon
-                                    iconPixelSize: 10 * scene.controlScale
-                                    labelPixelSize: 6.5 * scene.controlScale
-                                    accent: scene.confirmationAction === "restart" ? window.amber : window.red
-                                    selected: true
-                                    onClicked: scene.executeConfirmation()
-                                }
-                            }
+                            onAccepted: scene.executeConfirmation()
                         }
                     }
                 }

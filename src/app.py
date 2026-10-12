@@ -19,6 +19,9 @@ warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
 BASE_DIR = Path(__file__).resolve().parent
 os.chdir(BASE_DIR)
 sys.path.insert(0, str(BASE_DIR))
+# Every QML control in the TARS interface has an explicit custom skin. The
+# Basic style supports that consistently on Windows, VNC, and Raspberry Pi OS.
+os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
 from modules.module_config import load_config  # noqa: E402
 from modules.module_messageQue import queue_message  # noqa: E402
@@ -124,6 +127,12 @@ def main() -> int:
     engine = None
     if show_ui:
         engine = QQmlApplicationEngine()
+        engine.warnings.connect(
+            lambda warnings: [
+                print(f"QML: {warning.toString()}", file=sys.stderr)
+                for warning in warnings
+            ]
+        )
         engine.addImageProvider("camera", CameraImageProvider(controller))
         context = engine.rootContext()
         context.setContextProperty("controller", controller)

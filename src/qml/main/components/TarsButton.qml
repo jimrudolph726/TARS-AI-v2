@@ -8,6 +8,8 @@ Button {
     property color accent: "#ff3852"
     property bool selected: false
     property bool danger: false
+    property string badgeText: ""
+    property color badgeColor: accent
     property real iconPixelSize: Math.max(14, root.height * 0.30)
     property real labelPixelSize: Math.max(8, root.height * 0.13)
 
@@ -55,6 +57,28 @@ Button {
             color: "transparent"
             border.width: 1
             border.color: root.hovered || root.visualFocus ? "#485961" : "#1a2b32"
+        }
+    }
+
+    Rectangle {
+        visible: root.badgeText.length > 0
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.margins: 5
+        height: 14
+        width: badgeLabel.implicitWidth + 9
+        radius: height / 2
+        color: Qt.rgba(root.badgeColor.r, root.badgeColor.g, root.badgeColor.b, 0.13)
+        border.color: root.enabled ? root.badgeColor : "#465259"
+
+        Text {
+            id: badgeLabel
+            anchors.centerIn: parent
+            text: root.badgeText
+            color: root.enabled ? root.badgeColor : "#59666d"
+            font.family: monoFontFamily
+            font.pixelSize: 6
+            font.bold: true
         }
     }
 

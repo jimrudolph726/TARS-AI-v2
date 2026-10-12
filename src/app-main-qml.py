@@ -27,11 +27,25 @@ def _parse_args() -> argparse.Namespace:
                         help="rotate the logical portrait UI for a mounted display")
     parser.add_argument("--width", type=int, default=480, help="window width when not full screen")
     parser.add_argument("--height", type=int, default=720, help="window height when not full screen")
+    parser.add_argument(
+        "--app",
+        choices=("clock", "dashboard", "eyes", "avatar", "remote", "audio"),
+        help="open one registered app directly for UI testing",
+    )
+    parser.add_argument(
+        "--panel",
+        choices=("apps", "menu"),
+        help="open a launcher panel directly for UI testing",
+    )
     parser.add_argument("--screenshot", type=Path, help="save a screenshot and exit")
     return parser.parse_args()
 
 
 ARGS = _parse_args()
+
+# The TARS controls provide their own visuals. Basic is the portable Qt Quick
+# style intended for full customization and avoids host-native style drift.
+os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
 # Qt reads these values during import/application construction.  Software
 # rendering makes deterministic screenshots possible on headless test hosts.
@@ -482,6 +496,12 @@ def main() -> int:
     mono_font = load_font("mono.ttf", "Monospace")
 
     engine = QQmlApplicationEngine()
+    engine.warnings.connect(
+        lambda warnings: [
+            print(f"QML: {warning.toString()}", file=sys.stderr)
+            for warning in warnings
+        ]
+    )
     controller = MainInterfaceController(autoplay=ARGS.autoplay)
     context = engine.rootContext()
     context.setContextProperty("controller", controller)
@@ -496,6 +516,17 @@ def main() -> int:
         return 1
 
     window = engine.rootObjects()[0]
+    if ARGS.app or ARGS.panel:
+        scene = window.findChild(QObject, "scene")
+        if scene is None:
+            print("Unable to find the QML scene for preview", file=sys.stderr)
+            return 2
+    if ARGS.app:
+        scene.setProperty("activeAppId", ARGS.app)
+        scene.setProperty("appReturnMode", "apps")
+        scene.setProperty("overlayMode", "app")
+    elif ARGS.panel:
+        scene.setProperty("overlayMode", ARGS.panel)
     if ARGS.fullscreen:
         window.showFullScreen()
 

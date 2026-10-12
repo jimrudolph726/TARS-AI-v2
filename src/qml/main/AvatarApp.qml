@@ -1,4 +1,5 @@
 import QtQuick
+import "components"
 
 Item {
     id: root
@@ -17,13 +18,15 @@ Item {
             cache: false
         }
 
-        Text {
+        AppStateView {
+            anchors.fill: parent
+            state: "empty"
             visible: controller.avatarFrameSource.length === 0
-            anchors.centerIn: parent
-            text: "NO AVATAR SPRITES FOUND"
-            color: "#ff3852"
-            font.family: monoFontFamily
-            font.pixelSize: 9 * root.uiScale
+            title: "NO AVATAR SPRITES FOUND"
+            detail: "Install an avatar animation set to enable this view."
+            iconText: "T"
+            accent: "#ff3852"
+            uiScale: root.uiScale
         }
 
         Rectangle {

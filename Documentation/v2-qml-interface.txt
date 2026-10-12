@@ -10,6 +10,11 @@ Architecture
 - src/app.py owns the Qt application and QML engine.
 - src/qml/main/TarsMain.qml and its components/ directory own layout,
   animation, touch input, and visual state.
+- src/qml/main/AppRegistry.js is the single launcher registry for app ids,
+  titles, icons, source files, availability, and badge categories.
+- Reusable QML primitives in components/ provide setting rows, sliders,
+  status cards, confirmation prompts, buttons, and standardized application
+  loading/error/empty/disabled states.
 - src/modules/module_ui_qml.py is the thread-safe UI state controller and
   conversation model. It also bridges the shared microphone feed and the Pi
   camera into QML without opening competing audio devices or writing frames
@@ -46,6 +51,12 @@ Run only the hardware-safe visual prototype:
 
     cd ~/TARS-AI-v2
     ./run-main-ui-demo.sh --fullscreen
+
+For interface development, the prototype can open a registered app or panel
+directly without starting robot hardware:
+
+    python src/app-main-qml.py --app remote
+    python src/app-main-qml.py --panel apps
 
 Press Esc in a windowed session, or use Menu > Exit Application, to stop the
 application cleanly while leaving the Raspberry Pi on. Menu > Restart TARS

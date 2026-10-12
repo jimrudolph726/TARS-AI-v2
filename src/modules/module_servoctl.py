@@ -46,6 +46,7 @@ SERVO_MAX_PULSE = 600
 
 _movement_stop_event = threading.Event()
 _movement_command_lock = threading.RLock()
+_hardware_handoff_event = threading.Event()
 
 
 class MovementCancelled(RuntimeError):
@@ -70,6 +71,9 @@ def movement_command(function):
     """
     @wraps(function)
     def wrapped(*args, **kwargs):
+        if _hardware_handoff_event.is_set():
+            queue_message(f"MOVEMENT: Hardware is reserved for servo calibration; ignored {function.__name__}")
+            return False
         if not _movement_command_lock.acquire(blocking=False):
             queue_message(f"MOVEMENT: Busy; ignored {function.__name__}")
             return False
@@ -248,6 +252,7 @@ _is_ventilate_operation = False
 
 def refresh_config():
     """Re-read config and update all offset-dependent servo variables without reinitializing PCA."""
+    global config
     global leftMainMin, leftMainMax, leftForarmMin, leftForarmMax, leftHandMin, leftHandMax
     global rightMainMin, rightMainMax, rightForarmMin, rightForarmMax, rightHandMin, rightHandMax
     global leftMainOffset, leftForearmOffset, leftHandOffset
@@ -259,6 +264,7 @@ def refresh_config():
     global ARMS_PRESENT
 
     cfg = load_config()
+    config = cfg
     servo = cfg["SERVO"]
 
     # Arm base values
@@ -365,7 +371,7 @@ def pulse_to_duty_cycle(pulse_value):
 def set_servo_pwm(channel, pwm_value):
     global _channels_initialized
 
-    if pca is None:
+    if pca is None or _hardware_handoff_event.is_set():
         return False
     
     duty_cycle = pulse_to_duty_cycle(pwm_value)
@@ -432,6 +438,77 @@ def disable_all_servos():
     _channels_initialized.clear()
     
     time.sleep(0.05)
+
+
+def release_hardware_for_calibration(timeout=8.0):
+    """Safely release the PCA9685 so a standalone calibrator can own it.
+
+    New movement commands are rejected before the current movement is asked to
+    stop.  Taking the movement lock ensures that no in-process motion can still
+    be writing PWM when the controller is disabled and deinitialized.
+    """
+    global pca, _channels_initialized
+
+    if _hardware_handoff_event.is_set():
+        return False
+
+    _hardware_handoff_event.set()
+    request_movement_stop()
+    acquired = _movement_command_lock.acquire(timeout=max(0.1, float(timeout)))
+    if not acquired:
+        _hardware_handoff_event.clear()
+        queue_message("ERROR: Servo calibration handoff timed out waiting for movement to stop")
+        return False
+
+    try:
+        controller = pca
+        disable_all_servos()
+        pca = None
+        _channels_initialized.clear()
+        if controller is not None:
+            try:
+                controller.deinit()
+            except Exception as exc:
+                queue_message(f"WARNING: PCA9685 deinitialization reported: {exc}")
+        queue_message("SERVO: PCA9685 released for calibration; PWM outputs are disabled")
+        return True
+    except Exception as exc:
+        queue_message(f"ERROR: Unable to release PCA9685 for calibration: {exc}")
+        _hardware_handoff_event.clear()
+        return False
+    finally:
+        _movement_command_lock.release()
+
+
+def reclaim_hardware_after_calibration():
+    """Reopen the PCA9685 after calibration without energizing any servo."""
+    global pca
+
+    try:
+        # The tester may have saved new offsets in config.ini.  Invalidate the
+        # process-local config cache before refreshing module constants.
+        from modules import module_config
+
+        module_config._config_cache = None
+        refresh_config()
+        controls = config.get("CONTROLS", {})
+        movement_enabled = controls.get("enabled", False) or controls.get("voicemovement", False)
+        if not movement_enabled:
+            pca = None
+            queue_message("SERVO: Calibration closed; movement control remains disabled by configuration")
+            return True
+
+        if not initialize_pca9685():
+            queue_message("ERROR: PCA9685 could not be reclaimed after calibration")
+            return False
+
+        # Reopening the controller must never cause an automatic pose change.
+        # Keep every channel torque-free until the next explicit movement.
+        disable_all_servos()
+        queue_message("SERVO: PCA9685 reclaimed after calibration; PWM outputs remain disabled")
+        return True
+    finally:
+        _hardware_handoff_event.clear()
 
 def reset_positions():
     global servo_positions

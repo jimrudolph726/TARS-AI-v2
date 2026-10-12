@@ -47,9 +47,24 @@ Run only the hardware-safe visual prototype:
     cd ~/TARS-AI-v2
     ./run-main-ui-demo.sh --fullscreen
 
-Press Esc in a windowed session, or use Menu > Exit TARS, to stop the
-application cleanly. The header power control asks for confirmation before
-requesting Raspberry Pi shutdown.
+Press Esc in a windowed session, or use Menu > Exit Application, to stop the
+application cleanly while leaving the Raspberry Pi on. Menu > Restart TARS
+restarts only the application. Menu > Shut Down Pi and the header PWR control
+both require confirmation before requesting an operating-system shutdown.
+
+Servo calibration handoff
+-------------------------
+
+Menu > Servo Calibration safely transfers exclusive PCA9685 ownership to the
+standalone QML servo tester. Before the tester opens, TARS stops listening,
+cancels active movement, disables PWM output, and releases its PCA9685
+connection. The tester starts with PWM output off; support TARS and press
+POWER ON only when it is safe to energize the servos.
+
+When the tester closes, TARS reloads saved calibration offsets, reconnects to
+the PCA9685, and resumes listening. PWM remains off until a later explicit
+movement command, so returning to the main interface does not cause an
+automatic pose change.
 
 Display configuration
 ---------------------

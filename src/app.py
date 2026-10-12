@@ -112,7 +112,13 @@ def main() -> int:
 
     controller = TarsUIController(BASE_DIR)
     runtime = TarsRuntime(config=config, ui_controller=controller, debug_mode=debug_mode)
-    controller.bind_runtime(runtime.request_stop, runtime.request_shutdown)
+    controller.bind_runtime(
+        runtime.request_stop,
+        runtime.request_restart,
+        runtime.request_shutdown,
+        runtime.begin_servo_calibration,
+        runtime.end_servo_calibration,
+    )
     controller.runtimeStopped.connect(app.quit)
 
     engine = None
@@ -170,6 +176,16 @@ def main() -> int:
     runtime.request_stop()
     runtime.join(timeout=10)
     controller.stop()
+    if runtime.restart_requested:
+        queue_message("SYSTEM: Restarting TARS-AI V2")
+        try:
+            os.execv(
+                sys.executable,
+                [sys.executable, str(BASE_DIR / "app.py"), *sys.argv[1:]],
+            )
+        except OSError as exc:
+            queue_message(f"ERROR: Unable to restart TARS-AI V2: {exc}")
+            return 2
     return exit_code
 
 

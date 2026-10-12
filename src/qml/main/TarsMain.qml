@@ -35,6 +35,46 @@ ApplicationWindow {
 
         property string overlayMode: ""
         property string activeApp: ""
+        property string confirmationAction: ""
+        readonly property string confirmationTitle: confirmationAction === "servo" ? "OPEN SERVO CALIBRATION?"
+            : confirmationAction === "restart" ? "RESTART TARS?"
+            : confirmationAction === "exit" ? "EXIT TARS APPLICATION?"
+            : "SHUT DOWN RASPBERRY PI?"
+        readonly property string confirmationMessage: confirmationAction === "servo"
+            ? "TARS will stop listening, cancel movement, disable every PWM output, and release the servo controller before opening the tester. Support the robot before continuing."
+            : confirmationAction === "restart"
+            ? "TARS will stop cleanly and restart the application. The Raspberry Pi will remain powered on."
+            : confirmationAction === "exit"
+            ? "TARS will stop cleanly and return to the Raspberry Pi desktop. The Raspberry Pi will remain powered on."
+            : "TARS will stop cleanly and power off the Raspberry Pi."
+        readonly property string confirmationButtonText: confirmationAction === "servo" ? "OPEN TESTER"
+            : confirmationAction === "restart" ? "RESTART"
+            : confirmationAction === "exit" ? "EXIT APP"
+            : "SHUT DOWN"
+        readonly property string confirmationIcon: confirmationAction === "servo" ? "SRV"
+            : confirmationAction === "restart" ? "RST"
+            : confirmationAction === "exit" ? "EXIT"
+            : "PWR"
+
+        function openConfirmation(action) {
+            confirmationAction = action
+            overlayMode = "confirm"
+        }
+
+        function executeConfirmation() {
+            var action = confirmationAction
+            confirmationAction = ""
+            overlayMode = ""
+            if (action === "servo")
+                controller.launchServoCalibration()
+            else if (action === "restart")
+                controller.requestRestart()
+            else if (action === "exit")
+                controller.exitProgram()
+            else if (action === "shutdown")
+                controller.requestShutdown()
+        }
+
         focus: true
         Keys.onEscapePressed: {
             if (scene.overlayMode === "app") {
@@ -43,9 +83,10 @@ ApplicationWindow {
             } else if (scene.overlayMode.length > 0) {
                 if (scene.overlayMode === "camera")
                     controller.closeCamera()
+                scene.confirmationAction = ""
                 scene.overlayMode = ""
             } else {
-                controller.exitProgram()
+                scene.openConfirmation("exit")
             }
         }
         readonly property bool rotated: displayRotation === 90 || displayRotation === 270
@@ -207,7 +248,7 @@ ApplicationWindow {
                             height: width
                             anchors.verticalCenter: parent.verticalCenter
                             hoverEnabled: true
-                            onClicked: scene.overlayMode = "power"
+                            onClicked: scene.openConfirmation("shutdown")
 
                             contentItem: Text {
                                 text: "PWR"
@@ -389,6 +430,8 @@ ApplicationWindow {
                 TarsButton {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    Layout.minimumWidth: 0
+                    Layout.preferredWidth: 1
                     text: "CAMERA"
                     iconText: "[]"
                     iconPixelSize: 15 * scene.controlScale
@@ -402,6 +445,8 @@ ApplicationWindow {
                 TarsButton {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    Layout.minimumWidth: 0
+                    Layout.preferredWidth: 1
                     text: "APPS"
                     iconText: "::"
                     iconPixelSize: 15 * scene.controlScale
@@ -412,6 +457,8 @@ ApplicationWindow {
                 TarsButton {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    Layout.minimumWidth: 0
+                    Layout.preferredWidth: 1
                     text: controller.muted ? "UNMUTE" : "MUTE"
                     iconText: controller.muted ? "X" : "//"
                     iconPixelSize: 15 * scene.controlScale
@@ -423,6 +470,8 @@ ApplicationWindow {
                 TarsButton {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    Layout.minimumWidth: 0
+                    Layout.preferredWidth: 1
                     text: "MENU"
                     iconText: "="
                     iconPixelSize: 15 * scene.controlScale
@@ -474,6 +523,7 @@ ApplicationWindow {
                 height: scene.overlayMode === "app" ? parent.height * 0.82
                     : scene.overlayMode === "apps" ? Math.min(parent.height * 0.68, 280 * scene.controlScale)
                     : scene.overlayMode === "menu" ? Math.min(parent.height * 0.68, 310 * scene.controlScale)
+                    : scene.overlayMode === "confirm" ? Math.min(parent.height * 0.62, 280 * scene.controlScale)
                     : parent.height * 0.68
                 anchors.centerIn: parent
                 strongBorder: true
@@ -496,7 +546,8 @@ ApplicationWindow {
                                     : scene.overlayMode === "apps" ? "APPLICATIONS"
                                     : scene.overlayMode === "app" ? scene.activeApp.toUpperCase()
                                     : scene.overlayMode === "menu" ? "SYSTEM MENU"
-                                    : "POWER CONTROL"
+                                    : scene.overlayMode === "confirm" ? "CONFIRM ACTION"
+                                    : "SYSTEM CONTROL"
                                 color: window.pale
                                 font.family: displayFontFamily
                                 font.pixelSize: 17 * scene.controlScale
@@ -526,6 +577,7 @@ ApplicationWindow {
                                     scene.overlayMode = "apps"
                                 } else {
                                     scene.activeApp = ""
+                                    scene.confirmationAction = ""
                                     scene.overlayMode = ""
                                 }
                             }
@@ -718,15 +770,19 @@ ApplicationWindow {
                             }
                         }
 
-                        ColumnLayout {
+                        GridLayout {
                             anchors.left: parent.left
                             anchors.right: parent.right
                             anchors.top: parent.top
                             visible: scene.overlayMode === "menu"
-                            spacing: 7 * scene.controlScale
+                            columns: 2
+                            rowSpacing: 7 * scene.controlScale
+                            columnSpacing: 7 * scene.controlScale
 
                             TarsButton {
                                 Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                Layout.preferredWidth: 1
                                 Layout.minimumHeight: 45 * scene.controlScale
                                 Layout.preferredHeight: 45 * scene.controlScale
                                 Layout.maximumHeight: 45 * scene.controlScale
@@ -742,10 +798,12 @@ ApplicationWindow {
                             }
                             TarsButton {
                                 Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                Layout.preferredWidth: 1
                                 Layout.minimumHeight: 45 * scene.controlScale
                                 Layout.preferredHeight: 45 * scene.controlScale
                                 Layout.maximumHeight: 45 * scene.controlScale
-                                text: "WI-FI & REMOTE ACCESS"
+                                text: "WI-FI & REMOTE"
                                 iconText: "LINK"
                                 iconPixelSize: 11 * scene.controlScale
                                 labelPixelSize: 6.5 * scene.controlScale
@@ -757,6 +815,8 @@ ApplicationWindow {
                             }
                             TarsButton {
                                 Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                Layout.preferredWidth: 1
                                 Layout.minimumHeight: 45 * scene.controlScale
                                 Layout.preferredHeight: 45 * scene.controlScale
                                 Layout.maximumHeight: 45 * scene.controlScale
@@ -765,77 +825,113 @@ ApplicationWindow {
                                 iconPixelSize: 11 * scene.controlScale
                                 labelPixelSize: 6.5 * scene.controlScale
                                 accent: window.red
-                                onClicked: {
-                                    controller.launchApp("SERVO TEST")
-                                    scene.overlayMode = ""
-                                }
+                                enabled: !controller.calibrationActive
+                                onClicked: scene.openConfirmation("servo")
                             }
                             TarsButton {
                                 Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                Layout.preferredWidth: 1
                                 Layout.minimumHeight: 45 * scene.controlScale
                                 Layout.preferredHeight: 45 * scene.controlScale
                                 Layout.maximumHeight: 45 * scene.controlScale
-                                text: "EXIT TARS"
+                                text: "RESTART TARS"
+                                iconText: "RST"
+                                iconPixelSize: 11 * scene.controlScale
+                                labelPixelSize: 6.5 * scene.controlScale
+                                accent: window.amber
+                                onClicked: scene.openConfirmation("restart")
+                            }
+                            TarsButton {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                Layout.preferredWidth: 1
+                                Layout.minimumHeight: 45 * scene.controlScale
+                                Layout.preferredHeight: 45 * scene.controlScale
+                                Layout.maximumHeight: 45 * scene.controlScale
+                                text: "EXIT APPLICATION"
                                 iconText: "EXIT"
                                 iconPixelSize: 11 * scene.controlScale
                                 labelPixelSize: 6.5 * scene.controlScale
+                                accent: "#829199"
+                                onClicked: scene.openConfirmation("exit")
+                            }
+                            TarsButton {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                Layout.preferredWidth: 1
+                                Layout.minimumHeight: 45 * scene.controlScale
+                                Layout.preferredHeight: 45 * scene.controlScale
+                                Layout.maximumHeight: 45 * scene.controlScale
+                                text: "SHUT DOWN PI"
+                                iconText: "PWR"
+                                iconPixelSize: 11 * scene.controlScale
+                                labelPixelSize: 6.5 * scene.controlScale
                                 accent: window.red
-                                onClicked: {
-                                    scene.overlayMode = "power"
-                                }
+                                selected: true
+                                onClicked: scene.openConfirmation("shutdown")
                             }
                         }
 
                         Column {
                             anchors.centerIn: parent
-                            visible: scene.overlayMode === "power"
+                            visible: scene.overlayMode === "confirm"
                             width: parent.width
-                            spacing: 18 * scene.uiScale
+                            spacing: 13 * scene.controlScale
 
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                text: "PWR"
-                                color: window.red
-                                font.pixelSize: 58 * scene.uiScale
+                                text: scene.confirmationIcon
+                                color: scene.confirmationAction === "restart" ? window.amber : window.red
+                                font.family: displayFontFamily
+                                font.pixelSize: 30 * scene.controlScale
+                                font.bold: true
                             }
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                text: "SHUT DOWN TARS?"
+                                text: scene.confirmationTitle
                                 color: window.pale
                                 font.family: displayFontFamily
-                                font.pixelSize: 18 * scene.uiScale
+                                font.pixelSize: 13 * scene.controlScale
                                 font.bold: true
-                                font.letterSpacing: 2 * scene.uiScale
+                                font.letterSpacing: 1.3 * scene.controlScale
                             }
                             Text {
+                                width: parent.width - 24 * scene.controlScale
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                text: "This will safely stop TARS and power off the Raspberry Pi."
+                                text: scene.confirmationMessage
                                 color: "#97a7ae"
                                 font.family: monoFontFamily
-                                font.pixelSize: 8 * scene.uiScale
+                                font.pixelSize: 7 * scene.controlScale
+                                wrapMode: Text.Wrap
+                                horizontalAlignment: Text.AlignHCenter
                             }
                             Row {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                spacing: 10 * scene.uiScale
+                                spacing: 9 * scene.controlScale
                                 TarsButton {
-                                    width: 130 * scene.uiScale
-                                    height: 62 * scene.uiScale
+                                    width: 120 * scene.controlScale
+                                    height: 48 * scene.controlScale
                                     text: "CANCEL"
                                     iconText: "<"
+                                    iconPixelSize: 10 * scene.controlScale
+                                    labelPixelSize: 6.5 * scene.controlScale
                                     accent: "#829199"
-                                    onClicked: scene.overlayMode = ""
-                                }
-                                TarsButton {
-                                    width: 170 * scene.uiScale
-                                    height: 62 * scene.uiScale
-                                    text: "SHUT DOWN"
-                                    iconText: "PWR"
-                                    accent: window.red
-                                    selected: true
                                     onClicked: {
-                                        controller.requestShutdown()
+                                        scene.confirmationAction = ""
                                         scene.overlayMode = ""
                                     }
+                                }
+                                TarsButton {
+                                    width: 150 * scene.controlScale
+                                    height: 48 * scene.controlScale
+                                    text: scene.confirmationButtonText
+                                    iconText: scene.confirmationIcon
+                                    iconPixelSize: 10 * scene.controlScale
+                                    labelPixelSize: 6.5 * scene.controlScale
+                                    accent: scene.confirmationAction === "restart" ? window.amber : window.red
+                                    selected: true
+                                    onClicked: scene.executeConfirmation()
                                 }
                             }
                         }

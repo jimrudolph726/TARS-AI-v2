@@ -22,6 +22,7 @@ class TarsRuntime(threading.Thread):
         self.debug_mode = debug_mode
         self.shutdown_event = threading.Event()
         self._shutdown_device = False
+        self._restart_process = False
         self._startup_failed = False
         self._notify_lock = threading.Lock()
         self._runtime_stopped_notified = False
@@ -32,17 +33,108 @@ class TarsRuntime(threading.Thread):
         self.memory_manager = None
         self.bt_controller_thread = None
         self._state_callback = None
+        self._calibration_lock = threading.Lock()
+        self._calibration_active = False
+        self._calibration_stt_was_paused = False
 
     def request_stop(self) -> None:
         self.shutdown_event.set()
         if not self.is_alive():
             self._notify_runtime_stopped_once()
 
+    def request_restart(self) -> None:
+        """Stop cleanly and ask the entry point to replace this process."""
+        self._restart_process = True
+        self.shutdown_event.set()
+        if not self.is_alive():
+            self._notify_runtime_stopped_once()
+
     def request_shutdown(self) -> None:
+        self._restart_process = False
         self._shutdown_device = True
         self.shutdown_event.set()
         if not self.is_alive():
             self._power_off()
+
+    @property
+    def restart_requested(self) -> bool:
+        return self._restart_process and not self._shutdown_device
+
+    def begin_servo_calibration(self) -> tuple[bool, str]:
+        """Pause command input and transfer exclusive PWM ownership to the tester."""
+        with self._calibration_lock:
+            if self._calibration_active:
+                return False, "Servo calibration is already open"
+            if self.shutdown_event.is_set():
+                return False, "TARS is shutting down"
+            self._calibration_active = True
+
+        self._calibration_stt_was_paused = bool(
+            self.stt_manager is not None and self.stt_manager.is_paused()
+        )
+        try:
+            try:
+                from modules.module_tts import stop_tts_playback
+
+                stop_tts_playback()
+            except Exception:
+                pass
+
+            from modules import module_servoctl
+
+            if not module_servoctl.release_hardware_for_calibration():
+                raise RuntimeError("active movement did not release servo control")
+
+            # A movement completion callback may have resumed STT while the
+            # hardware lock was being acquired, so pause after the handoff too.
+            if self.stt_manager is not None:
+                self.stt_manager.pause()
+            self._status("SERVO CALIBRATION ACTIVE", True)
+            return True, "Servo control safely transferred to calibration"
+        except Exception as exc:
+            with self._calibration_lock:
+                self._calibration_active = False
+            if self.stt_manager is not None and not self._calibration_stt_was_paused:
+                self.stt_manager.resume()
+            return False, str(exc)
+
+    def end_servo_calibration(self) -> tuple[bool, str]:
+        """Reclaim PWM ownership after the tester exits, without moving servos."""
+        with self._calibration_lock:
+            if not self._calibration_active:
+                return True, "Servo calibration is already closed"
+
+        ok = True
+        message = "Servo calibration closed"
+        try:
+            if not self.shutdown_event.is_set():
+                from modules import module_servoctl
+
+                ok = bool(module_servoctl.reclaim_hardware_after_calibration())
+                if ok:
+                    message = "Calibration saved; servo control restored with PWM off"
+                else:
+                    message = "Calibration closed, but PCA9685 reconnection failed"
+                self._status("ALL SYSTEMS OPERATIONAL" if ok else "SERVO CONTROLLER OFFLINE", ok)
+        except Exception as exc:
+            ok = False
+            message = f"Servo control restore failed: {exc}"
+            if not self.shutdown_event.is_set():
+                self._status("SERVO CONTROLLER OFFLINE", False)
+        finally:
+            if (
+                not self.shutdown_event.is_set()
+                and self.stt_manager is not None
+                and not self._calibration_stt_was_paused
+            ):
+                try:
+                    self.stt_manager.resume()
+                except Exception as exc:
+                    ok = False
+                    message = f"{message}; voice resume failed: {exc}"
+            with self._calibration_lock:
+                self._calibration_active = False
+        return ok, message
 
     def _notify_runtime_stopped_once(self) -> None:
         """Emit the Qt completion signal at most once per process."""

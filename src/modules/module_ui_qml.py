@@ -146,6 +146,7 @@ class TarsUIController(QObject):
     cameraChanged = Signal()
     avatarChanged = Signal()
     remoteChanged = Signal()
+    calibrationChanged = Signal()
 
     runtimeStopped = Signal()
 
@@ -161,7 +162,9 @@ class TarsUIController(QObject):
     _silenceRequested = Signal(float)
     _cameraStartedRequested = Signal(object, object, str)
     _remoteUpdateRequested = Signal(str, str, str, object)
+    _calibrationStateRequested = Signal(bool)
     _exitRequested = Signal()
+    _restartRequested = Signal()
     _shutdownRequested = Signal()
 
     _STATE_DETAILS = {
@@ -221,12 +224,19 @@ class TarsUIController(QObject):
         self._remote_url = ""
         self._remote_error = ""
         self._wifi_networks: list[dict[str, object]] = []
+        self._calibration_active = False
+        self._calibration_launching = False
+        self._servo_tester_process = None
+        self._servo_process_lock = threading.Lock()
 
         self._battery_source = None
         self._cpu_source = None
         self._stt_manager = None
         self._request_stop: Optional[Callable[[], None]] = None
+        self._request_restart: Optional[Callable[[], None]] = None
         self._request_shutdown: Optional[Callable[[], None]] = None
+        self._begin_servo_calibration: Optional[Callable[[], tuple[bool, str]]] = None
+        self._end_servo_calibration: Optional[Callable[[], tuple[bool, str]]] = None
         self._source_lock = threading.Lock()
         self._wifi_stop = threading.Event()
 
@@ -242,7 +252,9 @@ class TarsUIController(QObject):
         self._silenceRequested.connect(self._apply_silence)
         self._cameraStartedRequested.connect(self._apply_camera_started)
         self._remoteUpdateRequested.connect(self._apply_remote_update)
+        self._calibrationStateRequested.connect(self._apply_calibration_state)
         self._exitRequested.connect(self.exitProgram)
+        self._restartRequested.connect(self.requestRestart)
         self._shutdownRequested.connect(self.requestShutdown)
 
         self._clock_timer = QTimer(self)
@@ -430,6 +442,10 @@ class TarsUIController(QObject):
     def wifiNetworks(self) -> list[dict[str, object]]:
         return self._wifi_networks
 
+    @Property(bool, notify=calibrationChanged)
+    def calibrationActive(self) -> bool:
+        return self._calibration_active
+
     @Property(QObject, constant=True)
     def conversationModel(self) -> QObject:
         return self._conversation
@@ -441,10 +457,16 @@ class TarsUIController(QObject):
     def bind_runtime(
         self,
         request_stop: Callable[[], None],
+        request_restart: Callable[[], None],
         request_shutdown: Callable[[], None],
+        begin_servo_calibration: Callable[[], tuple[bool, str]],
+        end_servo_calibration: Callable[[], tuple[bool, str]],
     ) -> None:
         self._request_stop = request_stop
+        self._request_restart = request_restart
         self._request_shutdown = request_shutdown
+        self._begin_servo_calibration = begin_servo_calibration
+        self._end_servo_calibration = end_servo_calibration
 
     def attach_sources(self, battery=None, cpu=None, stt=None) -> None:
         with self._source_lock:
@@ -782,6 +804,13 @@ class TarsUIController(QObject):
             self._wifi_networks = list(data.get("networks") or [])
         self.remoteChanged.emit()
 
+    @Slot(bool)
+    def _apply_calibration_state(self, active: bool) -> None:
+        if self._calibration_active == active:
+            return
+        self._calibration_active = active
+        self.calibrationChanged.emit()
+
     @staticmethod
     def _remote_local_url() -> str:
         try:
@@ -982,20 +1011,93 @@ class TarsUIController(QObject):
     def launchApp(self, app_name: str) -> None:
         normalized = app_name.strip().upper()
         if normalized == "SERVO TEST":
-            script = self._base_dir / "app-servotester-qml.py"
-            try:
-                subprocess.Popen([sys.executable, str(script), "--fullscreen"], cwd=self._base_dir)
-                self._apply_notice("SERVO TESTER LAUNCHED", 2800)
-            except Exception as exc:
-                self._apply_notice(f"SERVO TESTER FAILED: {exc}", 4500)
+            self.launchServoCalibration()
             return
         self._apply_notice(f"{normalized} APP IS NOT MIGRATED YET", 3200)
+
+    def _servo_calibration_worker(self) -> None:
+        handed_off = False
+        return_code = None
+        try:
+            if self._begin_servo_calibration is None:
+                raise RuntimeError("runtime calibration handoff is unavailable")
+
+            ok, message = self._begin_servo_calibration()
+            if not ok:
+                raise RuntimeError(message)
+            handed_off = True
+            self._calibrationStateRequested.emit(True)
+            self._noticeRequested.emit(
+                "SERVO CALIBRATION ACTIVE · VOICE AND MOVEMENT PAUSED", 4200
+            )
+
+            script = self._base_dir / "app-servotester-qml.py"
+            process = subprocess.Popen(
+                [sys.executable, str(script), "--fullscreen"],
+                cwd=self._base_dir,
+            )
+            with self._servo_process_lock:
+                self._servo_tester_process = process
+            return_code = process.wait()
+        except Exception as exc:
+            self._noticeRequested.emit(f"SERVO TESTER FAILED: {exc}", 5200)
+        finally:
+            restore_ok = True
+            restore_message = "Servo calibration closed"
+            if handed_off and self._end_servo_calibration is not None:
+                try:
+                    restore_ok, restore_message = self._end_servo_calibration()
+                except Exception as exc:
+                    restore_ok = False
+                    restore_message = f"Servo restore failed: {exc}"
+
+            with self._servo_process_lock:
+                self._servo_tester_process = None
+                self._calibration_launching = False
+            self._calibrationStateRequested.emit(False)
+
+            if handed_off:
+                if return_code not in (None, 0):
+                    self._noticeRequested.emit(
+                        f"SERVO TESTER CLOSED WITH ERROR {return_code} · {restore_message}", 6000
+                    )
+                elif restore_ok:
+                    self._noticeRequested.emit(restore_message.upper(), 4200)
+                else:
+                    self._noticeRequested.emit(restore_message.upper(), 6000)
+
+    @Slot()
+    def launchServoCalibration(self) -> None:
+        with self._servo_process_lock:
+            running = (
+                self._servo_tester_process is not None
+                and self._servo_tester_process.poll() is None
+            )
+            if self._calibration_launching or running:
+                self._apply_notice("SERVO CALIBRATION IS ALREADY OPEN", 3200)
+                return
+            self._calibration_launching = True
+
+        self._apply_notice("PREPARING SAFE SERVO HANDOFF", 3200)
+        threading.Thread(
+            target=self._servo_calibration_worker,
+            name="QMLServoCalibration",
+            daemon=True,
+        ).start()
 
     @Slot()
     def exitProgram(self) -> None:
         self._apply_notice("STOPPING TARS", 5000)
         if self._request_stop:
             self._request_stop()
+        else:
+            self.runtimeStopped.emit()
+
+    @Slot()
+    def requestRestart(self) -> None:
+        self._apply_notice("RESTARTING TARS", 5000)
+        if self._request_restart:
+            self._request_restart()
         else:
             self.runtimeStopped.emit()
 

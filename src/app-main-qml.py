@@ -325,6 +325,10 @@ class MainInterfaceController(QObject):
     def wifiNetworks(self) -> list[dict[str, object]]:
         return self._wifi_networks
 
+    @Property(bool, constant=True)
+    def calibrationActive(self) -> bool:
+        return False
+
     @Property(QObject, constant=True)
     def conversationModel(self) -> QObject:
         return self._conversation
@@ -382,6 +386,10 @@ class MainInterfaceController(QObject):
         self._set_notice(f"Mock app selected: {app_name}")
 
     @Slot()
+    def launchServoCalibration(self) -> None:
+        self._set_notice("Mock servo calibration handoff · no hardware action was taken", 5000)
+
+    @Slot()
     def refreshRemoteAccess(self) -> None:
         self._remote_state = "ready"
         self._remote_status = "Connected to TARS-NET"
@@ -427,6 +435,10 @@ class MainInterfaceController(QObject):
     @Slot()
     def requestShutdown(self) -> None:
         self.requestPower()
+
+    @Slot()
+    def requestRestart(self) -> None:
+        self._set_notice("Mock restart requested · no process action was taken", 5000)
 
     @Slot()
     def exitProgram(self) -> None:

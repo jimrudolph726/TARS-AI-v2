@@ -29,7 +29,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=720, help="window height when not full screen")
     parser.add_argument(
         "--app",
-        choices=("clock", "dashboard", "eyes", "avatar", "remote", "audio"),
+        choices=("clock", "dashboard", "system-health", "eyes", "avatar", "remote", "audio"),
         help="open one registered app directly for UI testing",
     )
     parser.add_argument(
@@ -154,6 +154,7 @@ class MainInterfaceController(QObject):
     cameraChanged = Signal()
     avatarChanged = Signal()
     remoteChanged = Signal()
+    dashboardChanged = Signal()
 
     STATES = (
         ("LISTENING", "TARS READY"),
@@ -184,6 +185,36 @@ class MainInterfaceController(QObject):
             {"ssid": "TARS-NET", "signal": 92, "security": "WPA2", "in_use": True},
             {"ssid": "ENDURANCE", "signal": 68, "security": "WPA2", "in_use": False},
         ]
+        self._dashboard_loading = False
+        self._dashboard_error = ""
+        self._dashboard_weather = {
+            "temperature": 63,
+            "feelsLike": 61,
+            "humidity": 54,
+            "wind": 9,
+            "condition": "Partly cloudy",
+            "unit": "°F",
+            "location": "Chicago",
+        }
+        self._dashboard_forecast = [
+            {"day": "MON", "high": 66, "low": 48, "rain": 10, "condition": "Clear"},
+            {"day": "TUE", "high": 62, "low": 46, "rain": 35, "condition": "Cloudy"},
+            {"day": "WED", "high": 59, "low": 44, "rain": 70, "condition": "Rain"},
+            {"day": "THU", "high": 64, "low": 47, "rain": 15, "condition": "Clear"},
+            {"day": "FRI", "high": 68, "low": 51, "rain": 10, "condition": "Clear"},
+        ]
+        self._dashboard_news = [
+            {"kind": "NEWS", "title": "Robotics team completes a new autonomous field test", "detail": "The latest trial focused on navigation and perception.", "meta": "TECH", "date": ""},
+            {"kind": "NEWS", "title": "Astronomers publish new deep-space observations", "detail": "Researchers shared results from a multi-year survey.", "meta": "SCIENCE", "date": ""},
+        ]
+        self._dashboard_calendar = [
+            {"kind": "CALENDAR", "title": "TARS calibration session", "detail": "Workshop", "meta": "TODAY · 6:30 PM", "date": ""},
+            {"kind": "CALENDAR", "title": "Project review", "detail": "Lab", "meta": "TOMORROW · 10:00 AM", "date": ""},
+        ]
+        self._dashboard_quote = {
+            "text": "We're explorers, not caretakers.",
+            "author": "Interstellar",
+        }
 
         self._clock_timer = QTimer(self)
         self._clock_timer.setInterval(1000)
@@ -238,6 +269,10 @@ class MainInterfaceController(QObject):
     def batteryAvailable(self) -> bool:
         return True
 
+    @Property(float, constant=True)
+    def batteryVoltage(self) -> float:
+        return 11.74
+
     @Property(int, notify=telemetryChanged)
     def cpuTemperature(self) -> int:
         return self._cpu_temperature
@@ -253,6 +288,98 @@ class MainInterfaceController(QObject):
     @Property(str, notify=telemetryChanged)
     def wifiSsid(self) -> str:
         return "TARS-NET" if self._wifi_online else ""
+
+    @Property(int, notify=telemetryChanged)
+    def wifiSignal(self) -> int:
+        return 92 if self._wifi_online else 0
+
+    @Property(int, notify=telemetryChanged)
+    def memoryPercent(self) -> int:
+        return 42
+
+    @Property(int, notify=telemetryChanged)
+    def diskPercent(self) -> int:
+        return 31
+
+    @Property(str, notify=telemetryChanged)
+    def uptimeText(self) -> str:
+        return "3h 18m"
+
+    @Property(int, notify=telemetryChanged)
+    def processThreads(self) -> int:
+        return 14
+
+    @Property("QVariantList", notify=telemetryChanged)
+    def hardwareDiagnostics(self) -> list[dict[str, object]]:
+        return [
+            {"label": "SERVO CONTROLLER", "value": "ONLINE", "state": "ok", "detail": "PCA9685 servo controller detected"},
+            {"label": "BATTERY SENSOR", "value": "ONLINE", "state": "ok", "detail": "INA260 voltage and current sensor detected"},
+            {"label": "CAMERA", "value": "CONFIGURED", "state": "info", "detail": "Camera will initialize on first use"},
+            {"label": "MICROPHONE", "value": "ONLINE", "state": "ok", "detail": "Shared audio input and wake-word stream"},
+        ]
+
+    @Property("QVariantList", notify=telemetryChanged)
+    def softwareDiagnostics(self) -> list[dict[str, object]]:
+        return [
+            {"label": "RUNTIME", "value": "READY", "state": "ok", "detail": "ALL SYSTEMS OPERATIONAL"},
+            {"label": "SPEECH INPUT", "value": "OPENAI", "state": "ok", "detail": "GPT Live transcription"},
+            {"label": "VOICE OUTPUT", "value": "ELEVENLABS", "state": "ok", "detail": "Configured text-to-speech backend"},
+            {"label": "LANGUAGE MODEL", "value": "OPENAI", "state": "info", "detail": "Configured conversational model"},
+        ]
+
+    @Property(bool, notify=dashboardChanged)
+    def dashboardLoading(self) -> bool:
+        return self._dashboard_loading
+
+    @Property(str, notify=dashboardChanged)
+    def dashboardError(self) -> str:
+        return self._dashboard_error
+
+    @Property("QVariantMap", notify=dashboardChanged)
+    def dashboardWeather(self) -> dict[str, object]:
+        return self._dashboard_weather
+
+    @Property("QVariantList", notify=dashboardChanged)
+    def dashboardForecast(self) -> list[dict[str, object]]:
+        return self._dashboard_forecast
+
+    @Property("QVariantList", notify=dashboardChanged)
+    def dashboardNews(self) -> list[dict[str, object]]:
+        return self._dashboard_news
+
+    @Property("QVariantList", notify=dashboardChanged)
+    def dashboardCalendar(self) -> list[dict[str, object]]:
+        return self._dashboard_calendar
+
+    @Property("QVariantList", notify=dashboardChanged)
+    def dashboardFeed(self) -> list[dict[str, object]]:
+        var_feed = []
+        for index in range(max(len(self._dashboard_news), len(self._dashboard_calendar))):
+            if index < len(self._dashboard_calendar):
+                var_feed.append(self._dashboard_calendar[index])
+            if index < len(self._dashboard_news):
+                var_feed.append(self._dashboard_news[index])
+        return var_feed
+
+    @Property("QVariantMap", notify=dashboardChanged)
+    def dashboardQuote(self) -> dict[str, object]:
+        return self._dashboard_quote
+
+    @Property(str, constant=True)
+    def dashboardLocation(self) -> str:
+        return "Chicago"
+
+    @Property(str, notify=dashboardChanged)
+    def dashboardLastUpdated(self) -> str:
+        return datetime.now().strftime("%I:%M %p").lstrip("0")
+
+    @Property(bool, constant=True)
+    def dashboardCalendarConfigured(self) -> bool:
+        return True
+
+    @Property(str, constant=True)
+    def dashboardConfigFile(self) -> str:
+        return "dashboard.ini"
 
     @Property(bool, constant=True)
     def runtimeReady(self) -> bool:
@@ -435,6 +562,32 @@ class MainInterfaceController(QObject):
         self._remote_status = "Remote access stopped (prototype)"
         self._remote_url = ""
         self.remoteChanged.emit()
+
+    @Slot()
+    def refreshDashboard(self) -> None:
+        self._dashboard_loading = True
+        self.dashboardChanged.emit()
+
+        def finish_refresh() -> None:
+            self._dashboard_loading = False
+            self.dashboardChanged.emit()
+            self._set_notice("Dashboard data refreshed (prototype)")
+
+        QTimer.singleShot(450, finish_refresh)
+
+    @Slot()
+    def nextDashboardQuote(self) -> None:
+        quotes = [
+            {"text": "We're explorers, not caretakers.", "author": "Interstellar"},
+            {"text": "Somewhere, something incredible is waiting to be known.", "author": "Carl Sagan"},
+            {"text": "Mankind was born on Earth. It was never meant to die here.", "author": "Interstellar"},
+        ]
+        current = next(
+            (index for index, quote in enumerate(quotes) if quote["text"] == self._dashboard_quote.get("text")),
+            -1,
+        )
+        self._dashboard_quote = quotes[(current + 1) % len(quotes)]
+        self.dashboardChanged.emit()
 
     @Slot()
     def addDemoExchange(self) -> None:

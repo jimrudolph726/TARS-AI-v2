@@ -5,7 +5,8 @@
 // properties without duplicating titles, icons, or QML source paths.
 var applications = [
     { id: "clock", title: "CLOCK", icon: "CLK", source: "ClockApp.qml", badgeKey: "ready", enabled: true },
-    { id: "dashboard", title: "DASHBOARD", icon: "SYS", source: "DashboardApp.qml", badgeKey: "live", enabled: true },
+    { id: "dashboard", title: "DASHBOARD", icon: "SYS", source: "DashboardApp.qml", badgeKey: "dashboard", enabled: true },
+    { id: "system-health", title: "SYSTEM HEALTH", icon: "HLTH", source: "SystemHealthApp.qml", badgeKey: "health", enabled: true },
     { id: "eyes", title: "EYES", icon: "00", source: "EyesApp.qml", badgeKey: "live", enabled: true },
     { id: "avatar", title: "AVATAR", icon: "T", source: "AvatarApp.qml", badgeKey: "avatar", enabled: true },
     { id: "remote", title: "REMOTE ACCESS", icon: "LINK", source: "RemoteApp.qml", badgeKey: "remote", enabled: true },

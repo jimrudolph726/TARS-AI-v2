@@ -79,6 +79,25 @@ ApplicationWindow {
         }
 
         function launcherBadge(app) {
+            if (app.badgeKey === "health") {
+                if (!controller.runtimeReady)
+                    return "WAIT"
+                var groups = [controller.hardwareDiagnostics, controller.softwareDiagnostics]
+                for (var groupIndex = 0; groupIndex < groups.length; ++groupIndex) {
+                    for (var itemIndex = 0; itemIndex < groups[groupIndex].length; ++itemIndex) {
+                        if (groups[groupIndex][itemIndex].state === "error")
+                            return "CHECK"
+                    }
+                }
+                return "GOOD"
+            }
+            if (app.badgeKey === "dashboard") {
+                if (controller.dashboardLoading)
+                    return "SYNC"
+                if (controller.dashboardError.length)
+                    return "ERROR"
+                return controller.dashboardLastUpdated.length ? "LIVE" : "READY"
+            }
             if (app.badgeKey === "remote") {
                 if (controller.remoteState === "active" || controller.remoteState === "hotspot")
                     return "ONLINE"
@@ -97,7 +116,7 @@ ApplicationWindow {
             var badge = launcherBadge(app)
             if (badge === "ERROR")
                 return window.red
-            if (badge === "WAIT" || badge === "SETUP")
+            if (badge === "WAIT" || badge === "SETUP" || badge === "SYNC" || badge === "CHECK")
                 return window.amber
             return window.green
         }
@@ -560,7 +579,7 @@ ApplicationWindow {
             TarsPanel {
                 id: modal
                 width: parent.width - 42 * scene.uiScale
-                height: scene.overlayMode === "app" ? parent.height * 0.82
+                height: scene.overlayMode === "app" ? parent.height * 0.94
                     : scene.overlayMode === "apps" ? Math.min(parent.height * 0.68, 280 * scene.controlScale)
                     : scene.overlayMode === "menu" ? Math.min(parent.height * 0.68, 310 * scene.controlScale)
                     : scene.overlayMode === "confirm" ? Math.min(parent.height * 0.62, 280 * scene.controlScale)
@@ -826,12 +845,12 @@ ApplicationWindow {
                                 Layout.minimumHeight: 45 * scene.controlScale
                                 Layout.preferredHeight: 45 * scene.controlScale
                                 Layout.maximumHeight: 45 * scene.controlScale
-                                text: "SYSTEM STATUS"
-                                iconText: "SYS"
+                                text: "SYSTEM HEALTH"
+                                iconText: "HLTH"
                                 iconPixelSize: 11 * scene.controlScale
                                 labelPixelSize: 6.5 * scene.controlScale
                                 accent: window.red
-                                onClicked: scene.openApp("dashboard", "menu")
+                                onClicked: scene.openApp("system-health", "menu")
                             }
                             TarsButton {
                                 Layout.fillWidth: true

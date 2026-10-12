@@ -10,6 +10,7 @@ Rectangle {
     property string statusText: ""
     property color accent: "#ff3852"
     property real uiScale: 1.0
+    property real controlWidth: 0
 
     implicitWidth: 320 * uiScale
     implicitHeight: 50 * uiScale
@@ -60,8 +61,11 @@ Rectangle {
 
         Item {
             id: controlHost
-            Layout.preferredWidth: Math.max(82 * root.uiScale, childrenRect.width)
+            Layout.preferredWidth: root.controlWidth > 0
+                ? root.controlWidth
+                : children.length > 0 ? Math.max(82 * root.uiScale, childrenRect.width) : 0
             Layout.fillHeight: true
+            visible: Layout.preferredWidth > 0
             enabled: root.enabled
         }
     }

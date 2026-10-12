@@ -8,6 +8,7 @@ GUI thread.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import threading
@@ -147,6 +148,7 @@ class TarsUIController(QObject):
     avatarChanged = Signal()
     remoteChanged = Signal()
     calibrationChanged = Signal()
+    dashboardChanged = Signal()
 
     runtimeStopped = Signal()
 
@@ -163,6 +165,7 @@ class TarsUIController(QObject):
     _cameraStartedRequested = Signal(object, object, str)
     _remoteUpdateRequested = Signal(str, str, str, object)
     _calibrationStateRequested = Signal(bool)
+    _dashboardRequested = Signal(object)
     _exitRequested = Signal()
     _restartRequested = Signal()
     _shutdownRequested = Signal()
@@ -179,7 +182,11 @@ class TarsUIController(QObject):
     def __init__(self, base_dir: Path, parent: Optional[QObject] = None):
         super().__init__(parent)
         self._base_dir = Path(base_dir)
+        from modules.module_config import load_config
+
+        self._config = load_config()
         self._conversation = ConversationModel(parent=self)
+        self._process_started_at = time.monotonic()
         self._state = "BOOTING"
         self._battery_percent = 0
         self._battery_voltage = 0.0
@@ -229,6 +236,27 @@ class TarsUIController(QObject):
         self._servo_tester_process = None
         self._servo_process_lock = threading.Lock()
 
+        self._memory_percent = 0
+        self._disk_percent = 0
+        self._uptime_text = "--"
+        self._process_threads = 0
+        self._hardware_diagnostics: list[dict[str, object]] = []
+        self._software_diagnostics: list[dict[str, object]] = []
+
+        self._dashboard_service = None
+        self._dashboard_loading = False
+        self._dashboard_error = ""
+        self._dashboard_weather: dict[str, object] = {}
+        self._dashboard_forecast: list[dict[str, object]] = []
+        self._dashboard_news: list[dict[str, object]] = []
+        self._dashboard_calendar: list[dict[str, object]] = []
+        self._dashboard_feed: list[dict[str, object]] = []
+        self._dashboard_quote: dict[str, object] = {"text": "", "author": ""}
+        self._dashboard_location = ""
+        self._dashboard_last_updated = ""
+        self._dashboard_calendar_configured = False
+        self._dashboard_config_file = "dashboard.ini"
+
         self._battery_source = None
         self._cpu_source = None
         self._stt_manager = None
@@ -253,6 +281,7 @@ class TarsUIController(QObject):
         self._cameraStartedRequested.connect(self._apply_camera_started)
         self._remoteUpdateRequested.connect(self._apply_remote_update)
         self._calibrationStateRequested.connect(self._apply_calibration_state)
+        self._dashboardRequested.connect(self._apply_dashboard_snapshot)
         self._exitRequested.connect(self.exitProgram)
         self._restartRequested.connect(self.requestRestart)
         self._shutdownRequested.connect(self.requestShutdown)
@@ -266,6 +295,12 @@ class TarsUIController(QObject):
         self._telemetry_timer.setInterval(2000)
         self._telemetry_timer.timeout.connect(self._poll_local_telemetry)
         self._telemetry_timer.start()
+        QTimer.singleShot(0, self._poll_local_telemetry)
+
+        self._dashboard_timer = QTimer(self)
+        self._dashboard_timer.setInterval(60000)
+        self._dashboard_timer.timeout.connect(self._refresh_dashboard_if_due)
+        self._dashboard_timer.start()
 
         self._notice_timer = QTimer(self)
         self._notice_timer.setSingleShot(True)
@@ -353,6 +388,78 @@ class TarsUIController(QObject):
     @Property(int, notify=telemetryChanged)
     def wifiSignal(self) -> int:
         return self._wifi_signal
+
+    @Property(int, notify=telemetryChanged)
+    def memoryPercent(self) -> int:
+        return self._memory_percent
+
+    @Property(int, notify=telemetryChanged)
+    def diskPercent(self) -> int:
+        return self._disk_percent
+
+    @Property(str, notify=telemetryChanged)
+    def uptimeText(self) -> str:
+        return self._uptime_text
+
+    @Property(int, notify=telemetryChanged)
+    def processThreads(self) -> int:
+        return self._process_threads
+
+    @Property("QVariantList", notify=telemetryChanged)
+    def hardwareDiagnostics(self) -> list[dict[str, object]]:
+        return self._hardware_diagnostics
+
+    @Property("QVariantList", notify=telemetryChanged)
+    def softwareDiagnostics(self) -> list[dict[str, object]]:
+        return self._software_diagnostics
+
+    @Property(bool, notify=dashboardChanged)
+    def dashboardLoading(self) -> bool:
+        return self._dashboard_loading
+
+    @Property(str, notify=dashboardChanged)
+    def dashboardError(self) -> str:
+        return self._dashboard_error
+
+    @Property("QVariantMap", notify=dashboardChanged)
+    def dashboardWeather(self) -> dict[str, object]:
+        return self._dashboard_weather
+
+    @Property("QVariantList", notify=dashboardChanged)
+    def dashboardForecast(self) -> list[dict[str, object]]:
+        return self._dashboard_forecast
+
+    @Property("QVariantList", notify=dashboardChanged)
+    def dashboardNews(self) -> list[dict[str, object]]:
+        return self._dashboard_news
+
+    @Property("QVariantList", notify=dashboardChanged)
+    def dashboardCalendar(self) -> list[dict[str, object]]:
+        return self._dashboard_calendar
+
+    @Property("QVariantList", notify=dashboardChanged)
+    def dashboardFeed(self) -> list[dict[str, object]]:
+        return self._dashboard_feed
+
+    @Property("QVariantMap", notify=dashboardChanged)
+    def dashboardQuote(self) -> dict[str, object]:
+        return self._dashboard_quote
+
+    @Property(str, notify=dashboardChanged)
+    def dashboardLocation(self) -> str:
+        return self._dashboard_location
+
+    @Property(str, notify=dashboardChanged)
+    def dashboardLastUpdated(self) -> str:
+        return self._dashboard_last_updated
+
+    @Property(bool, notify=dashboardChanged)
+    def dashboardCalendarConfigured(self) -> bool:
+        return self._dashboard_calendar_configured
+
+    @Property(str, notify=dashboardChanged)
+    def dashboardConfigFile(self) -> str:
+        return self._dashboard_config_file
 
     @Property(bool, notify=mutedChanged)
     def muted(self) -> bool:
@@ -718,6 +825,9 @@ class TarsUIController(QObject):
         self._audio_timer.stop()
         self._camera_timer.stop()
         self._avatar_timer.stop()
+        self._dashboard_timer.stop()
+        if self._dashboard_service is not None:
+            self._dashboard_service.stop()
         if self._audio_stream is not None:
             try:
                 self._audio_stream.close()
@@ -1007,6 +1117,59 @@ class TarsUIController(QObject):
             daemon=True,
         ).start()
 
+    def _ensure_dashboard_service(self):  # noqa: ANN202
+        if self._dashboard_service is None:
+            from modules.module_dashboard_qml import DashboardDataService
+
+            self._dashboard_service = DashboardDataService(
+                self._base_dir,
+                self._dashboardRequested.emit,
+            )
+            self._dashboardRequested.emit(self._dashboard_service.snapshot())
+        return self._dashboard_service
+
+    @Slot()
+    def refreshDashboard(self) -> None:
+        try:
+            self._ensure_dashboard_service().request_refresh(force=True)
+        except Exception as exc:
+            self._dashboardRequested.emit(
+                {
+                    "loading": False,
+                    "error": f"Dashboard initialization failed: {exc}",
+                }
+            )
+
+    @Slot()
+    def nextDashboardQuote(self) -> None:
+        try:
+            self._ensure_dashboard_service().rotate_quote()
+        except Exception as exc:
+            self._noticeRequested.emit(f"DASHBOARD QUOTE ERROR: {exc}", 3600)
+
+    @Slot()
+    def _refresh_dashboard_if_due(self) -> None:
+        if self._dashboard_service is not None:
+            self._dashboard_service.request_refresh(force=False)
+
+    @Slot(object)
+    def _apply_dashboard_snapshot(self, snapshot: object) -> None:
+        if not isinstance(snapshot, dict):
+            return
+        self._dashboard_loading = bool(snapshot.get("loading", False))
+        self._dashboard_error = str(snapshot.get("error", ""))
+        self._dashboard_weather = dict(snapshot.get("weather") or {})
+        self._dashboard_forecast = list(snapshot.get("forecast") or [])
+        self._dashboard_news = list(snapshot.get("news") or [])
+        self._dashboard_calendar = list(snapshot.get("calendar") or [])
+        self._dashboard_feed = list(snapshot.get("feed") or [])
+        self._dashboard_quote = dict(snapshot.get("quote") or {"text": "", "author": ""})
+        self._dashboard_location = str(snapshot.get("location", ""))
+        self._dashboard_last_updated = str(snapshot.get("lastUpdated", ""))
+        self._dashboard_calendar_configured = bool(snapshot.get("calendarConfigured", False))
+        self._dashboard_config_file = str(snapshot.get("configFile", "dashboard.ini"))
+        self.dashboardChanged.emit()
+
     @Slot(str)
     def launchApp(self, app_name: str) -> None:
         normalized = app_name.strip().upper()
@@ -1173,10 +1336,10 @@ class TarsUIController(QObject):
 
     @Slot()
     def _poll_local_telemetry(self) -> None:
-        changed = False
         with self._source_lock:
             battery = self._battery_source
             cpu = self._cpu_source
+            stt = self._stt_manager
 
         if battery is not None:
             try:
@@ -1184,7 +1347,6 @@ class TarsUIController(QObject):
                 self._battery_available = bool(status.get("sensor_initialized", False))
                 self._battery_percent = int(status.get("normalized_percentage", 0))
                 self._battery_voltage = float(status.get("voltage", 0.0))
-                changed = True
             except Exception:
                 self._battery_available = False
 
@@ -1192,12 +1354,151 @@ class TarsUIController(QObject):
             try:
                 self._cpu_available = bool(getattr(cpu, "sensor_available", False))
                 self._cpu_temperature = round(float(cpu.get_temperature()))
-                changed = True
             except Exception:
                 self._cpu_available = False
 
-        if changed:
-            self.telemetryChanged.emit()
+        self._collect_resource_metrics()
+        self._build_system_diagnostics(battery, stt)
+        self.telemetryChanged.emit()
+
+    @staticmethod
+    def _format_uptime(seconds: float) -> str:
+        total_minutes = max(0, int(seconds // 60))
+        days, remaining = divmod(total_minutes, 1440)
+        hours, minutes = divmod(remaining, 60)
+        if days:
+            return f"{days}d {hours}h"
+        if hours:
+            return f"{hours}h {minutes}m"
+        return f"{minutes}m"
+
+    def _collect_resource_metrics(self) -> None:
+        try:
+            import psutil
+
+            self._memory_percent = round(float(psutil.virtual_memory().percent))
+            self._disk_percent = round(float(psutil.disk_usage(str(self._base_dir)).percent))
+            uptime_seconds = time.time() - float(psutil.boot_time())
+        except Exception:
+            try:
+                disk = shutil.disk_usage(self._base_dir)
+                self._disk_percent = round((disk.used / disk.total) * 100) if disk.total else 0
+            except Exception:
+                self._disk_percent = 0
+            try:
+                meminfo = {}
+                with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+                    for line in handle:
+                        key, value = line.split(":", 1)
+                        meminfo[key] = int(value.strip().split()[0])
+                total = meminfo.get("MemTotal", 0)
+                available = meminfo.get("MemAvailable", 0)
+                self._memory_percent = round(((total - available) / total) * 100) if total else 0
+            except Exception:
+                self._memory_percent = 0
+            try:
+                uptime_seconds = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
+            except Exception:
+                uptime_seconds = time.monotonic() - self._process_started_at
+
+        self._uptime_text = self._format_uptime(uptime_seconds)
+        self._process_threads = threading.active_count()
+
+    def _build_system_diagnostics(self, battery, stt) -> None:  # noqa: ANN001
+        controls = self._config.get("CONTROLS", {})
+        movement_enabled = bool(controls.get("enabled") or controls.get("voicemovement"))
+        servo_module = sys.modules.get("modules.module_servoctl")
+        servo_online = bool(servo_module is not None and getattr(servo_module, "pca", None) is not None)
+        if self._calibration_active:
+            servo_value, servo_state = "RESERVED", "warning"
+            servo_detail = "Exclusive control transferred to calibration"
+        elif not movement_enabled:
+            servo_value, servo_state = "DISABLED", "disabled"
+            servo_detail = "Movement is disabled in config.ini"
+        elif servo_online:
+            servo_value, servo_state = "ONLINE", "ok"
+            servo_detail = "PCA9685 servo controller detected"
+        else:
+            servo_value, servo_state = "OFFLINE", "error"
+            servo_detail = "PCA9685 is not available"
+
+        battery_enabled = bool(self._config.get("BATTERY", {}).get("battery_enabled", False))
+        battery_online = bool(
+            battery is not None and getattr(battery, "sensor_initialized", self._battery_available)
+        )
+        if not battery_enabled:
+            ina_value, ina_state = "DISABLED", "disabled"
+            ina_detail = "Battery monitoring is disabled"
+        elif battery_online:
+            ina_value, ina_state = "ONLINE", "ok"
+            ina_detail = "INA260 voltage and current sensor detected"
+        else:
+            ina_value, ina_state = "OFFLINE", "error"
+            ina_detail = "INA260 is not responding"
+
+        vision_enabled = bool(self._config.get("VISION", {}).get("enabled", False))
+        if not vision_enabled:
+            camera_value, camera_state = "DISABLED", "disabled"
+            camera_detail = "Vision is disabled in config.ini"
+        elif self._camera_error:
+            camera_value, camera_state = "ERROR", "error"
+            camera_detail = self._camera_error
+        elif self._camera_module is not None:
+            camera_value, camera_state = "ONLINE", "ok"
+            camera_detail = "Camera initialized and available"
+        else:
+            camera_value, camera_state = "CONFIGURED", "info"
+            camera_detail = "Camera will initialize on first use"
+
+        self._hardware_diagnostics = [
+            {"label": "SERVO CONTROLLER", "value": servo_value, "state": servo_state, "detail": servo_detail},
+            {"label": "BATTERY SENSOR", "value": ina_value, "state": ina_state, "detail": ina_detail},
+            {"label": "CAMERA", "value": camera_value, "state": camera_state, "detail": camera_detail},
+            {
+                "label": "MICROPHONE",
+                "value": "ONLINE" if stt is not None else "STARTING",
+                "state": "ok" if stt is not None else "warning",
+                "detail": "Shared audio input and wake-word stream",
+            },
+        ]
+
+        stt_config = self._config.get("STT", {})
+        llm_config = self._config.get("LLM", {})
+        tts_config = self._config.get("TTS")
+        stt_name = str(stt_config.get("stt_processor", "unknown")).upper()
+        llm_backend = str(llm_config.get("llm_backend", "unknown")).upper()
+        llm_model = str(
+            llm_config.get("openai_model")
+            or llm_config.get("other_model")
+            or "configured model"
+        )
+        tts_name = str(getattr(tts_config, "ttsoption", "unknown")).upper()
+        self._software_diagnostics = [
+            {
+                "label": "RUNTIME",
+                "value": "READY" if self._runtime_ready else "STARTING",
+                "state": "ok" if self._runtime_ready else "warning",
+                "detail": self._runtime_status,
+            },
+            {
+                "label": "SPEECH INPUT",
+                "value": stt_name,
+                "state": "ok" if stt is not None else "warning",
+                "detail": "Active transcription backend",
+            },
+            {
+                "label": "VOICE OUTPUT",
+                "value": tts_name,
+                "state": "ok",
+                "detail": "Configured text-to-speech backend",
+            },
+            {
+                "label": "LANGUAGE MODEL",
+                "value": llm_backend,
+                "state": "info",
+                "detail": llm_model,
+            },
+        ]
 
     def _wifi_poll_loop(self) -> None:
         while not self._wifi_stop.wait(8):

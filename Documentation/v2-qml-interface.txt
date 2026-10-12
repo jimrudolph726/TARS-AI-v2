@@ -56,7 +56,34 @@ For interface development, the prototype can open a registered app or panel
 directly without starting robot hardware:
 
     python src/app-main-qml.py --app remote
+    python src/app-main-qml.py --app dashboard
+    python src/app-main-qml.py --app system-health
     python src/app-main-qml.py --panel apps
+
+Dashboard and System Health
+---------------------------
+
+Dashboard restores the original weather, five-day forecast, Google News RSS,
+ICS calendar, configured quotes, and combined feed in a native QML view. Its
+network and parsing work runs in a headless background service, so the Qt main
+thread remains responsive and no Pygame/OpenGL dashboard code is loaded.
+
+The dashboard continues to use the original configuration format. On a new
+installation, make a private working copy before changing the location or
+adding a private calendar URL:
+
+    cp src/dashboard.template.ini src/dashboard.ini
+
+Edit src/dashboard.ini to set location, language, units, news/feed behavior,
+quotes, and one or more comma-separated ICS calendar URLs. If dashboard.ini is
+absent, the app safely reads dashboard.template.ini. Keep dashboard.ini out of
+source control when it contains a private calendar URL.
+
+System Health now owns the four former dashboard telemetry cards and expands
+them with memory, disk, uptime, process-thread, hardware, and software status.
+Hardware diagnostics report the state already known by the running TARS
+services rather than probing I2C devices a second time and competing with the
+servo or power-monitor drivers.
 
 Press Esc in a windowed session, or use Menu > Exit Application, to stop the
 application cleanly while leaving the Raspberry Pi on. Menu > Restart TARS

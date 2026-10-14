@@ -311,7 +311,17 @@ class TarsRuntime(threading.Thread):
         self._start_vision(device_info)
 
         self._status("INITIALIZING SERVOS")
-        startup_initialization()
+        servos_ready = bool(startup_initialization())
+        movement_configured = bool(
+            self.config["CONTROLS"].get("enabled", False)
+            or self.config["CONTROLS"].get("voicemovement", False)
+        )
+        if movement_configured and not servos_ready:
+            self.ui.update_data(
+                "SYSTEM",
+                "PCA9685 servo controller is offline; movement commands are unavailable",
+                "ERROR",
+            )
         if self.shutdown_event.is_set():
             return
 
@@ -324,7 +334,10 @@ class TarsRuntime(threading.Thread):
             f"LOAD: TARS-AI OS: {version} running on {raspberry_version.upper()}"
         )
         self.ui.update_data("SYSTEM", f"TARS-AI OS: {version} running", "SYSTEM")
-        self._status("ALL SYSTEMS OPERATIONAL", True)
+        if movement_configured and not servos_ready:
+            self._status("SYSTEM READY · SERVO CONTROLLER OFFLINE", False)
+        else:
+            self._status("ALL SYSTEMS OPERATIONAL", True)
 
         while not self.shutdown_event.wait(0.1):
             pass
@@ -433,6 +446,17 @@ class TarsRuntime(threading.Thread):
         if self.stt_manager is not None:
             try:
                 self.stt_manager.stop()
+            except Exception:
+                pass
+        try:
+            from modules import module_servoctl
+
+            module_servoctl.cleanup()
+        except Exception as exc:
+            try:
+                from modules.module_messageQue import queue_message
+
+                queue_message(f"WARNING: Servo shutdown did not complete cleanly: {exc}")
             except Exception:
                 pass
         try:

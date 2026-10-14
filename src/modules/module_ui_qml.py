@@ -821,6 +821,17 @@ class TarsUIController(QObject):
             return
         self._stopped = True
         self._running = False
+        with self._servo_process_lock:
+            servo_process = self._servo_tester_process
+        if servo_process is not None and servo_process.poll() is None:
+            try:
+                servo_process.terminate()
+                servo_process.wait(timeout=4)
+            except subprocess.TimeoutExpired:
+                servo_process.kill()
+                servo_process.wait(timeout=2)
+            except Exception:
+                pass
         self._wifi_stop.set()
         self._audio_timer.stop()
         self._camera_timer.stop()

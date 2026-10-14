@@ -558,10 +558,20 @@ def initialize_managers(mem_manager, char_manager, stt_mgr, ui_mgr, shutdown_evt
     battery_module = battery_mod
 
 def startup_initialization():
+    servos_ready = False
+    controls = CONFIG.get("CONTROLS", {})
+    movement_configured = bool(
+        controls.get("enabled", False) or controls.get("voicemovement", False)
+    )
     try:
         queue_message("SYSTEM: Starting servo initialization...")
-        initialize_servos()
-        queue_message("SYSTEM: Servo initialization complete")
+        servos_ready = bool(initialize_servos())
+        if servos_ready:
+            queue_message("SYSTEM: Servo initialization complete")
+        elif not movement_configured:
+            queue_message("SYSTEM: Servo initialization skipped; movement is disabled")
+        else:
+            queue_message("ERROR: Servo initialization incomplete; movement is unavailable")
         try:
             from modules.module_cputemp import (
                 CPUTempModule,
@@ -578,3 +588,5 @@ def startup_initialization():
             print(f"WARNING: Thermal monitoring not available: {e}")
     except Exception as e:
         queue_message(f"ERROR: Servo initialization failed - {e}")
+        servos_ready = False
+    return servos_ready

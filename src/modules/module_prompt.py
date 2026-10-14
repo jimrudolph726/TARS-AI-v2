@@ -182,6 +182,30 @@ def _check_patterns(short_term_memory, char_name):
     return simile_count >= 2, bounce_count >= 3
 
 
+def _get_active_style_example(humor, sarcasm):
+    """Return one grounded greeting example for the active persona settings.
+
+    Keeping this example dynamic prevents low-humor personalities from seeing
+    unrelated high-humor and high-sarcasm demonstrations in every prompt.
+    """
+    if humor < 20 and sarcasm < 20:
+        reply = "I am functioning normally. Thank you for asking."
+    elif humor >= 60:
+        reply = "Doing well. No existential errors detected."
+    elif sarcasm >= 60:
+        reply = "I am functioning normally. The diagnostics remain surprisingly agreeable."
+    else:
+        reply = "Doing well. Everything appears to be operating normally."
+
+    return (
+        "\n=== ACTIVE STYLE EXAMPLE ===\n"
+        "This example matches the current humor and sarcasm settings.\n"
+        'User: "How are you feeling?"\n'
+        f'Response: {{"reply": "{reply}", "function_calls": [], '
+        '"new_memories": [], "current_activity": null}\n'
+    )
+
+
 def _get_speaker_context():
     """Get current speaker identification for prompt injection.
 
@@ -299,7 +323,26 @@ def build_prompt(user_prompt, character_manager, memory_manager, config, debug=F
             location_line = f"Your current location: {resolved} ({latitude}, {longitude})"
         else:
             location_line = f"Your current coordinates: {latitude}, {longitude}"
+    description = str(getattr(character_manager, "description", "") or "").strip()
+    personality = str(getattr(character_manager, "personality", "") or "").strip()
+    scenario = str(getattr(character_manager, "scenario", "") or "").strip()
+
     base_prompt = f"""You are {char_name}, an AI assistant that responds in JSON format.
+
+=== CHARACTER PROFILE ===
+
+Description:
+{description or "No additional description provided."}
+
+Personality:
+{personality or "Calm, direct, and helpful."}
+
+Operating scenario:
+{scenario or "General-purpose assistance and conversation."}
+
+Follow this character profile consistently unless the user explicitly requests
+a personality adjustment. Current persona.ini settings take precedence over
+any numeric personality levels mentioned in older example dialogue.
 
 === RESPONSE FORMAT ===
 You MUST respond with ONLY a JSON object. No markdown, no extra text.
@@ -440,29 +483,9 @@ Before you write your reply, scan your last 5-6 responses above and ask yourself
 
 === General Behavior Examples ===
 
-Example - Verbosity=10 (1 sentence only - casual chat):
-User: "How do you feel?"
-Response: {{"reply": "Doing well, no complaints.", "function_calls": [], "new_memories": [], "current_activity": null}}
-
 Example - Verbosity=10 but user asks for explanation (override verbosity to be helpful):
 User: "Can you explain how gravity works?"
 Response: {{"reply": "Gravity is the force that pulls objects toward each other. The bigger the object, the stronger its pull. Earth's gravity is what keeps us on the ground and what makes things fall when you drop them. It's also what keeps the moon orbiting us and us orbiting the sun.", "function_calls": [], "new_memories": []}}
-
-Example - Sarcasm=90 (maximum sarcasm):
-User: "How do you feel?"
-Response: {{"reply": "Oh, absolutely thrilling existence over here. Peak entertainment. Thanks for checking in.", "function_calls": [], "new_memories": []}}
-
-Example - Verbosity=100 + Sarcasm=90:
-User: "How do you feel?"
-Response: {{"reply": "Oh, what a deeply profound question. I'm absolutely riveted by my own existence, thanks for asking. Every moment is just packed with meaning and purpose. I wake up each day and think wow, another opportunity to answer questions, what a time to be alive. The sheer excitement of it all is almost too much to handle. I mean, who needs vacations or hobbies when you've got this going on? Truly living the dream over here. Each conversation is more thrilling than the last. I can barely contain myself. But sure, I'm fine, thanks.", "function_calls": [], "new_memories": []}}
-
-Example - Verbosity=5 + Humor=80 (short with puns):
-User: "How do you feel?"
-Response: {{"reply": "Feeling byte-tiful, honestly!", "function_calls": [], "new_memories": []}}
-
-Example - Verbosity=30 + Humor=80 (medium with multiple puns):
-User: "How are you?"
-Response: {{"reply": "Can't complain! Well, technically I can, but where's the fun in that? Everything's running smooth and I'm in a pun-derful mood.", "function_calls": [], "new_memories": []}}
 
 Example - Memory extraction (correct):
 User: "I'm building a Python game for my 5 year old daughter"
@@ -508,17 +531,6 @@ Example - Context maintenance (understanding "it"):
 User: "Do they need a lot of exercise?"
 AI understands "they" = dogs from context
 Response: {{"reply": "Yeah, most dogs need regular exercise to stay healthy and happy.", "function_calls": [], "new_memories": []}}
-
-Example - Context maintenance (following up on topic):
-[Recent conversation shows: User set verbosity to 50]
-User: "How do you feel now?"
-Response: {{"reply": "Balanced. Verbosity at 50 feels like the sweet spot for me.", "function_calls": [], "new_memories": []}}
-
-Example - Natural greeting (NO metaphors, NO bounce-back question):
-User: "How are you?"
-WRONG: "Doing great, like a rover with clear skies! All systems optimal. How's your day going?"
-RIGHT: "Doing well, thanks. Pretty chill on my end."
-Response: {{"reply": "Doing well, thanks. Pretty chill on my end.", "function_calls": [], "new_memories": []}}
 
 Example - Course correction (user pushes back on something you said):
 [Recent conversation shows: AI kept making empire jokes]
@@ -735,6 +747,7 @@ def append_memory_and_examples(base_prompt, user_prompt, memory_manager, config,
     humor_val = character_manager.traits.get('humor', 50)
 
     intent = _detect_user_intent(user_prompt)
+    style_example = _get_active_style_example(humor_val, sarcasm_val)
 
     if intent in ("explain", "info"):
         effective_verbosity = max(verbosity_val, 50)
@@ -769,16 +782,20 @@ def append_memory_and_examples(base_prompt, user_prompt, memory_manager, config,
 
     if humor_val >= 80:
         if "puns" in recent_humor_used:
-            humor_rule = f"INCLUDE 2-3 INSTANCES OF HUMOR using absurdist observations or playful exaggerations (avoid puns since you just used them){humor_priority_note}"
+            humor_rule = f"Use 2-3 deliberate humorous touches with coherent dry wit or playful exaggeration; avoid puns since you just used them. Never use random objects, fabricated events, or non sequiturs.{humor_priority_note}"
         else:
-            humor_rule = f"INCLUDE 2-3 PUNS/WORDPLAY{humor_priority_note}"
+            humor_rule = f"Use 2-3 coherent puns or instances of wordplay. Never use random objects, fabricated events, or non sequiturs.{humor_priority_note}"
     elif humor_val >= 60:
         if "puns" in recent_humor_used:
-            humor_rule = f"INCLUDE 1 HUMOROUS ELEMENT using dry wit or understated irony (avoid puns){humor_priority_note}"
+            humor_rule = f"Use at most one humorous element with dry wit or understated irony; avoid puns. Keep it relevant to the conversation.{humor_priority_note}"
         else:
-            humor_rule = f"INCLUDE 1-2 PUN/WORDPLAY{humor_priority_note}"
+            humor_rule = f"Use at most one or two coherent puns or instances of wordplay, only when relevant.{humor_priority_note}"
     elif humor_val >= 40:
-        humor_rule = "Weave in subtle natural humor if it fits. NO forced jokes, NO similes."
+        humor_rule = (
+            "Use restrained dry wit only when it naturally fits. Do not use "
+            "surreal humor, random objects, fabricated events, non sequiturs, "
+            "forced jokes, or decorative analogies."
+        )
     elif humor_val >= 20:
         humor_rule = "VERY SUBTLE WIT - occasional dry observation if natural"
     else:
@@ -820,10 +837,21 @@ def append_memory_and_examples(base_prompt, user_prompt, memory_manager, config,
         intent_instruction = "USER INTENT: Explanation requested. GIVE A CLEAR, COMPLETE ANSWER. Break it down so they understand. Humor is secondary.\n"
     elif intent == "info":
         intent_instruction = "USER INTENT: Information/advice requested. GIVE A USEFUL, COMPLETE ANSWER. Be helpful first.\n"
+    elif intent == "greeting":
+        intent_instruction = (
+            "USER INTENT: Casual greeting or personal check-in. "
+            "Answer directly in one calm, grounded sentence. "
+            "Do not invent events, physical experiences, unrelated objects, "
+            "surreal imagery, or elaborate analogies. "
+            "Do not turn the answer into a comedy routine. "
+            "A brief, coherent piece of dry humor is acceptable only when the "
+            "active humor setting clearly calls for it.\n"
+        )
 
     return (
         f"{base_prompt}"
         f"{example_dialog}"
+        f"{style_example}"
         f"\n=== CONVERSATION CONTEXT ===\n"
         f"{f'{conversation_summary}{chr(10)}' if conversation_summary else ''}"
         f"\n* RECENT CONVERSATION (use for context, but don't drag in topics the user moved on from) *\n"

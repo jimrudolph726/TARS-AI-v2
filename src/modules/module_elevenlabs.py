@@ -16,6 +16,7 @@ class ElevenLabsQuotaError(RuntimeError):
 
 
 _elevenlabs_unavailable_reason = None
+_SPEECH_NORMALIZATION_VERSION = "contractions-v1"
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tts", "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -33,6 +34,91 @@ if CONFIG['TTS']['ttsoption'] == 'elevenlabs':
             "ERROR: ElevenLabs is selected but ELEVENLABS_API_KEY or "
             "elevenlabs_voice_id is missing"
         )
+
+
+# Contractions whose expansion is unambiguous.  Ambiguous forms such as
+# "I'd" ("I had" or "I would") and "he's" ("he is" or "he has") are left
+# alone so pronunciation cleanup cannot change the meaning of a response.
+_CONTRACTION_EXPANSIONS = {
+    "aren't": "are not",
+    "can't": "cannot",
+    "couldn't": "could not",
+    "didn't": "did not",
+    "doesn't": "does not",
+    "don't": "do not",
+    "hadn't": "had not",
+    "hasn't": "has not",
+    "haven't": "have not",
+    "isn't": "is not",
+    "let's": "let us",
+    "mightn't": "might not",
+    "mustn't": "must not",
+    "needn't": "need not",
+    "shan't": "shall not",
+    "shouldn't": "should not",
+    "wasn't": "was not",
+    "weren't": "were not",
+    "won't": "will not",
+    "wouldn't": "would not",
+}
+_CONTRACTION_PATTERN = re.compile(
+    r"\b(?:" + "|".join(
+        sorted((re.escape(item) for item in _CONTRACTION_EXPANSIONS), key=len, reverse=True)
+    ) + r")\b",
+    re.IGNORECASE,
+)
+_APOSTROPHE_TRANSLATION = str.maketrans({
+    "\u2018": "'",  # left single quotation mark
+    "\u2019": "'",  # right single quotation mark
+    "\u02bc": "'",  # modifier letter apostrophe
+    "\uff07": "'",  # full-width apostrophe
+})
+
+
+def _match_case(replacement, original):
+    """Apply the contraction's capitalization to its spoken expansion."""
+    if original.isupper():
+        return replacement.upper()
+    if original[:1].isupper():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
+def normalize_contractions_for_speech(text):
+    """Expand English contractions in ElevenLabs-bound text only.
+
+    The UI and conversation history retain the original response.  Normalizing
+    here prevents voices from reading contractions such as ``I'll`` as the
+    unrelated word ``ill``.  Both straight and typographic apostrophes are
+    accepted because LLM output may contain either form.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+
+    normalized = text.translate(_APOSTROPHE_TRANSLATION)
+    normalized = _CONTRACTION_PATTERN.sub(
+        lambda match: _match_case(
+            _CONTRACTION_EXPANSIONS[match.group(0).lower()],
+            match.group(0),
+        ),
+        normalized,
+    )
+
+    # These suffixes have one consistent expansion.  Keeping them separate
+    # also covers pronouns beyond a fixed word list (for example, "someone'll").
+    suffixes = (
+        (re.compile(r"\b([A-Za-z]+)'ll\b", re.IGNORECASE), "will"),
+        (re.compile(r"\b([A-Za-z]+)'re\b", re.IGNORECASE), "are"),
+        (re.compile(r"\b([A-Za-z]+)'ve\b", re.IGNORECASE), "have"),
+        (re.compile(r"\b([A-Za-z]+)'m\b", re.IGNORECASE), "am"),
+    )
+    for pattern, expansion in suffixes:
+        normalized = pattern.sub(
+            lambda match, word=expansion: f"{match.group(1)} {word}",
+            normalized,
+        )
+    return normalized
+
 
 def split_into_sentences(text, max_length=80):
     sentences = re.split(r'(?<=[.!?])\s+', text)
@@ -65,6 +151,7 @@ def get_cache_filename(text):
     identity = "|".join((
         str(CONFIG['TTS']['elevenlabs_voice_id'] or ''),
         str(CONFIG['TTS']['elevenlabs_model'] or ''),
+        _SPEECH_NORMALIZATION_VERSION,
         text,
     ))
     text_hash = hashlib.md5(identity.encode('utf-8')).hexdigest()
@@ -103,7 +190,8 @@ def _request_speech(text, streaming=False):
     # previous implementation sent it, optimize_streaming_latency, and an
     # unsupported enable_ssml field in the JSON body, which can return 422.
     params = {"output_format": "mp3_44100_128"}
-    payload = {"text": text, "model_id": model_id}
+    speech_text = normalize_contractions_for_speech(text)
+    payload = {"text": speech_text, "model_id": model_id}
     response = requests.post(
         url,
         headers=headers,

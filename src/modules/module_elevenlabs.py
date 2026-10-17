@@ -190,8 +190,7 @@ def _request_speech(text, streaming=False):
     # previous implementation sent it, optimize_streaming_latency, and an
     # unsupported enable_ssml field in the JSON body, which can return 422.
     params = {"output_format": "mp3_44100_128"}
-    speech_text = normalize_contractions_for_speech(text)
-    payload = {"text": speech_text, "model_id": model_id}
+    payload = {"text": text, "model_id": model_id}
     response = requests.post(
         url,
         headers=headers,
@@ -278,8 +277,17 @@ async def synthesize_elevenlabs_complete(text):
 
 async def text_to_speech_with_pipelining_elevenlabs(text, is_wakeword):    
 
+    # Normalize once, before sentence splitting and before looking up cached
+    # wake responses.  Doing this at the pipeline boundary guarantees every
+    # ElevenLabs path receives the spoken form, including cached responses.
+    speech_text = normalize_contractions_for_speech(text)
+    if speech_text != text:
+        queue_message(
+            f"TTS: ElevenLabs expanded contractions: {speech_text!r}"
+        )
+
     if is_wakeword:
-        cache_file = get_cache_filename(text)
+        cache_file = get_cache_filename(speech_text)
 
         if os.path.exists(cache_file):
             try:
@@ -292,8 +300,8 @@ async def text_to_speech_with_pipelining_elevenlabs(text, is_wakeword):
             except Exception as e:
                 queue_message(f"ERROR: Failed to load cache: {e}")
 
-        queue_message(f"Caching wakeword: {text}")
-        audio_buffer = await synthesize_elevenlabs_complete(text)
+        queue_message(f"Caching wakeword: {speech_text}")
+        audio_buffer = await synthesize_elevenlabs_complete(speech_text)
         if audio_buffer:
             try:
                 audio_bytes = audio_buffer.read()
@@ -310,7 +318,7 @@ async def text_to_speech_with_pipelining_elevenlabs(text, is_wakeword):
 
     else:
 
-        chunks = split_into_sentences(text, max_length=80)
+        chunks = split_into_sentences(speech_text, max_length=80)
         for i, chunk in enumerate(chunks):
             audio_buffer = await synthesize_elevenlabs_streaming(chunk)
             if audio_buffer:

@@ -704,6 +704,23 @@ def _sanitize_for_tts(text):
     if not isinstance(text, str):
         return text
 
+    # LLMs frequently emit typographic quotation marks.  Downstream voice and
+    # web TTS sanitizers intentionally allow ASCII apostrophes/quotes but strip
+    # other punctuation, which previously changed ``I’m`` into ``Im`` and
+    # ``I’ll`` into ``Ill`` before ElevenLabs could expand the contractions.
+    # Normalize those characters first so contractions retain their meaning.
+    text = text.translate(str.maketrans({
+        '\u2018': "'",  # left single quotation mark
+        '\u2019': "'",  # right single quotation mark
+        '\u201b': "'",  # single high-reversed-9 quotation mark
+        '\u02bc': "'",  # modifier letter apostrophe
+        '\u2032': "'",  # prime sometimes used as an apostrophe
+        '\uff07': "'",  # full-width apostrophe
+        '\u201c': '"',  # left double quotation mark
+        '\u201d': '"',  # right double quotation mark
+        '\uff02': '"',  # full-width quotation mark
+    }))
+
     text = text.replace(' — ', '... ')
     text = text.replace('— ', '... ')
     text = text.replace(' —', ' ...')

@@ -394,6 +394,12 @@ def load_config():
             "invert_y": config.getboolean('CONTROLS', 'invert_y', fallback=False),
             "controller_name": config['CONTROLS']['controller_name'],
         },
+        "AUDIO": {
+            # Optional, case-insensitive name fragments used to pin PortAudio
+            # devices. Empty values preserve automatic device discovery.
+            "input_device": config.get('AUDIO', 'input_device', fallback='').strip(),
+            "output_device": config.get('AUDIO', 'output_device', fallback='').strip(),
+        },
         "STT": {
             "use_indicators": config.getboolean('STT', 'use_indicators'),
             "stt_processor": config['STT']['stt_processor'],

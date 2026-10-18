@@ -25,6 +25,10 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import sounddevice as sd
 
+from modules.module_config import load_config
+
+CONFIG = load_config()
+
 try:
     import soxr as _soxr
     _HAS_SOXR = True
@@ -51,6 +55,29 @@ def _is_real_hw_device(info):
 
 def _find_input_device():
     """Try to find a working input device. Returns (idx, rate) or raises."""
+    devices = sd.query_devices()
+
+    # A configured name fragment is stable across USB reconnects and reboots,
+    # unlike ALSA/PortAudio numeric indexes.
+    configured_name = CONFIG.get("AUDIO", {}).get("input_device", "").strip()
+    if configured_name:
+        name_fragment = configured_name.casefold()
+        for i, dev in enumerate(devices):
+            if (
+                _is_real_hw_device(dev)
+                and name_fragment in dev.get("name", "").casefold()
+            ):
+                rate = int(dev.get("default_samplerate", MODEL_RATE))
+                print(
+                    f"INFO: Audio input: {dev.get('name', configured_name)} "
+                    f"(device {i}, configured, {rate} Hz)"
+                )
+                return i, rate
+        print(
+            f"WARNING: Configured audio input '{configured_name}' was not found; "
+            "using automatic selection"
+        )
+
     # 1. Try the system default — but only if it looks like real hardware.
     #    ALSA plugin devices (e.g. "default") report 128 channels and may
     #    hide the actual hardware rate, causing wrong device selection.
@@ -61,7 +88,6 @@ def _find_input_device():
             return idx, int(info.get("default_samplerate", MODEL_RATE))
 
     # 2. Default failed or is a plugin — scan for real hardware devices
-    devices = sd.query_devices()
     for i, dev in enumerate(devices):
         if _is_real_hw_device(dev):
             rate = int(dev.get("default_samplerate", MODEL_RATE))

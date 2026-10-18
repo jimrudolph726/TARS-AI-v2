@@ -54,6 +54,13 @@ json_mode = True
 # Token counting encoding — only change if token errors occur (cl100k_base works for most models)
 override_encoding_model = cl100k_base
 
+[AUDIO]
+# Optional case-insensitive device-name fragments. These are safer than numeric
+# device indexes, which can change after a reboot or USB reconnect.
+# Leave either value blank to use automatic selection.
+input_device =
+output_device =
+
 [STT]
 # Spoken language (use openai stt_processor for non-English)
 language = english

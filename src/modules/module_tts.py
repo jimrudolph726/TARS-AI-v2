@@ -72,6 +72,22 @@ def _resolve_output_device():
         _output_device = None
         return
 
+    configured_name = CONFIG.get("AUDIO", {}).get("output_device", "").strip()
+    if configured_name:
+        name_fragment = configured_name.casefold()
+        for idx, dev in enumerate(devices):
+            name = dev.get("name", "")
+            if dev.get("max_output_channels", 0) >= 1 and name_fragment in name.casefold():
+                _output_device = idx
+                queue_message(
+                    f"INFO: Audio output: {name} (device {idx}, configured)"
+                )
+                return
+        queue_message(
+            f"WARNING: Configured audio output '{configured_name}' was not found; "
+            "using automatic selection"
+        )
+
     # Categorize output devices by priority
     usb_devices = []      # USB audio — most likely the external speaker
     hw_devices = []       # Hardware devices (headphones, I2S DACs, bcm2835)

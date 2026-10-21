@@ -916,16 +916,25 @@ def left_handshake():
                 servoctl.wait_for_movement(0.18)
 
             servoctl.wait_for_movement(0.35)
+            # Retract one joint at a time to limit current draw, then issue a
+            # complete neutral pose and keep torque applied long enough for the
+            # physical arm to settle before PWM is released.
             move_arm(HOLD, HOLD, 1, None, None, None, 0.6)
+            servoctl.wait_for_movement(0.15)
             move_arm(HOLD, 1, HOLD, None, None, None, 0.6)
+            servoctl.wait_for_movement(0.2)
             move_arm(1, HOLD, HOLD, None, None, None, 0.55)
+            move_arm(1, 1, 1, None, None, None, 0.45)
+            servoctl.wait_for_movement(0.75)
             move_legs(80, None, 50, None, 0.85)
             move_legs(50, None, 50, None, 0.85)
-            servoctl.wait_for_movement(0.2)
+            servoctl.wait_for_movement(0.4)
         finally:
-            disable_all_servos()
-            servoctl.MOVING = False
-            servoctl._notify_movement_end()
+            try:
+                disable_all_servos()
+            finally:
+                servoctl.MOVING = False
+                servoctl._notify_movement_end()
 
 
 def right_handshake():
@@ -955,16 +964,25 @@ def right_handshake():
                 servoctl.wait_for_movement(0.18)
 
             servoctl.wait_for_movement(0.35)
+            # Retract one joint at a time to limit current draw, then issue a
+            # complete neutral pose and keep torque applied long enough for the
+            # physical arm to settle before PWM is released.
             move_arm(None, None, None, HOLD, HOLD, 1, 0.6)
+            servoctl.wait_for_movement(0.15)
             move_arm(None, None, None, HOLD, 1, HOLD, 0.6)
+            servoctl.wait_for_movement(0.2)
             move_arm(None, None, None, 1, HOLD, HOLD, 0.55)
+            move_arm(None, None, None, 1, 1, 1, 0.45)
+            servoctl.wait_for_movement(0.75)
             move_legs(None, 80, None, 50, 0.85)
             move_legs(None, 50, None, 50, 0.85)
-            servoctl.wait_for_movement(0.2)
+            servoctl.wait_for_movement(0.4)
         finally:
-            disable_all_servos()
-            servoctl.MOVING = False
-            servoctl._notify_movement_end()
+            try:
+                disable_all_servos()
+            finally:
+                servoctl.MOVING = False
+                servoctl._notify_movement_end()
 
 
 def left_shy_wave():

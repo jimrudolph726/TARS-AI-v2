@@ -889,6 +889,84 @@ def right_wave_open():
             servoctl._notify_movement_end()
 
 
+def left_handshake():
+    """Present the left hand and make two slow, non-gripping handshake motions."""
+    if not servoctl.MOVING:
+        servoctl.MOVING = True
+        servoctl._notify_movement_start()
+        try:
+            # Use the same braced stance as the proven left-arm gestures.
+            move_legs(50, 50, 50, 50, 0.75)
+            move_legs(80, None, 50, None, 0.85)
+            move_legs(80, None, 80, None, 0.85)
+            servoctl.wait_for_movement(0.2)
+
+            move_arm(1, 1, 1, None, None, None, 0.6)
+            move_arm(100, 1, 1, None, None, None, 0.65)
+            move_arm(HOLD, 88, 1, None, None, None, 0.65)
+            # Present an open hand. It remains open throughout the gesture so
+            # the routine cannot clamp down on a person's fingers.
+            move_arm(HOLD, HOLD, 100, None, None, None, 0.6)
+            servoctl.wait_for_movement(0.8)
+
+            for _ in range(2):
+                move_arm(HOLD, 72, HOLD, None, None, None, 0.55)
+                servoctl.wait_for_movement(0.18)
+                move_arm(HOLD, 88, HOLD, None, None, None, 0.55)
+                servoctl.wait_for_movement(0.18)
+
+            servoctl.wait_for_movement(0.35)
+            move_arm(HOLD, HOLD, 1, None, None, None, 0.6)
+            move_arm(HOLD, 1, HOLD, None, None, None, 0.6)
+            move_arm(1, HOLD, HOLD, None, None, None, 0.55)
+            move_legs(80, None, 50, None, 0.85)
+            move_legs(50, None, 50, None, 0.85)
+            servoctl.wait_for_movement(0.2)
+        finally:
+            disable_all_servos()
+            servoctl.MOVING = False
+            servoctl._notify_movement_end()
+
+
+def right_handshake():
+    """Present the right hand and make two slow, non-gripping handshake motions."""
+    if not servoctl.MOVING:
+        servoctl.MOVING = True
+        servoctl._notify_movement_start()
+        try:
+            # Use the same braced stance as the proven right-arm gestures.
+            move_legs(50, 50, 50, 50, 0.75)
+            move_legs(None, 80, None, 50, 0.85)
+            move_legs(None, 80, None, 80, 0.85)
+            servoctl.wait_for_movement(0.2)
+
+            move_arm(None, None, None, 1, 1, 1, 0.6)
+            move_arm(None, None, None, 100, 1, 1, 0.65)
+            move_arm(None, None, None, HOLD, 88, 1, 0.65)
+            # Present an open hand. It remains open throughout the gesture so
+            # the routine cannot clamp down on a person's fingers.
+            move_arm(None, None, None, HOLD, HOLD, 100, 0.6)
+            servoctl.wait_for_movement(0.8)
+
+            for _ in range(2):
+                move_arm(None, None, None, HOLD, 72, HOLD, 0.55)
+                servoctl.wait_for_movement(0.18)
+                move_arm(None, None, None, HOLD, 88, HOLD, 0.55)
+                servoctl.wait_for_movement(0.18)
+
+            servoctl.wait_for_movement(0.35)
+            move_arm(None, None, None, HOLD, HOLD, 1, 0.6)
+            move_arm(None, None, None, HOLD, 1, HOLD, 0.6)
+            move_arm(None, None, None, 1, HOLD, HOLD, 0.55)
+            move_legs(None, 80, None, 50, 0.85)
+            move_legs(None, 50, None, 50, 0.85)
+            servoctl.wait_for_movement(0.2)
+        finally:
+            disable_all_servos()
+            servoctl.MOVING = False
+            servoctl._notify_movement_end()
+
+
 def left_shy_wave():
     if not servoctl.MOVING:
         servoctl.MOVING = True
@@ -1133,6 +1211,7 @@ _SERIALIZED_MOVEMENTS = (
     "bow", "tilt_right", "tilt_left", "side_side", "wave_right",
     "wave_left", "neutral_legs", "left_point", "right_point",
     "left_poke", "right_poke", "left_wave_open", "right_wave_open",
+    "left_handshake", "right_handshake",
     "left_shy_wave", "right_shy_wave", "happy_dance",
 )
 

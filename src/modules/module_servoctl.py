@@ -1064,6 +1064,8 @@ from modules.module_movements import (
     right_poke,
     left_wave_open,
     right_wave_open,
+    left_handshake,
+    right_handshake,
     left_shy_wave,
     right_shy_wave,
     happy_dance
@@ -1080,7 +1082,8 @@ from modules.module_movement_registry import (
     get_legs_only,
     get_has_arms,
     get_names,
-    get_names_by_type
+    get_names_by_type,
+    resolve_name
 )
 
 if __name__ == "__main__":

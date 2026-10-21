@@ -51,10 +51,47 @@ MOVEMENTS = {
     "right_poke": {"name": "Right Poke", "type": HAS_ARMS},
     "left_wave_open": {"name": "Left Wave Open", "type": HAS_ARMS},
     "right_wave_open": {"name": "Right Wave Open", "type": HAS_ARMS},
+    "left_handshake": {"name": "Left Handshake", "type": HAS_ARMS},
+    "right_handshake": {"name": "Right Handshake", "type": HAS_ARMS},
     "left_shy_wave": {"name": "Left Shy Wave", "type": HAS_ARMS},
     "right_shy_wave": {"name": "Right Shy Wave", "type": HAS_ARMS},
     "happy_dance": {"name": "Happy Dance", "type": HAS_ARMS},
 }
+
+# Voice-friendly names are resolved here so every caller uses the same
+# movement vocabulary. The legacy locomotion aliases deliberately preserve
+# the gaits that have proven reliable on the physical robot.
+MOVEMENT_ALIASES = {
+    "forward": "step_forward",
+    "backward": "walk_backward",
+    "left": "turn_left_slow",
+    "right": "turn_right_slow",
+    "wave": "right_wave_open",
+    "hello": "right_hi",
+    "hi": "right_hi",
+    "poke": "right_poke",
+    "point": "right_point",
+    "handshake": "right_handshake",
+    "shake_hand": "right_handshake",
+    "shake_hands": "right_handshake",
+    "shake_my_hand": "right_handshake",
+    "shake_my_right_hand": "right_handshake",
+    "shake_my_left_hand": "left_handshake",
+    "act_like_a_monster": "monster",
+    "be_a_monster": "monster",
+    "wave_at_me": "right_wave_open",
+    "wave_to_me": "right_wave_open",
+    "poke_me": "right_poke",
+    "take_a_bow": "bow",
+    "do_a_dance": "happy_dance",
+    "dance": "happy_dance",
+}
+
+
+def resolve_name(name):
+    """Return a canonical movement name from voice or legacy shorthand."""
+    normalized = str(name or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return MOVEMENT_ALIASES.get(normalized, normalized)
 
 def get_all():
     return MOVEMENTS

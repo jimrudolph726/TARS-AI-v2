@@ -39,6 +39,21 @@ def get_swap_turn_directions() -> bool:
     return _swap_directions
 
 
+def _confirm_parked_pose(include_arms=False, settle_seconds=0.75):
+    """Confirm the calibrated neutral pose before a routine releases PWM.
+
+    Movement functions remain responsible for retracting joints in a safe
+    order. This final confirmation keeps the already-commanded neutral pose
+    powered briefly so the physical servos can finish settling before torque
+    is removed.
+    """
+    if include_arms and servoctl.ARMS_PRESENT:
+        move_arm(1, 1, 1, 1, 1, 1, 0.45)
+        servoctl.wait_for_movement(settle_seconds)
+    move_legs(50, 50, 50, 50, 0.5)
+    servoctl.wait_for_movement(0.4)
+
+
 def _body_swing_profile(direction, fast=False):
     """Return the paired-leg body-swing gait used by the original chassis."""
     return body_swing_profile(direction, servoctl.ARMS_PRESENT, fast=fast)
@@ -520,8 +535,7 @@ def monster():
             move_arm(1, HOLD, HOLD, 1, HOLD, HOLD, 0.8)
             time.sleep(0.2)
             move_legs(80, 80, 50, 50, 0.5)
-            move_legs(50, 50, 50, 50, 0.4)
-            time.sleep(0.2)
+            _confirm_parked_pose(include_arms=True)
             disable_all_servos()
         finally:
             servoctl.MOVING = False
@@ -1155,8 +1169,7 @@ def happy_dance():
             time.sleep(0.3)
             move_arm(None, HOLD, None, 1, HOLD, None, 0.7)
             move_legs(None, None, 50, 50, 0.9)
-            move_legs(50, 50, None, None, 0.8)
-            time.sleep(0.2)
+            _confirm_parked_pose(include_arms=True)
             disable_all_servos()
         finally:
             servoctl.MOVING = False

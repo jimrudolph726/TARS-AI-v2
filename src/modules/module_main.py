@@ -363,9 +363,24 @@ def utterance_callback(message):
                 llm_execute_side_effects(parsed, user_text)
                 tools_dur = speed.stop('tools')
                 # Check if side effects updated the reply (e.g. vision result, search summary)
-                updated_reply = parsed.get("reply", "") or ""
+                updated_reply_raw = parsed.get("reply", "") or ""
+                # Compare the text in the same form that TTS receives. The
+                # sanitizer normalizes typographic apostrophes, dashes, and
+                # other speech punctuation. Comparing the raw LLM text against
+                # that normalized text falsely classified an unchanged reply
+                # as a second follow-up and spoke it twice.
+                updated_reply = _sanitize_for_tts(updated_reply_raw)
+                try:
+                    updated_reply = re.sub(
+                        r"<think>.*?</think>",
+                        "",
+                        updated_reply,
+                        flags=re.DOTALL,
+                    ).strip()
+                except Exception:
+                    pass
                 if updated_reply and updated_reply != reply:
-                    _followup_reply = _sanitize_for_tts(updated_reply)
+                    _followup_reply = updated_reply
                     queue_message(f"DEBUG VOICE: Follow-up reply detected: {_followup_reply[:80]}...")
                 else:
                     queue_message(f"DEBUG VOICE: No reply change after side effects")

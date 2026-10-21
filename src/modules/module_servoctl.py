@@ -72,15 +72,12 @@ def movement_command(function):
     """
     @wraps(function)
     def wrapped(*args, **kwargs):
-        global MOVING
-
         if _hardware_handoff_event.is_set():
             queue_message(f"MOVEMENT: Hardware is reserved for servo calibration; ignored {function.__name__}")
             return False
         if not _movement_command_lock.acquire(blocking=False):
             queue_message(f"MOVEMENT: Busy; ignored {function.__name__}")
             return False
-        started_while_idle = not MOVING
         _movement_stop_event.clear()
         try:
             if not ensure_servo_hardware():
@@ -94,21 +91,7 @@ def movement_command(function):
             queue_message(f"MOVEMENT: Stopped {function.__name__}")
             return False
         finally:
-            try:
-                # Movement routines normally clear MOVING and issue the end
-                # callback themselves. This guard recovers from an exception
-                # in a routine's cleanup so one failed gesture cannot
-                # permanently block later movements or leave STT paused.
-                if started_while_idle and MOVING:
-                    MOVING = False
-                    queue_message(
-                        f"WARNING: Recovered stale movement state after {function.__name__}"
-                    )
-                    _notify_movement_end()
-            finally:
-                # This lock must be released even if recovery logging or a
-                # lifecycle callback unexpectedly fails.
-                _movement_command_lock.release()
+            _movement_command_lock.release()
     return wrapped
 
 

@@ -1,11 +1,13 @@
 """Skill: execute_movement — Send movement commands to servo motors."""
 
 import threading
+import time
 
 from modules.module_movement_registry import HAS_ARMS, MOVEMENTS, resolve_name
 
 
 MAX_MOVEMENTS_PER_REQUEST = 4
+MOVEMENT_CONFIRMATION_TIMEOUT = 5.0
 
 
 def _movement_prompt_list():
@@ -73,7 +75,7 @@ def _normalize_movements(movements):
 
 
 def _execute_movement(movements):
-    """Validate and execute a sequence of registered movements on one thread."""
+    """Start a sequence only after the first real PCA9685 write is confirmed."""
     from modules.module_messageQue import queue_message
 
     def report_failure(message):
@@ -119,15 +121,17 @@ def _execute_movement(movements):
         )
         return False
 
-    requires_hardware = movements != ["stop"]
-    if requires_hardware and not servoctl.ensure_servo_hardware():
-        report_failure(
-            "PCA9685 servo controller is unavailable; movement was not started"
-        )
-        return False
+    write_confirmed = threading.Event()
+    first_action_finished = threading.Event()
+    first_action_result = {"ok": False}
 
     def movement_task():
+        confirmation_registered = False
         try:
+            if movements != ["stop"]:
+                servoctl.set_movement_confirmation_event(write_confirmed)
+                confirmation_registered = True
+
             for index, movement_name in enumerate(movements, start=1):
                 if movement_name == "stop":
                     action_function = servoctl.request_movement_stop
@@ -145,6 +149,12 @@ def _execute_movement(movements):
                     f"{movement_name}"
                 )
                 result = action_function()
+                if index == 1:
+                    first_action_result["ok"] = (
+                        result is not False
+                        and (movement_name == "stop" or write_confirmed.is_set())
+                    )
+                    first_action_finished.set()
                 if result is False:
                     report_failure(
                         f"Movement '{movement_name}' did not start or complete; check the "
@@ -152,8 +162,15 @@ def _execute_movement(movements):
                     )
                     break
         except Exception as error:
+            if not first_action_finished.is_set():
+                first_action_result["ok"] = False
+                first_action_finished.set()
             report_failure(f"Unexpected error while executing movements: {error}")
         finally:
+            if confirmation_registered:
+                servoctl.clear_movement_confirmation_event()
+            if not first_action_finished.is_set():
+                first_action_finished.set()
             queue_message(f"[DEBUG] Thread completed for movements: {movements}")
 
     thread = threading.Thread(
@@ -162,7 +179,27 @@ def _execute_movement(movements):
         daemon=True,
     )
     thread.start()
-    return True
+
+    if movements == ["stop"]:
+        return True
+
+    deadline = time.monotonic() + MOVEMENT_CONFIRMATION_TIMEOUT
+    while time.monotonic() < deadline:
+        if write_confirmed.wait(timeout=0.05):
+            queue_message(
+                f"[INFO] Movement hardware confirmed for: {movements[0]}"
+            )
+            return True
+        if first_action_finished.is_set():
+            break
+
+    if first_action_result["ok"] and write_confirmed.is_set():
+        return True
+
+    report_failure(
+        f"Movement '{movements[0]}' did not produce a confirmed servo command"
+    )
+    return False
 
 
 def execute(parameters, context):

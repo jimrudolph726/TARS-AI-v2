@@ -586,7 +586,10 @@ def startup_initialization():
         elif not movement_configured:
             queue_message("SYSTEM: Servo initialization skipped; movement is disabled")
         else:
-            queue_message("ERROR: Servo initialization incomplete; movement is unavailable")
+            queue_message(
+                "ERROR: Servo startup readiness check failed; the next movement "
+                "command will attempt controller recovery"
+            )
         try:
             from modules.module_cputemp import (
                 CPUTempModule,

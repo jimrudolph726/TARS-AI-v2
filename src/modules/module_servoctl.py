@@ -48,6 +48,10 @@ _movement_stop_event = threading.Event()
 _movement_command_lock = threading.RLock()
 _hardware_handoff_event = threading.Event()
 _hardware_lifecycle_lock = threading.RLock()
+_movement_thread_state = threading.local()
+
+MOVEMENT_LOCK_TIMEOUT = 8.0
+PCA_PROBE_CHANNEL = 15
 
 
 class MovementCancelled(RuntimeError):
@@ -63,6 +67,23 @@ def movement_stop_requested():
     return _movement_stop_event.is_set()
 
 
+def set_movement_confirmation_event(event):
+    """Register a per-thread event set after the first successful PWM write."""
+    _movement_thread_state.confirmation_event = event
+
+
+def clear_movement_confirmation_event():
+    """Remove a movement confirmation event from the current worker thread."""
+    if hasattr(_movement_thread_state, "confirmation_event"):
+        del _movement_thread_state.confirmation_event
+
+
+def _confirm_servo_write():
+    event = getattr(_movement_thread_state, "confirmation_event", None)
+    if event is not None:
+        event.set()
+
+
 def movement_command(function):
     """Serialize public movement commands and make them cancellable.
 
@@ -75,17 +96,27 @@ def movement_command(function):
         if _hardware_handoff_event.is_set():
             queue_message(f"MOVEMENT: Hardware is reserved for servo calibration; ignored {function.__name__}")
             return False
-        if not _movement_command_lock.acquire(blocking=False):
-            queue_message(f"MOVEMENT: Busy; ignored {function.__name__}")
+        if not _movement_command_lock.acquire(timeout=MOVEMENT_LOCK_TIMEOUT):
+            queue_message(
+                f"ERROR: MOVEMENT: Timed out waiting to run {function.__name__}"
+            )
             return False
         _movement_stop_event.clear()
         try:
+            if MOVING:
+                queue_message(
+                    f"ERROR: MOVEMENT: Another movement is still active; "
+                    f"could not run {function.__name__}"
+                )
+                return False
             if not ensure_servo_hardware():
                 queue_message(
                     f"ERROR: MOVEMENT: Servo controller unavailable; ignored {function.__name__}"
                 )
                 return False
-            function(*args, **kwargs)
+            result = function(*args, **kwargs)
+            if result is False:
+                return False
             return not _movement_stop_event.is_set()
         except MovementCancelled:
             queue_message(f"MOVEMENT: Stopped {function.__name__}")
@@ -135,6 +166,52 @@ MAX_RETRIES = 3
 
 battery_module = None
 
+
+def _describe_hardware_error(exc):
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) == 121:
+        return "I2C remote I/O error; check PCA9685 power, ground, SDA, and SCL wiring"
+    return str(exc)
+
+
+def _probe_controller(controller):
+    """Verify that the cached PCA9685 still answers without moving a servo."""
+    if controller is None:
+        return False
+    try:
+        # Channel 15 is not assigned to a TARS servo. Writing zero verifies
+        # the I2C path without energizing any mechanism.
+        controller.channels[PCA_PROBE_CHANNEL].duty_cycle = 0
+        return True
+    except Exception as exc:
+        queue_message(f"WARNING: PCA9685 health probe failed: {_describe_hardware_error(exc)}")
+        return False
+
+
+def _discard_controller(reason=None):
+    """Forget and close a controller that can no longer be trusted."""
+    global pca, _i2c, _channels_initialized
+
+    with _hardware_lifecycle_lock:
+        controller = pca
+        i2c_bus = _i2c
+        pca = None
+        _i2c = None
+        _channels_initialized.clear()
+
+        if controller is not None:
+            try:
+                controller.deinit()
+            except Exception:
+                pass
+        if i2c_bus is not None:
+            try:
+                i2c_bus.deinit()
+            except Exception:
+                pass
+
+    if reason:
+        queue_message(f"SERVO: Controller connection was reset: {reason}")
+
 def set_battery_module(battery_mod):
     global battery_module
     battery_module = battery_mod
@@ -157,7 +234,9 @@ def initialize_pca9685(retries=MAX_RETRIES, retry_delay=0.35):
     attempts = max(1, int(retries))
     with _hardware_lifecycle_lock:
         if pca is not None:
-            return True
+            if _probe_controller(pca):
+                return True
+            _discard_controller("cached controller did not answer its health probe")
 
         last_error = None
         for attempt in range(1, attempts + 1):
@@ -167,6 +246,8 @@ def initialize_pca9685(retries=MAX_RETRIES, retry_delay=0.35):
                 candidate_i2c = busio.I2C(board.SCL, board.SDA)
                 candidate_pca = PCA9685(candidate_i2c, address=0x40)
                 candidate_pca.frequency = 50
+                if not _probe_controller(candidate_pca):
+                    raise OSError("PCA9685 did not respond after it was opened")
                 _i2c = candidate_i2c
                 pca = candidate_pca
                 _channels_initialized.clear()
@@ -190,10 +271,7 @@ def initialize_pca9685(retries=MAX_RETRIES, retry_delay=0.35):
                 _i2c = None
                 _channels_initialized.clear()
 
-                if isinstance(exc, OSError) and getattr(exc, "errno", None) == 121:
-                    detail = "I2C remote I/O error; check controller power and wiring"
-                else:
-                    detail = str(exc)
+                detail = _describe_hardware_error(exc)
                 queue_message(
                     f"WARNING: PCA9685 initialization attempt {attempt}/{attempts} failed: {detail}"
                 )
@@ -215,7 +293,10 @@ def ensure_servo_hardware():
     if _hardware_handoff_event.is_set():
         return False
     if pca is not None:
-        return True
+        with _hardware_lifecycle_lock:
+            if _probe_controller(pca):
+                return True
+            _discard_controller("controller stopped responding before movement")
 
     controls = config.get("CONTROLS", {})
     if not (controls.get("enabled", False) or controls.get("voicemovement", False)):
@@ -223,7 +304,10 @@ def ensure_servo_hardware():
         return False
 
     queue_message("SERVO: Controller offline; attempting recovery before movement")
-    return initialize_pca9685()
+    recovered = initialize_pca9685()
+    if recovered:
+        queue_message("SERVO: Controller recovery succeeded")
+    return recovered
 
 controls = config.get('CONTROLS', {})
 _movement_enabled = controls.get('enabled', False) or controls.get('voicemovement', False)
@@ -436,66 +520,100 @@ def set_servo_pwm(channel, pwm_value):
 
     if pca is None or _hardware_handoff_event.is_set():
         return False
-    
+
+    controller = pca
     duty_cycle = pulse_to_duty_cycle(pwm_value)
+    last_error = None
 
     for attempt in range(MAX_RETRIES):
         try:
-            pca.channels[channel].duty_cycle = duty_cycle
+            controller.channels[channel].duty_cycle = duty_cycle
             _channels_initialized.add(channel)
+            _confirm_servo_write()
             return True
-            
-        except OSError as e:
-            if e.errno == 121:
-                if attempt < MAX_RETRIES - 1:
-                    time.sleep(0.05)
-                    continue
-                else:
-                    queue_message(f"I2C error on channel {channel} after {MAX_RETRIES} attempts")
-            return False
-            
-        except Exception as e:
-            queue_message(f"Error setting PWM on channel {channel}: {e}")
-            return False
-    
+
+        except Exception as exc:
+            last_error = exc
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(0.05 * (attempt + 1))
+
+    detail = _describe_hardware_error(last_error)
+    queue_message(
+        f"ERROR: Servo write failed on channel {channel} after "
+        f"{MAX_RETRIES} attempts: {detail}"
+    )
+    with _hardware_lifecycle_lock:
+        if pca is controller:
+            _discard_controller(f"PWM write failure on channel {channel}")
     return False
 
-def initialize_servos():
+def initialize_servos(startup_attempts=2):
+    """Validate the controller and perform a bounded, retryable startup pose."""
+    global MOVING
+
     controls = config.get('CONTROLS', {})
     movement_enabled = controls.get('enabled', False) or controls.get('voicemovement', False)
     if not movement_enabled:
         queue_message("SERVO: Movement control is disabled in config.ini")
         return False
 
-    if pca is None and not initialize_pca9685():
-        queue_message("ERROR: Cannot initialize servos - PCA9685 not available")
-        return False
+    attempts = max(1, int(startup_attempts))
+    _movement_stop_event.clear()
+    MOVING = False
 
-    try:
-        for channel in range(16):
-            pca.channels[channel].duty_cycle = 0
-    except Exception as e:
-        queue_message(f"Error initializing servos: {e}")
-        return False
+    for attempt in range(1, attempts + 1):
+        try:
+            if not ensure_servo_hardware():
+                raise RuntimeError("PCA9685 is unavailable")
 
-    time.sleep(0.1)
+            controller = pca
+            for channel in range(16):
+                controller.channels[channel].duty_cycle = 0
+            _channels_initialized.clear()
+            time.sleep(0.1)
 
-    # Gently re-engage servos at their saved positions before moving to neutral
-    if servo_positions:
-        for channel, value in servo_positions.items():
-            set_servo_pwm(int(channel), value)
-            time.sleep(0.02)
-        time.sleep(0.3)
+            # Gently re-engage servos at their saved positions before moving
+            # to neutral. Refuse corrupt or unsafe saved values.
+            for channel, value in servo_positions.items():
+                channel = int(channel)
+                value = int(value)
+                if not 0 <= channel < 16:
+                    continue
+                if not SERVO_MIN_PULSE <= value <= SERVO_MAX_PULSE:
+                    raise ValueError(
+                        f"Unsafe saved PWM value {value} on channel {channel}"
+                    )
+                if not set_servo_pwm(channel, value):
+                    raise RuntimeError(
+                        f"Could not restore saved position on channel {channel}"
+                    )
+                time.sleep(0.02)
+            if servo_positions:
+                time.sleep(0.3)
 
-    try:
-        reset_positions()
-    except Exception as exc:
-        queue_message(f"ERROR: Servo neutral-position initialization failed: {exc}")
-        disable_all_servos()
-        return False
+            reset_positions()
+            if not ensure_servo_hardware():
+                raise RuntimeError("PCA9685 failed its post-startup health check")
 
-    queue_message("SYSTEM: All servos initialized and PWM returned to idle")
-    return True
+            queue_message(
+                "SYSTEM: Servo readiness check passed; all PWM outputs returned to idle"
+            )
+            return True
+        except Exception as exc:
+            queue_message(
+                f"WARNING: Servo startup attempt {attempt}/{attempts} failed: {exc}"
+            )
+            disable_all_servos()
+            _discard_controller("startup readiness check failed")
+            MOVING = False
+            if attempt < attempts:
+                time.sleep(0.5)
+
+    queue_message(
+        "ERROR: Servo startup failed. Movement remains offline until the "
+        "controller passes an automatic recovery check."
+    )
+    return False
 
 def disable_all_servos():
     global _channels_initialized

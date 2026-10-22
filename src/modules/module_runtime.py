@@ -218,7 +218,6 @@ class TarsRuntime(threading.Thread):
         self.cpu_temp = CPUTempModule()
         self.ui.attach_sources(battery=self.battery, cpu=self.cpu_temp)
 
-        self._start_web_ui()
         if self.shutdown_event.is_set():
             return
 
@@ -307,7 +306,9 @@ class TarsRuntime(threading.Thread):
             self._state_callback = None
             return
 
-        self._start_bluetooth(start_bt_controller_thread)
+        # Do not start any producer of movement commands until the PCA9685 has
+        # completed its startup health check and neutral-position sequence.
+        # Starting Bluetooth first previously allowed it to race servo startup.
         self._start_vision(device_info)
 
         self._status("INITIALIZING SERVOS")
@@ -319,9 +320,11 @@ class TarsRuntime(threading.Thread):
         if movement_configured and not servos_ready:
             self.ui.update_data(
                 "SYSTEM",
-                "PCA9685 servo controller is offline; movement commands are unavailable",
+                "PCA9685 offline; movement commands will attempt automatic recovery",
                 "ERROR",
             )
+        self._start_web_ui()
+        self._start_bluetooth(start_bt_controller_thread)
         if self.shutdown_event.is_set():
             return
 
@@ -335,7 +338,7 @@ class TarsRuntime(threading.Thread):
         )
         self.ui.update_data("SYSTEM", f"TARS-AI OS: {version} running", "SYSTEM")
         if movement_configured and not servos_ready:
-            self._status("SYSTEM READY · SERVO CONTROLLER OFFLINE", False)
+            self._status("SYSTEM READY · SERVO RECOVERY ARMED", False)
         else:
             self._status("ALL SYSTEMS OPERATIONAL", True)
 

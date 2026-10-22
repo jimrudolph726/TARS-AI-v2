@@ -11,6 +11,8 @@ import logging
 import os
 import signal
 import sys
+import tempfile
+import time
 import warnings
 from pathlib import Path
 
@@ -25,6 +27,47 @@ os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
 from modules.module_config import load_config  # noqa: E402
 from modules.module_messageQue import queue_message  # noqa: E402
+
+
+def _acquire_single_instance_lock():
+    """Prevent two V2 runtimes from writing to the same I2C controller."""
+    if os.name != "posix":
+        return None
+
+    import fcntl
+
+    lock_path = Path(tempfile.gettempdir()) / "tars-ai-v2.lock"
+    lock_handle = lock_path.open("a+", encoding="utf-8")
+    deadline = time.monotonic() + 12.0
+    while True:
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            # A just-closed UI can spend up to ten seconds joining its runtime
+            # and releasing I2C. Let that cleanup finish before refusing a
+            # genuine second instance.
+            if time.monotonic() < deadline:
+                time.sleep(0.25)
+                continue
+
+            lock_handle.seek(0)
+            owner_pid = lock_handle.read().strip() or "unknown"
+            message = (
+                f"ERROR: TARS-AI V2 is already running (PID {owner_pid}). "
+                "Close the existing interface before starting another copy."
+            )
+            print(message, file=sys.stderr, flush=True)
+            queue_message(message)
+            lock_handle.close()
+            return False
+
+    os.set_inheritable(lock_handle.fileno(), False)
+    lock_handle.seek(0)
+    lock_handle.truncate()
+    lock_handle.write(str(os.getpid()))
+    lock_handle.flush()
+    return lock_handle
 
 
 def _parse_runtime_options() -> tuple[bool, bool]:
@@ -87,6 +130,13 @@ def _load_font(filename: str, fallback: str) -> str:
 
 
 def main() -> int:
+    # Keep this handle alive for the entire runtime. POSIX flock is released
+    # automatically if the process exits or crashes, so stale lock files do
+    # not block a later launch.
+    instance_lock = _acquire_single_instance_lock()
+    if instance_lock is False:
+        return 3
+
     try:
         from PySide6.QtCore import QCoreApplication, QTimer, QUrl, Qt
         from PySide6.QtGui import QGuiApplication

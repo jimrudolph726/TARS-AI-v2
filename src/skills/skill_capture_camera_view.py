@@ -61,7 +61,10 @@ def execute(parameters, context):
         return None
 
     try:
-        from modules.module_vision import process_camera_image
+        from modules.module_vision import (
+            get_last_vision_processor,
+            process_camera_image,
+        )
     except ImportError:
         return "Vision is not available on this device."
 
@@ -104,6 +107,7 @@ def execute(parameters, context):
             query or "Describe what you see.",
             detection_context=detection_context or None,
         )
+        effective_processor = get_last_vision_processor(vision_processor)
         failed = (
             not description
             or str(description).startswith("Error:")
@@ -117,9 +121,11 @@ def execute(parameters, context):
         # Caption-only backends need one text-only pass to turn the terse
         # caption into a natural answer. Multimodal backends already return the
         # completed visual answer and should not be sent through tool routing.
-        if vision_processor in ("blip", "server_hosted", "external"):
+        if effective_processor in ("blip", "server_hosted", "external"):
             if debug:
-                queue_message(f"DEBUG VISION: Refining {vision_processor} caption")
+                queue_message(
+                    f"DEBUG VISION: Refining {effective_processor} caption"
+                )
             if description:
                 vision_prompt = f"*You looked through your camera and saw: {description}*"
                 if detection_context:

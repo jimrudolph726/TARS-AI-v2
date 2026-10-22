@@ -66,6 +66,17 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 _blip_lock = threading.Lock()
 _processor = None
 _model = None
+_vision_call_state = threading.local()
+
+
+def _set_last_vision_processor(processor):
+    """Remember which backend actually produced the current thread's result."""
+    _vision_call_state.processor = processor
+
+
+def get_last_vision_processor(default=None):
+    """Return the backend that actually handled the latest call on this thread."""
+    return getattr(_vision_call_state, "processor", default)
 
 
 def initialize_blip():
@@ -198,7 +209,7 @@ def _describe_blip(image_data, prompt):
     if _processor is None or _model is None:
         initialize_blip()
     if _processor is None or _model is None:
-        return "Error: BLIP model not available"
+        raise RuntimeError("BLIP model not available")
 
     img_bytes = _to_bytes(image_data)
     raw_image = Image.open(BytesIO(img_bytes)).convert('RGB')
@@ -270,11 +281,18 @@ def _describe_openai(image_data, prompt, model_override=None):
     use_llm = CONFIG['VISION'].get('use_llm_backend', True)
 
     if use_llm:
-        api_key = os.getenv('OPENAI_API_KEY') or CONFIG['LLM']['api_key']
+        # CONFIG['LLM']['api_key'] belongs to whichever conversational backend
+        # is active.  Only reuse it when that backend is actually OpenAI; an
+        # xAI/DeepInfra key must never be sent to api.openai.com.
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key and CONFIG['LLM'].get('llm_backend') == 'openai':
+            api_key = CONFIG['LLM'].get('api_key')
         api_url = "https://api.openai.com/v1/chat/completions"
         model = model_override or CONFIG['VISION'].get('vision_model', '') or 'gpt-4o-mini'
     else:
-        api_key = os.environ.get('VISION_API_KEY', '') or os.getenv('OPENAI_API_KEY') or CONFIG['LLM']['api_key']
+        api_key = os.environ.get('VISION_API_KEY', '') or os.getenv('OPENAI_API_KEY')
+        if not api_key and CONFIG['LLM'].get('llm_backend') == 'openai':
+            api_key = CONFIG['LLM'].get('api_key')
         vision_base = CONFIG['VISION'].get('base_url', '')
         api_url = (
             _chat_completions_url(vision_base)
@@ -324,9 +342,43 @@ _BACKENDS = {
 }
 
 
+def _is_vision_error(result):
+    return not result or str(result).strip().lower().startswith("error:")
+
+
+def _openai_vision_available():
+    """Return True only when an OpenAI credential is actually available."""
+    if os.getenv('OPENAI_API_KEY') or os.getenv('VISION_API_KEY'):
+        return True
+    return (
+        CONFIG['LLM'].get('llm_backend') == 'openai'
+        and bool(CONFIG['LLM'].get('api_key'))
+    )
+
+
+def _fallback_to_openai_vision(image_data, prompt, reason):
+    """Try the lightweight cloud vision fallback and return None if unavailable."""
+    if not _openai_vision_available():
+        return None
+
+    queue_message(
+        f"WARNING: {reason}; retrying camera analysis with OpenAI gpt-4o-mini"
+    )
+    result = _describe_openai(
+        image_data,
+        prompt,
+        model_override="gpt-4o-mini",
+    )
+    if _is_vision_error(result):
+        raise RuntimeError(str(result).removeprefix("Error:").strip())
+    _set_last_vision_processor("openai")
+    return result
+
+
 def process_image(image_data, prompt="Describe this image in detail.", detection_context=None):
     """Unified vision dispatcher. Accepts bytes or base64 string."""
     processor = CONFIG['VISION'].get('vision_processor', 'blip')
+    _set_last_vision_processor(processor)
     backend = _BACKENDS.get(processor)
     if backend is None:
         queue_message(f"ERROR: Unknown vision_processor '{processor}'")
@@ -337,6 +389,8 @@ def process_image(image_data, prompt="Describe this image in detail.", detection
 
     try:
         result = backend(image_data, prompt)
+        if _is_vision_error(result):
+            raise RuntimeError(str(result).removeprefix("Error:").strip())
         result_text = str(result or "").lower()
         refusal_markers = (
             "unable to view",
@@ -390,6 +444,25 @@ def process_image(image_data, prompt="Describe this image in detail.", detection
         return result
     except Exception as e:
         queue_message(f"ERROR: Vision ({processor}) failed - {e}")
+
+        # BLIP is optional and intentionally not installed on many Pi setups
+        # because of its memory/model-download cost.  If the robot already has
+        # an OpenAI key, keep camera analysis working without requiring the
+        # local model or a config edit.
+        if processor == "blip":
+            try:
+                cloud_result = _fallback_to_openai_vision(
+                    image_data,
+                    prompt,
+                    f"Local BLIP vision is unavailable ({e})",
+                )
+                if cloud_result is not None:
+                    return cloud_result
+            except Exception as fallback_error:
+                queue_message(
+                    f"ERROR: OpenAI vision fallback failed - {fallback_error}"
+                )
+
         configured_vision_model = str(CONFIG['VISION'].get('vision_model', '') or '')
         main_openai_model = str(CONFIG['LLM'].get('openai_model', '') or '')
         should_try_openai_fallback = (

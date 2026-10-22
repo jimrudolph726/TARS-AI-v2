@@ -687,6 +687,11 @@ class TarsUIController(QObject):
             self._avatar_emotion = requested_emotion
             self.avatarChanged.emit()
 
+    @property
+    def camera_module(self):
+        """Expose the shared camera to vision and identity services."""
+        return self._camera_module
+
     def _camera_start_worker(self) -> None:
         try:
             from modules.UI.module_ui_camera import CameraModule

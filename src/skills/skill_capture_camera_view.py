@@ -60,16 +60,20 @@ def execute(parameters, context):
         queue_message("INFO: Skipping camera capture — user already provided an image")
         return None
 
-    if _vision_active:
-        queue_message("WARN: Skipping recursive capture_camera_view call")
-        return None
-
     try:
         from modules.module_vision import process_camera_image
     except ImportError:
         return "Vision is not available on this device."
 
     config = load_config()
+    if not config.get('VISION', {}).get('enabled', False):
+        queue_message(
+            "ERROR: Camera preview is available, but [VISION] enabled is False"
+        )
+        return (
+            "My camera preview is available, but visual analysis is disabled "
+            "in the configuration."
+        )
     debug = config.get('debug_mode', False)
     query = parameters.get("query", context.get("user_input", ""))
     vision_processor = config.get('VISION', {}).get('vision_processor', 'blip')
@@ -82,6 +86,10 @@ def execute(parameters, context):
             detection_context = ui_manager.detection_manager.get_detection_summary() or ""
     except Exception:
         pass
+
+    if not _vision_lock.acquire(blocking=False):
+        queue_message("WARNING: Camera analysis is already in progress")
+        return "I am already processing a camera image."
 
     _vision_active = True
     try:
@@ -129,3 +137,4 @@ def execute(parameters, context):
         return description
     finally:
         _vision_active = False
+        _vision_lock.release()

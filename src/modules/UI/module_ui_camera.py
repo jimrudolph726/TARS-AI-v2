@@ -17,15 +17,24 @@ CONFIG = load_config()
 target_fps = CONFIG['UI']['target_fps']
 
 class CameraModule:
-    _instance = None  
+    _instance = None
+    _instance_lock = threading.RLock()
 
     def __new__(cls, width, height, use_camera_module=True, apply_corrections=False):
-        if cls._instance is None:
-            cls._instance = super(CameraModule, cls).__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = super(CameraModule, cls).__new__(cls)
+                cls._instance._initialized = False
+            return cls._instance
 
     def __init__(self, width, height, use_camera_module=True):
+        # QML preview, voice vision, face detection, and take-photo can all
+        # request the singleton from different threads. Serialize the complete
+        # first-use/retry initialization, not just object allocation.
+        with self.__class__._instance_lock:
+            self._initialize(width, height, use_camera_module)
+
+    def _initialize(self, width, height, use_camera_module=True):
         apply_corrections = True
 
         if self._initialized and getattr(self, 'picam2', None) is not None:

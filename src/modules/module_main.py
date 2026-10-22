@@ -41,6 +41,61 @@ battery_module = None
 # Global Variables (if needed)
 stop_event = threading.Event()
 
+
+_DIRECT_CAMERA_PATTERNS = (
+    r"\bwhat (?:do|can) you see\b",
+    r"\btell me what you see\b",
+    r"\bwhat(?:'s| is) (?:in front of|around) you\b",
+    r"\bdescribe (?:what you see|your view|the view|your surroundings)\b",
+    r"\blook (?:at this|at me|in front of you|around)\b",
+    r"\bcan you see (?:me|this|that|anything)\b",
+)
+
+
+def _is_direct_camera_request(text):
+    """Recognize explicit live-camera requests without matching figurative 'see'."""
+    normalized = str(text or "").lower().replace("’", "'")
+    return any(re.search(pattern, normalized) for pattern in _DIRECT_CAMERA_PATTERNS)
+
+
+def _route_direct_camera_request(message_dict, user_text):
+    """Force explicit vision requests through the camera skill, not LLM guessing."""
+    if message_dict.get("preemptive_llm_result") is not None:
+        return
+    if not _is_direct_camera_request(user_text):
+        return
+
+    try:
+        from modules.module_skills import get_skill_manager
+
+        skills = get_skill_manager()
+        if skills is None or not skills.is_enabled("capture_camera_view"):
+            queue_message(
+                "WARNING: Direct camera request detected, but capture_camera_view is disabled"
+            )
+            message_dict["preemptive_llm_result"] = {
+                "reply": "Camera analysis is disabled in the skills configuration.",
+                "function_calls": [],
+                "new_memories": [],
+            }
+            return
+    except Exception as exc:
+        queue_message(f"WARNING: Unable to verify camera skill availability: {exc}")
+        return
+
+    message_dict["preemptive_llm_result"] = {
+        # Leave the initial reply empty. The blocking camera skill replaces it
+        # with the actual visual answer, preventing an unsupported LLM denial
+        # or a delayed "let me look" immediately before the result.
+        "reply": "",
+        "function_calls": [{
+            "function": "capture_camera_view",
+            "parameters": {"query": user_text},
+        }],
+        "new_memories": [],
+    }
+    queue_message("INFO: Routing explicit vision request directly to camera analysis")
+
 # === Threads ===
 def start_bt_controller_thread():
     """
@@ -114,6 +169,7 @@ def utterance_callback(message):
             return
 
         user_text = message_dict['text'].strip()
+        _route_direct_camera_request(message_dict, user_text)
 
         # Kick off memory embedding in background so it's ready by prompt-build time
         if memory_manager and memory_manager.long_mem_use and hasattr(memory_manager, 'prefetch_embedding'):

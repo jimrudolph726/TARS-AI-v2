@@ -104,6 +104,92 @@ def _to_bytes(image_data):
     return base64.b64decode(image_data)
 
 
+def _chat_completions_url(base_url, backend="openai"):
+    """Build a chat-completions URL without duplicating an existing /v1."""
+    base = str(base_url or "").rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    if backend == "deepinfra":
+        if base.endswith("/v1/openai"):
+            return f"{base}/chat/completions"
+        return f"{base}/v1/openai/chat/completions"
+    if base.endswith("/v1"):
+        return f"{base}/chat/completions"
+    return f"{base}/v1/chat/completions"
+
+
+def _uses_completion_token_limit(model):
+    name = str(model or "").lower()
+    return name.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
+
+
+def _extract_vision_reply(payload):
+    content = payload["choices"][0]["message"]["content"]
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") in ("text", "output_text"):
+                parts.append(str(item.get("text", "")))
+        return " ".join(part for part in parts if part).strip()
+    return str(content or "").strip()
+
+
+def _post_vision_chat(api_url, api_key, model, prompt, image_data, max_tokens):
+    """Send a multimodal chat request with model-compatible token controls."""
+    b64 = _to_base64(image_data)
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {
+                "url": f"data:image/jpeg;base64,{b64}"
+            }},
+        ]}],
+    }
+    token_key = (
+        "max_completion_tokens" if _uses_completion_token_limit(model) else "max_tokens"
+    )
+    payload[token_key] = int(max_tokens)
+
+    response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+    if response.status_code == 400:
+        detail = response.text[:1000]
+        parameter_error = (
+            "unsupported_parameter" in detail
+            or "max_tokens" in detail
+            or "max_completion_tokens" in detail
+        )
+        if parameter_error:
+            alternate = (
+                "max_tokens" if token_key == "max_completion_tokens"
+                else "max_completion_tokens"
+            )
+            payload.pop(token_key, None)
+            payload[alternate] = int(max_tokens)
+            queue_message(
+                f"WARNING: Vision model rejected {token_key}; retrying with {alternate}"
+            )
+            response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+
+    if not response.ok:
+        queue_message(
+            f"ERROR: Vision API returned {response.status_code}: "
+            f"{response.text.strip()[:1000]}"
+        )
+    response.raise_for_status()
+    description = _extract_vision_reply(response.json())
+    if not description:
+        raise RuntimeError("vision API returned an empty description")
+    queue_message(f"Vision: {description}")
+    return description
+
+
 # --- Backend implementations ---
 
 def _describe_blip(image_data, prompt):
@@ -168,62 +254,47 @@ def _describe_llm(image_data, prompt):
     max_tokens = int(CONFIG['VISION'].get('vision_max_tokens', 150))
     llm_backend = CONFIG['LLM']['llm_backend']
 
-    if llm_backend == "deepinfra":
-        url = f"{base_url}/v1/openai/chat/completions"
-    else:
-        url = f"{base_url}/v1/chat/completions"
-
-    b64 = _to_base64(image_data)
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-        ]}],
-        "max_tokens": max_tokens
-    }
-    response = requests.post(url, headers=headers, json=payload, timeout=30)
-    response.raise_for_status()
-    description = response.json()['choices'][0]['message']['content']
-    queue_message(f"Vision: {description}")
-    return description
+    url = _chat_completions_url(base_url, llm_backend)
+    return _post_vision_chat(
+        url,
+        api_key,
+        model,
+        prompt,
+        image_data,
+        max_tokens,
+    )
 
 
-def _describe_openai(image_data, prompt):
+def _describe_openai(image_data, prompt, model_override=None):
     """Send image to OpenAI vision API."""
     use_llm = CONFIG['VISION'].get('use_llm_backend', True)
 
     if use_llm:
         api_key = os.getenv('OPENAI_API_KEY') or CONFIG['LLM']['api_key']
         api_url = "https://api.openai.com/v1/chat/completions"
-        model = 'gpt-4o-mini'
+        model = model_override or CONFIG['VISION'].get('vision_model', '') or 'gpt-4o-mini'
     else:
         api_key = os.environ.get('VISION_API_KEY', '') or os.getenv('OPENAI_API_KEY') or CONFIG['LLM']['api_key']
         vision_base = CONFIG['VISION'].get('base_url', '')
-        api_url = f"{vision_base}/v1/chat/completions" if vision_base else "https://api.openai.com/v1/chat/completions"
-        model = CONFIG['VISION'].get('vision_model', '') or 'gpt-4o-mini'
+        api_url = (
+            _chat_completions_url(vision_base)
+            if vision_base
+            else "https://api.openai.com/v1/chat/completions"
+        )
+        model = model_override or CONFIG['VISION'].get('vision_model', '') or 'gpt-4o-mini'
 
     if not api_key:
         return "Error: No API key available for OpenAI vision"
 
     max_tokens = int(CONFIG['VISION'].get('vision_max_tokens', 150))
-    b64 = _to_base64(image_data)
-
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-        ]}],
-        "max_tokens": max_tokens
-    }
-    response = requests.post(api_url, headers=headers, json=payload, timeout=30)
-    response.raise_for_status()
-    description = response.json()['choices'][0]['message']['content']
-    queue_message(f"Vision: {description}")
-    return description
+    return _post_vision_chat(
+        api_url,
+        api_key,
+        model,
+        prompt,
+        image_data,
+        max_tokens,
+    )
 
 
 def _describe_server(image_data, prompt):
@@ -276,10 +347,39 @@ def process_image(image_data, prompt="Describe this image in detail.", detection
             "cannot access the image",
             "do not have access to the image",
         )
+        refused_image = any(marker in result_text for marker in refusal_markers)
+
+        # A general chat model can be valid for conversation while lacking
+        # image input. If the configured backend is OpenAI, retry with a known
+        # vision-capable model before loading the much heavier local BLIP model.
+        configured_vision_model = str(CONFIG['VISION'].get('vision_model', '') or '')
+        main_openai_model = str(CONFIG['LLM'].get('openai_model', '') or '')
+        should_try_openai_fallback = (
+            (processor == "llm" and main_openai_model != "gpt-4o-mini")
+            or (
+                processor == "openai"
+                and bool(configured_vision_model)
+                and configured_vision_model != "gpt-4o-mini"
+            )
+        )
+        if (should_try_openai_fallback
+                and refused_image
+                and CONFIG['LLM'].get('llm_backend') == "openai"
+                and CONFIG['LLM'].get('api_key')):
+            queue_message(
+                f"WARNING: Vision model for '{processor}' refused the frame; "
+                "retrying with gpt-4o-mini"
+            )
+            return _describe_openai(
+                image_data,
+                prompt,
+                model_override="gpt-4o-mini",
+            )
+
         # If the configured chat model is not vision-capable, preserve the
         # robot's camera feature by falling back to its local BLIP captioner.
         if (processor in ("llm", "openai")
-                and any(marker in result_text for marker in refusal_markers)
+                and refused_image
                 and BlipProcessor is not None and BlipForConditionalGeneration is not None
                 and torch is not None):
             queue_message(
@@ -290,6 +390,30 @@ def process_image(image_data, prompt="Describe this image in detail.", detection
         return result
     except Exception as e:
         queue_message(f"ERROR: Vision ({processor}) failed - {e}")
+        configured_vision_model = str(CONFIG['VISION'].get('vision_model', '') or '')
+        main_openai_model = str(CONFIG['LLM'].get('openai_model', '') or '')
+        should_try_openai_fallback = (
+            (processor == "llm" and main_openai_model != "gpt-4o-mini")
+            or (
+                processor == "openai"
+                and bool(configured_vision_model)
+                and configured_vision_model != "gpt-4o-mini"
+            )
+        )
+        if (should_try_openai_fallback
+                and CONFIG['LLM'].get('llm_backend') == "openai"
+                and CONFIG['LLM'].get('api_key')):
+            try:
+                queue_message("WARNING: Retrying camera analysis with gpt-4o-mini")
+                return _describe_openai(
+                    image_data,
+                    prompt,
+                    model_override="gpt-4o-mini",
+                )
+            except Exception as fallback_error:
+                queue_message(
+                    f"ERROR: OpenAI vision fallback failed - {fallback_error}"
+                )
         if (processor in ("llm", "openai")
                 and BlipProcessor is not None and BlipForConditionalGeneration is not None
                 and torch is not None):
@@ -299,6 +423,27 @@ def process_image(image_data, prompt="Describe this image in detail.", detection
             except Exception as fallback_error:
                 queue_message(f"ERROR: BLIP vision fallback failed - {fallback_error}")
         return f"Error: {e}"
+
+
+def _get_shared_camera():
+    """Return the QML-owned camera when available, otherwise start the singleton."""
+    camera = None
+    try:
+        from modules.module_main import ui_manager
+
+        camera = getattr(ui_manager, "camera_module", None) if ui_manager else None
+    except Exception:
+        pass
+
+    if camera is None or getattr(camera, "picam2", None) is None:
+        camera = CameraModule(1280, 720, use_camera_module=True)
+    if getattr(camera, "picam2", None) is None:
+        raise RuntimeError("Raspberry Pi camera was not detected")
+    if not getattr(camera, "running", False):
+        camera.start_camera()
+    if not getattr(camera, "running", False):
+        raise RuntimeError("Raspberry Pi camera could not be started")
+    return camera
 
 
 def capture_camera_base64():
@@ -311,8 +456,15 @@ def capture_camera_base64():
         # 1280x720 is ample for cloud/local vision while avoiding a costly
         # 1080p capture pipeline on the Pi. CameraModule is a singleton, so if
         # the QML preview already started it this reuses its current frame.
-        camera = CameraModule(1280, 720)
-        image_bytes = camera.capture_bytes()
+        camera = _get_shared_camera()
+        try:
+            image_bytes = camera.capture_bytes(timeout=6)
+        except Exception as first_error:
+            queue_message(
+                f"WARNING: Camera frame capture failed once; restarting camera: {first_error}"
+            )
+            camera.restart_camera()
+            image_bytes = camera.capture_bytes(timeout=8)
         if not image_bytes:
             raise RuntimeError("camera returned an empty frame")
         queue_message(f"INFO: Camera frame captured ({len(image_bytes)} bytes)")

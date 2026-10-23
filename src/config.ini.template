@@ -337,3 +337,8 @@ disabled = true
 
 [SKILL:launch_retropie]
 disabled = true
+
+# Retired arbitrary-Python executor. Keep disabled; use the calculator skill
+# for bounded arithmetic and statistics.
+[SKILL:sandbox_exec]
+disabled = true

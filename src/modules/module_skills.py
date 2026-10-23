@@ -6,7 +6,9 @@ Each skill is a Python file (skill_*.py) with:
   - SKILL dict: {"name": str, "prompt": str, "config": {...} (optional)}
   - execute(parameters: dict, context: dict) -> str | None
 
-All discovered skills default to enabled. Users toggle them on/off via the web UI.
+Skills default to enabled unless their SKILL metadata sets
+``enabled_by_default`` to ``False``. Users can override either default through
+the web UI; the explicit choice is persisted in config.ini.
 Per-skill state and config are stored in [SKILL:<name>] sections in config.ini:
 
   [SKILL:discord]
@@ -117,7 +119,11 @@ class SkillManager:
           <field> = <value> (skill-specific config values)
         """
         self._skill_config = {}
-        self._disabled = set()
+        self._disabled = {
+            name
+            for name, meta in self._skill_meta.items()
+            if meta.get("enabled_by_default", True) is False
+        }
         config_path = _get_config_path()
 
         if not os.path.exists(config_path):
@@ -143,8 +149,13 @@ class SkillManager:
             skill_name = section[6:]  # strip "SKILL:" prefix
             items = dict(config.items(section))
             # disabled flag lives in the section, not in skill_config values
-            if items.pop('disabled', '').strip().lower() == 'true':
+            disabled_value = items.pop('disabled', '').strip().lower()
+            if disabled_value == 'true':
                 self._disabled.add(skill_name)
+            elif disabled_value == 'false':
+                # An explicit false is significant for a skill whose secure
+                # default is disabled.
+                self._disabled.discard(skill_name)
             self._skill_config[skill_name] = items
 
         # One-time migration: copy values from old legacy sections into [SKILL:*]
@@ -163,7 +174,8 @@ class SkillManager:
         if not os.path.exists(config_path):
             return
         header = f'[{section_name}]'
-        lines = open(config_path, 'r').readlines()
+        with open(config_path, 'r') as config_file:
+            lines = config_file.readlines()
         new_lines = []
         skip = False
         for line in lines:
@@ -228,7 +240,8 @@ class SkillManager:
 
         section_header = f'[SKILL:{name}]'
         values = self._skill_config.get(name, {})
-        lines = open(config_path, 'r').readlines()
+        with open(config_path, 'r') as config_file:
+            lines = config_file.readlines()
 
         # Remove ALL existing occurrences of this section (handles duplicates)
         new_lines = []
@@ -245,7 +258,10 @@ class SkillManager:
 
         # Only write the section if it has something to store
         is_disabled = name in self._disabled
-        if not is_disabled and not values:
+        is_default_disabled = (
+            self._skill_meta.get(name, {}).get("enabled_by_default", True) is False
+        )
+        if not is_disabled and not values and not is_default_disabled:
             with open(config_path, 'w') as f:
                 f.writelines(new_lines)
             return
@@ -255,6 +271,9 @@ class SkillManager:
         new_lines.append(f'{section_header}\n')
         if is_disabled:
             new_lines.append('disabled = true\n')
+        elif is_default_disabled:
+            # Preserve an explicit user opt-in across restarts.
+            new_lines.append('disabled = false\n')
         for field, value in sorted(values.items()):
             new_lines.append(f'{field} = {value}\n')
         new_lines.append('\n')

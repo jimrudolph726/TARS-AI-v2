@@ -3,11 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>{{ char_name }} · Access Control</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+  <title>{{ char_name }} · Remote Access</title>
   <link href="{{ url_for('static', filename='css/themes/' + (webui_theme or 'default') + '.css') }}?v=7.4" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/login.css') }}?v=7.4">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/tars-v2-login.css') }}?v=8.0">
 </head>
 <body>
   <div id="vignette"></div>
@@ -16,22 +15,28 @@
   <div id="login">
     <div class="panel">
       <div class="c2"></div>
+      <div class="login-kicker">TACTICAL AUTONOMOUS ROBOTICS SYSTEM</div>
       <div class="logo">{{ char_name }}</div>
-      <div class="sub">Access Control Protocol · v4.1</div>
+      <div class="sub">REMOTE OPERATIONS CONSOLE</div>
       <div class="status-row">
         <div class="dot" id="dot"></div>
-        <div class="status-txt" id="stxt">READY</div>
+        <div class="status-txt" id="stxt">SECURE LINK READY</div>
+      </div>
+      <div class="login-endpoint">
+        <span>CONTROLLER</span>
+        <strong>{{ request.host | e }}</strong>
+        <small>LOCAL NETWORK</small>
       </div>
       <div class="divider"><span></span><i>◈</i><span></span></div>
       <form method="POST" action="{{ url_for('login') }}" id="form">
-        <label class="lbl" for="pw"><em>//</em> AUTHORIZATION KEY</label>
+        <label class="lbl" for="pw"><em>//</em> WEBUI PASSWORD</label>
         <div class="inp-wrap">
           <span class="inp-icon">⬡</span>
           <input type="password" id="pw" name="password" required
-            autocomplete="current-password" placeholder="Enter security token">
+            autocomplete="current-password" placeholder="Enter WebUI password">
         </div>
         <button type="submit" class="btn" id="btn">
-          <span id="btntxt">INITIALIZE LINK</span>
+          <span id="btntxt">CONNECT TO TARS</span>
           <span class="btn-arr">→</span>
           <div class="btn-shine"></div>
         </button>
@@ -40,7 +45,7 @@
         {% endif %}
       </form>
       <div class="footer">
-        <span>{{ char_name }}</span>
+        <span>AUTHORIZED ACCESS ONLY</span>
         <span class="footer-sep">·</span>
         <span id="clk"></span>
       </div>

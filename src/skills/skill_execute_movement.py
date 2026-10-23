@@ -136,7 +136,9 @@ def _execute_movement(movements):
                 if movement_name == "stop":
                     action_function = servoctl.request_movement_stop
                 else:
-                    action_function = getattr(servoctl, movement_name, None)
+                    action_function = lambda movement_name=movement_name: (
+                        servoctl.execute_registered_movement(movement_name)
+                    )
 
                 if not callable(action_function):
                     report_failure(

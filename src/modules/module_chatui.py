@@ -52,6 +52,7 @@ from modules.module_tts import generate_tts_audio, SentenceTTSPipeline
 from modules.module_llm import detect_emotion, detect_emotion_from_llm, classifier as emotion_classifier
 from modules.module_messageQue import queue_message, get_recent_logs
 from modules.module_servoctl import *
+from modules import module_servoctl as _servoctl
 from modules.module_movement_registry import get_names, get_names_by_type, LEGS_ONLY, HAS_ARMS, MOVEMENTS
 
 # Vision is optional — only available if enabled and dependencies are installed
@@ -1029,6 +1030,34 @@ def get_next_audio_chunk():
 
 # Add these routes to your Flask application
 
+
+def _movement_response(name, success_message=None):
+    """Execute one movement and accurately report hardware/lock failures."""
+    canonical_name = _servoctl.resolve_name(name)
+    if _servoctl.execute_registered_movement(canonical_name):
+        return jsonify({
+            "success": True,
+            "message": success_message or f"Movement '{canonical_name}' completed",
+            "servo_status": _servoctl.get_movement_status(),
+        }), 200
+
+    status = _servoctl.get_movement_status()
+    if status["moving"] or status["calibration_handoff"]:
+        http_status = 409
+    else:
+        http_status = 503
+    message = status.get("last_error") or "Movement did not complete"
+    return jsonify({
+        "success": False,
+        "error": message,
+        "servo_status": status,
+    }), http_status
+
+
+@flask_app.route('/api/servo/status', methods=['GET'])
+def servo_status_endpoint():
+    return jsonify(_servoctl.get_movement_status(probe=True)), 200
+
 @flask_app.route('/robot_move', methods=['POST'])
 def robot_move():
     """
@@ -1049,32 +1078,19 @@ def robot_move():
     if direction not in valid_directions:
         return jsonify({"error": f"Invalid direction. Must be one of: {', '.join(valid_directions)}"}), 400
     
-    # Execute the robot movement command
-    try:
-        # Fast movements
-        if direction == 'forward':
-            step_forward()
-        elif direction == 'backward':
-            step_backward()
-        elif direction == 'left':
-            turn_left()
-        elif direction == 'right':
-            turn_right()
-        # Slow movements
-        elif direction == 'forward_slow':
-            walk_forward()
-        elif direction == 'backward_slow':
-            walk_backward()
-        elif direction == 'left_slow':
-            turn_left_slow()
-        elif direction == 'right_slow':
-            turn_right_slow()
-            
-        return jsonify({"success": True, "message": f"Robot moved {direction}"}), 200
-        
-    except Exception as e:
-        queue_message(f"Error moving robot: {e}")
-        return jsonify({"error": f"Failed to move robot: {str(e)}"}), 500
+    movement_names = {
+        'forward': 'step_forward',
+        'backward': 'step_backward',
+        'left': 'turn_left',
+        'right': 'turn_right',
+        'forward_slow': 'walk_forward',
+        'backward_slow': 'walk_backward',
+        'left_slow': 'turn_left_slow',
+        'right_slow': 'turn_right_slow',
+    }
+    return _movement_response(
+        movement_names[direction], f"Robot moved {direction}"
+    )
 
 @flask_app.route('/get_movements', methods=['GET'])
 def get_movements():
@@ -1119,27 +1135,15 @@ def execute_action():
     if not action:
         return jsonify({"error": "No action specified."}), 400
 
-    try:
-        # Handle reset_positions specially
-        if action == "reset_positions":
-            reset_positions()
-            return jsonify({"success": True, "message": "Reset positions executed successfully."}), 200
-        
-        # Check if action exists in the movement registry
-        if action in MOVEMENTS:
-            # Get the function from globals (imported from module_servoctl)
-            if action in globals():
-                func = globals()[action]
-                func()
-                return jsonify({"success": True, "message": f"{MOVEMENTS[action]['name']} executed successfully."}), 200
-            else:
-                return jsonify({"error": f"Movement function '{action}' not found."}), 400
-        else:
-            return jsonify({"error": f"Unknown action: {action}"}), 400
+    if action != "reset_positions" and action not in MOVEMENTS:
+        return jsonify({"error": f"Unknown action: {action}"}), 400
 
-    except Exception as e:
-        queue_message(f"Error executing action: {e}")
-        return jsonify({"error": f"Failed to execute action: {str(e)}"}), 500
+    display_name = (
+        "Reset positions"
+        if action == "reset_positions"
+        else MOVEMENTS[action]["name"]
+    )
+    return _movement_response(action, f"{display_name} completed")
 
 @flask_app.route('/move_legs', methods=['POST'])
 def move_legs_endpoint():
@@ -1171,8 +1175,18 @@ def move_legs_endpoint():
         if not (0.65 <= speed <= 1.0):
             return jsonify({"error": "speed must be between 0.65 and 1"}), 400
         
-        # Call the move_legs function from module_servoctl
-        move_legs(left_height, right_height, left_leg, right_leg, speed)
+        if not _servoctl.execute_direct_servo_command(
+            "webui_move_legs",
+            lambda: move_legs(
+                left_height, right_height, left_leg, right_leg, speed
+            ),
+        ):
+            status = _servoctl.get_movement_status()
+            return jsonify({
+                "success": False,
+                "error": status.get("last_error") or "Leg movement failed",
+                "servo_status": status,
+            }), 503
         
         return jsonify({
             "success": True, 
@@ -1211,32 +1225,14 @@ def reset_positions_endpoint():
     """
     Calls reset_positions from module_servoctl
     """
-    try:
-        reset_positions()
-        return jsonify({
-            "success": True, 
-            "message": "Positions reset"
-        }), 200
-        
-    except Exception as e:
-        queue_message(f"Error resetting positions: {e}")
-        return jsonify({"error": f"Failed to reset positions: {str(e)}"}), 500
+    return _movement_response("reset_positions", "Positions reset")
 
 @flask_app.route('/neutral_legs', methods=['POST'])
 def neutral_legs_endpoint():
     """
     Calls neutral_legs from module_servoctl
     """
-    try:
-        neutral_legs()
-        return jsonify({
-            "success": True, 
-            "message": "Legs neutralized"
-        }), 200
-        
-    except Exception as e:
-        queue_message(f"Error neutralizing legs: {e}")
-        return jsonify({"error": f"Failed to neutralize legs: {str(e)}"}), 500
+    return _movement_response("neutral_legs", "Legs neutralized")
 
 
 
@@ -1249,6 +1245,9 @@ def move_arms_endpoint():
     - Decreasing values: Hand → Forearm → Main
     """
     global previous_arm_positions
+    session_started = False
+    session_succeeded = False
+    session_error = None
     
     if not request.is_json:
         return jsonify({"error": "Request must be JSON"}), 400
@@ -1274,6 +1273,15 @@ def move_arms_endpoint():
         # Validate speed range
         if not (0.65 <= speed <= 1.0):
             return jsonify({"error": "speed must be between 0.65 and 1"}), 400
+
+        if not _servoctl.begin_direct_servo_session("webui_move_arms"):
+            status = _servoctl.get_movement_status()
+            return jsonify({
+                "success": False,
+                "error": status.get("last_error") or "Arm movement is unavailable",
+                "servo_status": status,
+            }), 503
+        session_started = True
         
         # Get previous positions
         prev_left_main = previous_arm_positions['left_main']
@@ -1361,6 +1369,7 @@ def move_arms_endpoint():
             move_legs(None, 80, None, 50, 0.9)    # Close right leg
             move_legs(None, 50, None, None, 0.9)  # Lower right height
         
+        session_succeeded = True
         return jsonify({
             "success": True, 
             "message": "Arm positions updated with sequential movement",
@@ -1376,8 +1385,16 @@ def move_arms_endpoint():
         }), 200
         
     except Exception as e:
+        session_error = str(e)
         queue_message(f"Error moving arms: {e}")
         return jsonify({"error": f"Failed to move arms: {str(e)}"}), 500
+    finally:
+        if session_started:
+            _servoctl.end_direct_servo_session(
+                "webui_move_arms",
+                success=session_succeeded,
+                error=session_error,
+            )
 
 
 
@@ -2993,51 +3010,64 @@ def play_saved_sequence():
 
 def _execute_steps(steps):
     import modules.module_servoctl as _sc
-    import time as _time
 
-    if _sc.MOVING:
-        return jsonify({"error": "Robot is already moving"}), 409
+    for index, step in enumerate(steps, start=1):
+        if step.get('movement'):
+            name = step['movement']
+            if not _sc.execute_registered_movement(name):
+                status = _sc.get_movement_status()
+                return jsonify({
+                    "success": False,
+                    "error": status.get("last_error") or f"Step {index} failed",
+                    "failed_step": index,
+                    "servo_status": status,
+                }), 503
+            continue
 
-    _sc.MOVING = True
-    _sc._notify_movement_start()
-    try:
-        for step in steps:
-            if step.get('movement'):
-                name = step['movement']
-                if name in globals():
-                    globals()[name]()
-                elif name == 'reset_positions':
-                    reset_positions()
-            else:
-                lh = step.get('left_height', 50)
-                rh = step.get('right_height', 50)
-                ll = step.get('left_leg', 50)
-                rl = step.get('right_leg', 50)
-                spd = step.get('speed', 0.85)
-                move_legs(lh, rh, ll, rl, spd)
+        def execute_pose(step=step):
+            lh = step.get('left_height', 50)
+            rh = step.get('right_height', 50)
+            ll = step.get('left_leg', 50)
+            rl = step.get('right_leg', 50)
+            spd = step.get('speed', 0.85)
+            move_legs(lh, rh, ll, rl, spd)
 
-                if _sc.ARMS_PRESENT:
-                    lm = step.get('left_main')
-                    lf = step.get('left_forearm')
-                    lhv = step.get('left_hand')
-                    rm = step.get('right_main')
-                    rf = step.get('right_forearm')
-                    rhv = step.get('right_hand')
-                    if any(v is not None for v in [lm, lf, lhv, rm, rf, rhv]):
-                        move_arm(lm, lf, lhv, rm, rf, rhv, spd)
+            if _sc.ARMS_PRESENT:
+                lm = step.get('left_main')
+                lf = step.get('left_forearm')
+                lhv = step.get('left_hand')
+                rm = step.get('right_main')
+                rf = step.get('right_forearm')
+                rhv = step.get('right_hand')
+                if any(v is not None for v in [lm, lf, lhv, rm, rf, rhv]):
+                    move_arm(lm, lf, lhv, rm, rf, rhv, spd)
 
-                hold = step.get('hold_time', 0.0)
-                if hold and hold > 0:
-                    _time.sleep(hold)
+            hold = float(step.get('hold_time', 0.0) or 0.0)
+            if hold > 0:
+                _sc.wait_for_movement(hold)
 
-        move_legs(50, 50, 50, 50, 0.8)
-        disable_all_servos()
-        return jsonify({"success": True}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        _sc.MOVING = False
-        _sc._notify_movement_end()
+        if not _sc.execute_direct_servo_command(
+            f"webui_sequence_step_{index}", execute_pose
+        ):
+            status = _sc.get_movement_status()
+            return jsonify({
+                "success": False,
+                "error": status.get("last_error") or f"Step {index} failed",
+                "failed_step": index,
+                "servo_status": status,
+            }), 503
+
+    if not _sc.execute_registered_movement("reset_positions"):
+        status = _sc.get_movement_status()
+        return jsonify({
+            "success": False,
+            "error": status.get("last_error") or "Sequence reset failed",
+            "servo_status": status,
+        }), 503
+    return jsonify({
+        "success": True,
+        "servo_status": _sc.get_movement_status(),
+    }), 200
 
 
 @flask_app.route('/get_movement_steps/<name>', methods=['GET'])

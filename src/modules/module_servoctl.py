@@ -51,7 +51,16 @@ _hardware_lifecycle_lock = threading.RLock()
 _movement_thread_state = threading.local()
 
 MOVEMENT_LOCK_TIMEOUT = 8.0
+MOVEMENT_MIN_IDLE_SECONDS = 0.75
 PCA_PROBE_CHANNEL = 15
+
+_movement_status_lock = threading.Lock()
+_movement_last_name = None
+_movement_last_error = None
+_movement_last_success_at = None
+_movement_last_failure_at = None
+_movement_finished_at = 0.0
+_movement_consecutive_failures = 0
 
 
 class MovementCancelled(RuntimeError):
@@ -93,37 +102,126 @@ def movement_command(function):
     """
     @wraps(function)
     def wrapped(*args, **kwargs):
+        global _movement_finished_at
+
         if _hardware_handoff_event.is_set():
-            queue_message(f"MOVEMENT: Hardware is reserved for servo calibration; ignored {function.__name__}")
+            message = "Hardware is reserved for servo calibration"
+            _record_movement_failure(function.__name__, message)
+            queue_message(f"MOVEMENT: {message}; ignored {function.__name__}")
             return False
         if not _movement_command_lock.acquire(timeout=MOVEMENT_LOCK_TIMEOUT):
-            queue_message(
-                f"ERROR: MOVEMENT: Timed out waiting to run {function.__name__}"
-            )
+            message = f"Timed out waiting to run {function.__name__}"
+            _record_movement_failure(function.__name__, message)
+            queue_message(f"ERROR: MOVEMENT: {message}")
             return False
         _movement_stop_event.clear()
         try:
             if MOVING:
-                queue_message(
-                    f"ERROR: MOVEMENT: Another movement is still active; "
-                    f"could not run {function.__name__}"
-                )
+                message = "Another movement is still active"
+                _record_movement_failure(function.__name__, message)
+                queue_message(f"ERROR: MOVEMENT: {message}; could not run {function.__name__}")
                 return False
             if not ensure_servo_hardware():
-                queue_message(
-                    f"ERROR: MOVEMENT: Servo controller unavailable; ignored {function.__name__}"
-                )
+                message = "Servo controller unavailable"
+                _record_movement_failure(function.__name__, message)
+                queue_message(f"ERROR: MOVEMENT: {message}; ignored {function.__name__}")
                 return False
+
+            # Rapidly launching large gestures can repeatedly hit the servo
+            # supply with peak current. Give the rail a short recovery window
+            # between complete commands while keeping individual gait timing
+            # unchanged.
+            idle_remaining = (
+                MOVEMENT_MIN_IDLE_SECONDS
+                - (time.monotonic() - _movement_finished_at)
+            )
+            if idle_remaining > 0 and _movement_stop_event.wait(idle_remaining):
+                raise MovementCancelled()
+
             result = function(*args, **kwargs)
             if result is False:
+                _record_movement_failure(
+                    function.__name__, "Movement implementation returned failure"
+                )
                 return False
-            return not _movement_stop_event.is_set()
+            if _movement_stop_event.is_set():
+                _record_movement_failure(function.__name__, "Movement was stopped")
+                return False
+            _record_movement_success(function.__name__)
+            return True
         except MovementCancelled:
+            _record_movement_failure(function.__name__, "Movement was stopped")
             queue_message(f"MOVEMENT: Stopped {function.__name__}")
             return False
+        except Exception as exc:
+            detail = _describe_hardware_error(exc)
+            _record_movement_failure(function.__name__, detail)
+            queue_message(
+                f"ERROR: MOVEMENT: {function.__name__} failed: {detail}"
+            )
+
+            # A failed PWM write discards the cached controller. Reopen it now
+            # so the next WebUI or voice command does not inherit an offline
+            # controller. Never repeat the movement automatically: it may have
+            # completed only part of its physical path.
+            if pca is None and not _hardware_handoff_event.is_set():
+                if initialize_pca9685(retries=1):
+                    queue_message(
+                        "SERVO: Controller recovered after movement failure; "
+                        "the next command may proceed"
+                    )
+            return False
         finally:
+            _movement_finished_at = time.monotonic()
             _movement_command_lock.release()
     return wrapped
+
+
+def _record_movement_success(name):
+    global _movement_last_name, _movement_last_error
+    global _movement_last_success_at, _movement_consecutive_failures
+
+    with _movement_status_lock:
+        _movement_last_name = str(name)
+        _movement_last_error = None
+        _movement_last_success_at = time.time()
+        _movement_consecutive_failures = 0
+
+
+def _record_movement_failure(name, message):
+    global _movement_last_name, _movement_last_error
+    global _movement_last_failure_at, _movement_consecutive_failures
+
+    with _movement_status_lock:
+        _movement_last_name = str(name)
+        _movement_last_error = str(message)
+        _movement_last_failure_at = time.time()
+        _movement_consecutive_failures += 1
+
+
+def get_movement_status(probe=False):
+    """Return a thread-safe snapshot suitable for UI and diagnostics."""
+    controller_connected = pca is not None
+    if probe and controller_connected and not _hardware_handoff_event.is_set():
+        controller_connected = _probe_controller(pca)
+
+    with _movement_status_lock:
+        return {
+            "ready": bool(
+                controller_connected
+                and not MOVING
+                and not _hardware_handoff_event.is_set()
+            ),
+            "moving": bool(MOVING),
+            "controller_connected": bool(controller_connected),
+            "calibration_handoff": _hardware_handoff_event.is_set(),
+            "energized_channels": sorted(_channels_initialized),
+            "last_movement": _movement_last_name,
+            "last_error": _movement_last_error,
+            "last_success_at": _movement_last_success_at,
+            "last_failure_at": _movement_last_failure_at,
+            "consecutive_failures": _movement_consecutive_failures,
+        }
 
 
 def wait_for_movement(seconds):
@@ -744,7 +842,6 @@ def reset_positions():
             servo_positions[ch] = val
 
     disable_all_servos()
-
     move_legs(30, 30, 50, 50, 0.5)
     time.sleep(0.2)
     move_legs(50, 50, 50, 50, 0.5)
@@ -754,6 +851,98 @@ def reset_positions():
     time.sleep(0.5)
 
     disable_all_servos()
+
+
+def execute_direct_servo_command(name, command):
+    """Run a WebUI/manual servo operation through the shared movement gate.
+
+    Direct leg and arm controls used to bypass the movement lock, hardware
+    readiness check, lifecycle callbacks, and error recovery. This adapter
+    gives those operations the same guarantees as named movement presets.
+    """
+    if not callable(command):
+        _record_movement_failure(name, "Servo command is not callable")
+        return False
+
+    def direct_command():
+        global MOVING
+
+        MOVING = True
+        _notify_movement_start()
+        try:
+            result = command()
+            return result is not False
+        finally:
+            MOVING = False
+            _notify_movement_end()
+
+    direct_command.__name__ = str(name or "direct_servo_command")
+    return movement_command(direct_command)()
+
+
+def begin_direct_servo_session(name):
+    """Begin a manually scoped direct-servo command on the current thread."""
+    global MOVING
+
+    if _hardware_handoff_event.is_set():
+        _record_movement_failure(name, "Hardware is reserved for servo calibration")
+        return False
+    if not _movement_command_lock.acquire(timeout=MOVEMENT_LOCK_TIMEOUT):
+        _record_movement_failure(name, "Timed out waiting for the movement lock")
+        return False
+
+    try:
+        _movement_stop_event.clear()
+        if MOVING:
+            _record_movement_failure(name, "Another movement is still active")
+            _movement_command_lock.release()
+            return False
+        if not ensure_servo_hardware():
+            _record_movement_failure(name, "Servo controller unavailable")
+            _movement_command_lock.release()
+            return False
+
+        idle_remaining = (
+            MOVEMENT_MIN_IDLE_SECONDS - (time.monotonic() - _movement_finished_at)
+        )
+        if idle_remaining > 0 and _movement_stop_event.wait(idle_remaining):
+            _record_movement_failure(name, "Movement was stopped")
+            _movement_command_lock.release()
+            return False
+
+        MOVING = True
+        _movement_thread_state.direct_session_name = str(name)
+        _notify_movement_start()
+        return True
+    except Exception as exc:
+        _record_movement_failure(name, _describe_hardware_error(exc))
+        _movement_command_lock.release()
+        return False
+
+
+def end_direct_servo_session(name, success=True, error=None):
+    """End a session opened by begin_direct_servo_session()."""
+    global MOVING, _movement_finished_at
+
+    active_name = getattr(_movement_thread_state, "direct_session_name", None)
+    if active_name is None:
+        return False
+
+    try:
+        MOVING = False
+        _notify_movement_end()
+        if success and not _movement_stop_event.is_set():
+            _record_movement_success(name)
+        else:
+            detail = error or "Movement was stopped"
+            _record_movement_failure(name, detail)
+            if pca is None and not _hardware_handoff_event.is_set():
+                initialize_pca9685(retries=1)
+        return bool(success)
+    finally:
+        del _movement_thread_state.direct_session_name
+        _movement_finished_at = time.monotonic()
+        _movement_command_lock.release()
 
 def move_servos_timed(movements, duration, easing_strength=None):
     """
@@ -1203,6 +1392,34 @@ from modules.module_movement_registry import (
     get_names_by_type,
     resolve_name
 )
+
+
+def execute_registered_movement(name):
+    """Execute a named movement through the one shared reliability path."""
+    canonical_name = resolve_name(name)
+    if canonical_name == "stop":
+        request_movement_stop()
+        return True
+    if canonical_name == "reset_positions":
+        return execute_direct_servo_command("reset_positions", reset_positions)
+    if canonical_name not in MOVEMENTS:
+        _record_movement_failure(canonical_name, "Unknown movement")
+        queue_message(f"ERROR: MOVEMENT: Unknown movement '{canonical_name}'")
+        return False
+    if MOVEMENTS[canonical_name]["type"] == HAS_ARMS and not ARMS_PRESENT:
+        message = "Movement requires arms, but arms_present is disabled"
+        _record_movement_failure(canonical_name, message)
+        queue_message(f"ERROR: MOVEMENT: {message}: {canonical_name}")
+        return False
+
+    movement_function = globals().get(canonical_name)
+    if not callable(movement_function):
+        _record_movement_failure(canonical_name, "Movement implementation is missing")
+        queue_message(
+            f"ERROR: MOVEMENT: No implementation found for '{canonical_name}'"
+        )
+        return False
+    return bool(movement_function())
 
 if __name__ == "__main__":
     initialize_servos()

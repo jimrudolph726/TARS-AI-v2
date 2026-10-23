@@ -1152,45 +1152,54 @@ function updateSliderGauge(slider, maxAllowed) {
   });
 })();
 
-function applyBodyControls() {
+async function applyBodyControls() {
   const speed = +$('bodySpeedSlider').value;
-  fetch('/move_arms', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      left_main: +$('leftMain').value, left_forearm: +$('leftForearm').value,
-      left_hand: +$('leftHand').value, right_main: +$('rightMain').value,
-      right_forearm: +$('rightForearm').value, right_hand: +$('rightHand').value,
-      speed: speed
-    })
-  }).catch(console.error);
-  fetch('/move_legs', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      left_height: +$('leftHeight').value, right_height: +$('rightHeight').value,
-      left_leg: +$('leftLeg').value, right_leg: +$('rightLeg').value,
-      speed: speed
-    })
-  }).catch(console.error);
+  try {
+    const armsResponse = await fetch('/move_arms', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        left_main: +$('leftMain').value, left_forearm: +$('leftForearm').value,
+        left_hand: +$('leftHand').value, right_main: +$('rightMain').value,
+        right_forearm: +$('rightForearm').value, right_hand: +$('rightHand').value,
+        speed: speed
+      })
+    });
+    const armsData = await armsResponse.json();
+    if (!armsResponse.ok || !armsData.success) throw new Error(armsData.error || 'Arm movement failed');
+
+    const legsResponse = await fetch('/move_legs', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        left_height: +$('leftHeight').value, right_height: +$('rightHeight').value,
+        left_leg: +$('leftLeg').value, right_leg: +$('rightLeg').value,
+        speed: speed
+      })
+    });
+    const legsData = await legsResponse.json();
+    if (!legsResponse.ok || !legsData.success) throw new Error(legsData.error || 'Leg movement failed');
+    if (window.showToast) showToast('Servo positions applied', 'success');
+  } catch (error) {
+    console.error(error);
+    if (window.showToast) showToast(error.message, 'error');
+  }
 }
 
 function resetBody() {
   const armIds = ['leftMain','leftForearm','leftHand','rightMain','rightForearm','rightHand'];
   const legIds = ['leftHeight','rightHeight','leftLeg','rightLeg'];
-  fetch('/move_arms', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ left_main:1, left_forearm:1, left_hand:1, right_main:1, right_forearm:1, right_hand:1, speed:0.75 })
-  }).then(() => {
+  fetch('/reset_positions', {
+    method: 'POST', headers: {'Content-Type':'application/json'}
+  }).then(async response => {
+    const data = await response.json();
+    if (!response.ok || !data.success) throw new Error(data.error || 'Reset failed');
     armIds.forEach(id => { $(id).value = 1; $(id).closest('.servo-card').querySelector('.servo-val').textContent = '1'; });
+    legIds.forEach(id => { $(id).value = 50; $(id).closest('.servo-card').querySelector('.servo-val').textContent = '50'; });
     updateArmConstraints();
-    return fetch('/disable_servos', { method:'POST', headers:{'Content-Type':'application/json'} });
-  }).then(() => fetch('/reset_positions', { method:'POST', headers:{'Content-Type':'application/json'} }))
-    .then(() => fetch('/disable_servos', { method:'POST', headers:{'Content-Type':'application/json'} }))
-    .catch(console.error);
-  fetch('/neutral_legs', { method:'POST', headers:{'Content-Type':'application/json'} })
-    .then(() => {
-      legIds.forEach(id => { $(id).value = 50; $(id).closest('.servo-card').querySelector('.servo-val').textContent = '50'; });
-      return fetch('/reset_positions', { method:'POST', headers:{'Content-Type':'application/json'} });
-    }).catch(console.error);
+    if (window.showToast) showToast('Body returned to the neutral position', 'success');
+  }).catch(error => {
+    console.error(error);
+    if (window.showToast) showToast(error.message, 'error');
+  });
 }
 
 
@@ -1198,16 +1207,35 @@ function resetBody() {
 document.addEventListener('DOMContentLoaded', function () {
   const btnUp = $('btnUp'), btnDown = $('btnDown'),
         btnLeft = $('btnLeft'), btnRight = $('btnRight');
+  const movementButtons = [btnUp, btnDown, btnLeft, btnRight].filter(Boolean);
+  let movementRequestInFlight = false;
 
   function getSpeed() { const r = document.querySelector('input[name="speed"]:checked'); return r ? r.value : 'fast'; }
-  function move(dir) {
-    fetch('/robot_move', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ direction: dir })
-    }).then(r => { if (!r.ok) r.json().then(d => console.error('Move failed:', d)); })
-     .catch(console.error);
+  async function move(dir) {
+    if (movementRequestInFlight) {
+      if (window.showToast) showToast('A movement is already running', 'error');
+      return;
+    }
+    movementRequestInFlight = true;
+    movementButtons.forEach(button => { button.disabled = true; });
+    try {
+      const response = await fetch('/robot_move', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ direction: dir })
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || 'Movement failed');
+      if (window.showToast) showToast(data.message || 'Movement complete', 'success');
+    } catch (error) {
+      console.error('Move failed:', error);
+      if (window.showToast) showToast(error.message, 'error');
+    } finally {
+      movementRequestInFlight = false;
+      movementButtons.forEach(button => { button.disabled = false; });
+    }
   }
 
+  if (!btnUp || !btnDown || !btnLeft || !btnRight) return;
   btnUp.addEventListener('click',    () => move(getSpeed() === 'fast' ? 'forward'  : 'forward_slow'));
   btnDown.addEventListener('click',  () => move(getSpeed() === 'fast' ? 'backward' : 'backward_slow'));
   btnLeft.addEventListener('click',  () => move(getSpeed() === 'fast' ? 'left'     : 'left_slow'));
@@ -1251,14 +1279,28 @@ function loadMovements() {
 }
 document.addEventListener('DOMContentLoaded', loadMovements);
 
-function executeAction() {
+let actionRequestInFlight = false;
+async function executeAction() {
   const action = $('actionSelect').value;
-  if (!action) return;
-  fetch('/execute_action', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ action: action })
-  }).then(r => { if (!r.ok) r.json().then(d => console.error('Action failed:', d)); })
-   .catch(console.error);
+  const button = $('executeActionBtn');
+  if (!action || actionRequestInFlight) return;
+  actionRequestInFlight = true;
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch('/execute_action', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ action: action })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.success) throw new Error(data.error || 'Action failed');
+    if (window.showToast) showToast(data.message || 'Action complete', 'success');
+  } catch (error) {
+    console.error('Action failed:', error);
+    if (window.showToast) showToast(error.message, 'error');
+  } finally {
+    actionRequestInFlight = false;
+    if (button) button.disabled = false;
+  }
 }
 
 

@@ -46,6 +46,13 @@ class ServoFakeHardwareTests(unittest.TestCase):
         servoctl._hardware_lifecycle_lock = threading.RLock()
         servoctl._movement_thread_state = threading.local()
         servoctl.MOVEMENT_LOCK_TIMEOUT = 0.05
+        servoctl.MOVEMENT_MIN_IDLE_SECONDS = 0.0
+        servoctl._movement_last_name = None
+        servoctl._movement_last_error = None
+        servoctl._movement_last_success_at = None
+        servoctl._movement_last_failure_at = None
+        servoctl._movement_finished_at = 0.0
+        servoctl._movement_consecutive_failures = 0
         servoctl.MOVING = False
         servoctl.battery_module = None
         servoctl._on_movement_start = None
@@ -171,6 +178,33 @@ class ServoFakeHardwareTests(unittest.TestCase):
         self.assertIsNotNone(servoctl.pca)
         self.assertIsNot(servoctl.pca, failed_controller)
 
+    def test_failed_movement_recovers_controller_for_next_command(self):
+        failed_controller = self._initialize()
+        self.backend.write_failures[0] = servoctl.MAX_RETRIES
+
+        first_result = servoctl.execute_direct_servo_command(
+            "simulated_webui_failure",
+            lambda: servoctl.move_servos_timed([(0, 360)], duration=0.02),
+        )
+
+        self.assertFalse(first_result)
+        self.assertIsNotNone(servoctl.pca)
+        self.assertIsNot(servoctl.pca, failed_controller)
+        failed_status = servoctl.get_movement_status()
+        self.assertEqual(failed_status["last_movement"], "simulated_webui_failure")
+        self.assertTrue(failed_status["last_error"])
+
+        second_result = servoctl.execute_direct_servo_command(
+            "next_voice_command",
+            lambda: servoctl.move_servos_timed([(0, 350)], duration=0.02),
+        )
+
+        self.assertTrue(second_result)
+        recovered_status = servoctl.get_movement_status()
+        self.assertTrue(recovered_status["ready"])
+        self.assertIsNone(recovered_status["last_error"])
+        self.assertEqual(recovered_status["consecutive_failures"], 0)
+
     def test_initialize_servos_restores_and_finishes_torque_free(self):
         self.assertTrue(servoctl.initialize_servos(startup_attempts=1))
 
@@ -232,6 +266,22 @@ class ServoFakeHardwareTests(unittest.TestCase):
         worker.join(timeout=1)
         self.assertFalse(worker.is_alive())
         self.assertEqual(results, [True])
+
+    def test_direct_servo_session_releases_for_next_named_movement(self):
+        self._initialize()
+
+        self.assertTrue(servoctl.begin_direct_servo_session("webui_move_arms"))
+        self.assertTrue(servoctl.MOVING)
+        servoctl.move_arm(1, 1, 1, 1, 1, 1, speed_factor=1)
+        self.assertTrue(
+            servoctl.end_direct_servo_session(
+                "webui_move_arms", success=True
+            )
+        )
+
+        self.assertFalse(servoctl.MOVING)
+        self.assertTrue(servoctl.execute_registered_movement("step_forward"))
+        self.assertTrue(servoctl.get_movement_status()["ready"])
 
     def test_cancellation_interrupts_a_timed_movement(self):
         self._initialize()
@@ -309,6 +359,29 @@ class ServoFakeHardwareTests(unittest.TestCase):
         self.assertEqual(servoctl.servo_positions[8], servoctl.rightForarmMin)
         self.assertEqual(servoctl.servo_positions[9], servoctl.rightHandMin)
         self.assertTrue(self.backend.all_outputs_disabled(controller))
+        self.assert_all_raw_pulses_safe()
+
+    def test_repeated_registered_movements_remain_available(self):
+        self._initialize()
+        servoctl.ARMS_PRESENT = True
+
+        for movement_name in (
+            "right_poke",
+            "monster",
+            "step_forward",
+            "right_handshake",
+            "step_forward",
+        ):
+            with self.subTest(movement=movement_name):
+                self.assertTrue(
+                    servoctl.execute_registered_movement(movement_name)
+                )
+                status = servoctl.get_movement_status()
+                self.assertTrue(status["ready"])
+                self.assertFalse(status["moving"])
+                self.assertIsNone(status["last_error"])
+
+        self.assertEqual(servoctl.get_movement_status()["consecutive_failures"], 0)
         self.assert_all_raw_pulses_safe()
 
 

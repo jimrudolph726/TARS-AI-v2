@@ -259,6 +259,11 @@ class TarsRuntime(threading.Thread):
         from modules.module_stt import STTManager
         from modules import module_servoctl
 
+        # Let servo activity inform the shared battery/power monitor. This was
+        # previously never connected in the managed QML runtime, so WebUI and
+        # voice movements could not be correlated with supply-load telemetry.
+        module_servoctl.set_battery_module(self.battery)
+
         self.stt_manager = STTManager(
             config=self.config,
             shutdown_event=self.shutdown_event,

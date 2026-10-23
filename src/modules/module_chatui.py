@@ -48,7 +48,6 @@ BOOT_ID = str(_uuid.uuid4())
 from modules.module_config import load_config
 from modules.module_config import CONFIG_METADATA as CONFIG_UI_FIELDS
 from modules.module_llm import get_completion, process_completion, _sanitize_for_tts
-import modules.module_llm as _llm_mod
 from modules.module_tts import generate_tts_audio, SentenceTTSPipeline
 from modules.module_llm import detect_emotion, detect_emotion_from_llm, classifier as emotion_classifier
 from modules.module_messageQue import queue_message, get_recent_logs
@@ -764,11 +763,14 @@ def _process_chat_message(msg, img_b64):
             if is_first:
                 speed.mark_first_token()
 
-        _llm_mod._reply_chunk_callback = _on_chunk
         try:
-            parsed = process_completion(msg, image_b64=img_b64)
+            parsed = process_completion(
+                msg,
+                image_b64=img_b64,
+                source="webui",
+                reply_chunk_callback=_on_chunk,
+            )
         finally:
-            _llm_mod._reply_chunk_callback = None
             # Flush remaining text to pipeline
             remaining = pipeline.remainder.strip()
             if not remaining:

@@ -1312,6 +1312,14 @@ class STTManager:
                 queue_message(f"WARN: Preemptive LLM failed: {e}")
                 preemptive_result[0] = None
 
+        def _cancel_preemptive_llm(reason):
+            try:
+                from modules.module_llm import cancel_preemptive_completion
+                cancel_preemptive_completion(reason)
+            except Exception as e:
+                if self.DEBUG:
+                    queue_message(f"DEBUG: Unable to cancel preemptive LLM: {e}")
+
         # Use RMS or Smart Turn for silence gating during recording.
         # Avoid sherpa-onnx VAD here to prevent concurrent native calls (heap corruption).
         if self.vadmethod == "smart-turn" and self.smart_turn_session is not None:
@@ -1396,6 +1404,7 @@ class STTManager:
                             spec_result[0] = None
                             spec_snapshot_len = 0
                         if preemptive_fired:
+                            _cancel_preemptive_llm("speech resumed")
                             preemptive_thread = None
                             preemptive_result[0] = None
                             preemptive_transcript[0] = None
@@ -1461,20 +1470,23 @@ class STTManager:
         extra = None
         if preemptive_fired and preemptive_transcript[0] == transcript and preemptive_thread is not None:
             preemptive_thread.join(timeout=10)
+            if preemptive_thread.is_alive():
+                _cancel_preemptive_llm("preemptive response exceeded handoff deadline")
+                preemptive_thread.join(timeout=1)
             if preemptive_result[0] is not None:
                 extra = {"preemptive_llm_result": preemptive_result[0]}
                 queue_message("INFO: Using preemptive LLM result (transcript matched)")
             else:
                 queue_message("INFO: Preemptive LLM returned None, falling back to normal")
         elif preemptive_fired:
+            _cancel_preemptive_llm("final transcript changed")
             queue_message("INFO: Preemptive LLM discarded (transcript changed)")
 
-        # Always wait for preemptive thread to finish before proceeding to
-        # _emit_result → utterance_callback.  Both the preemptive and main
-        # LLM calls use the same _reply_chunk_callback global, so they must
-        # not run concurrently or chunks from both streams will be interleaved.
+        # Give a cancelled preemptive request a brief chance to close its HTTP
+        # response before the normal voice request starts. Request-local stream
+        # callbacks prevent output from different callers from interleaving.
         if preemptive_thread_ref[0] is not None:
-            preemptive_thread_ref[0].join(timeout=10)
+            preemptive_thread_ref[0].join(timeout=1)
             preemptive_thread_ref[0] = None
 
         return self._emit_result(transcript, extra)

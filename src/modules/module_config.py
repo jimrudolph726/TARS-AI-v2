@@ -455,6 +455,11 @@ def load_config():
             "temperature": float(config['LLM']['temperature']),
             "top_p": float(config['LLM']['top_p']),
             "json_mode": config.getboolean('LLM', 'json_mode', fallback=True),
+            "connect_timeout": config.getfloat('LLM', 'connect_timeout', fallback=10.0),
+            "read_timeout": config.getfloat('LLM', 'read_timeout', fallback=45.0),
+            "total_timeout": config.getfloat('LLM', 'total_timeout', fallback=120.0),
+            "max_retries": config.getint('LLM', 'max_retries', fallback=1),
+            "retry_backoff": config.getfloat('LLM', 'retry_backoff', fallback=0.5),
             "override_encoding_model": config['LLM']['override_encoding_model'],
             "api_key": get_api_key(config['LLM']['llm_backend']),
         },
@@ -729,6 +734,26 @@ CONFIG_METADATA = {
         },
         'top_p': {
             'description': 'Another way to control how creative TARS is (works alongside temperature). At 0.9 (the default), TARS considers many possible words when forming a sentence, giving natural-sounding responses. At 0.5, it only picks from the most obvious words, making responses more focused but potentially robotic. Most people should leave this at 0.9 and just adjust temperature instead.'
+        },
+        'connect_timeout': {
+            'label': 'Connection Timeout',
+            'description': 'Maximum seconds to establish a connection to the AI provider. Ten seconds is appropriate for most internet connections. TARS retries a temporary connection failure instead of waiting indefinitely.'
+        },
+        'read_timeout': {
+            'label': 'Response Stall Timeout',
+            'description': 'Maximum seconds TARS waits without receiving another part of the AI response. Increase this for unusually slow local or reasoning models; lower it to recover from stalled providers sooner.'
+        },
+        'total_timeout': {
+            'label': 'Total Request Timeout',
+            'description': 'Maximum total seconds for one AI response, including retries and streaming. When this deadline is reached, TARS abandons the request and returns to a usable listening state.'
+        },
+        'max_retries': {
+            'label': 'Temporary Failure Retries',
+            'description': 'How many times TARS retries a connection failure, timeout, rate limit, or temporary server error before giving up. Retries only occur before response text starts, preventing duplicate speech.'
+        },
+        'retry_backoff': {
+            'label': 'Retry Delay',
+            'description': 'Initial delay in seconds before retrying a temporary AI-provider failure. Additional retries use a progressively longer delay.'
         },
         'override_encoding_model': {
             'options': ['cl100k_base', 'p50k_base', 'r50k_base', 'gpt2'],

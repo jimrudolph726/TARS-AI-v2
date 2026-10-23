@@ -25,6 +25,15 @@ import time
 import random
 import asyncio
 from modules.module_config import load_config, get_capabilities
+from modules.module_llm_transport import (
+    LLMRequestCancelled,
+    LLMRequestCoordinator,
+    LLMRequestTimeout,
+    LLMTransportError,
+    TransportSettings,
+    post_json_completion,
+    stream_chat_completion,
+)
 from modules.module_prompt import build_prompt
 from modules.module_messageQue import queue_message
 
@@ -33,9 +42,11 @@ CAPABILITIES = get_capabilities()
 character_manager = None
 memory_manager = None
 
-# Persistent HTTP session — reuses TCP+TLS connections across LLM requests,
-# saving ~100-200ms per call (especially on Pi where TLS handshake is slow).
-_http_session = requests.Session()
+# Requests sessions are not guaranteed to be thread-safe. Each calling thread
+# gets its own persistent session, retaining TCP/TLS reuse without allowing a
+# voice, web, Discord, or reminder request to mutate another request's state.
+_http_session_local = threading.local()
+_request_coordinator = LLMRequestCoordinator()
 
 process_camera_image = None
 try:
@@ -45,13 +56,37 @@ except ImportError:
     pass
 
 
-# Callback invoked with (text_chunk, is_first) as reply text streams from LLM.
-# Set by module_main.py before calling process_completion(); cleared afterward.
-_reply_chunk_callback = None
+def _get_http_session():
+    session = getattr(_http_session_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        _http_session_local.session = session
+    return session
 
-# Speaker ID start timestamp — set by module_main.py so the deferred wait
-# in build_prompt can block for the remaining budget before resolving the name.
-_sid_start_time = None
+
+def _transport_settings():
+    return TransportSettings.from_config(CONFIG.get("LLM", {}))
+
+
+def _log_retry(request_id, attempt, error):
+    queue_message(
+        f"WARNING: LLM request {request_id} temporary failure; "
+        f"retry {attempt}: {error}"
+    )
+
+
+def cancel_preemptive_completion(reason="preemptive transcript invalidated"):
+    """Cancel an outdated speculative LLM request, if one is active."""
+    return _request_coordinator.cancel_preemptive(reason)
+
+
+def _failure_result(reply):
+    return {
+        "reply": reply,
+        "function_calls": [],
+        "new_memories": [],
+        "_llm_error": True,
+    }
 
 
 class _ReplyExtractor:
@@ -171,63 +206,60 @@ def _maybe_play_thinking_response():
 
 
 def get_completion(user_prompt, istext=True, image_b64=None, source="voice"):
-
     if memory_manager is None or character_manager is None:
         raise ValueError("MemoryManager and CharacterManager must be initialized before generating completions.")
 
-    _maybe_play_thinking_response()
-
-    prompt = build_prompt(user_prompt, character_manager, memory_manager, CONFIG, debug=False)
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {CONFIG['LLM']['api_key']}"
-    }
-    llm_backend = CONFIG['LLM']['llm_backend']
-    url, data = _prepare_request_data(llm_backend, prompt, image_b64=image_b64)
-
+    ticket = _request_coordinator.begin(source)
     try:
-        response = _http_session.post(url, headers=headers, json=data, stream=True)
-        response.raise_for_status()
-
-        # Stream tokens from SSE response
-        _content_parts = []
-        try:
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                line_str = line.decode('utf-8')
-                if not line_str.startswith("data: "):
-                    continue
-                data_str = line_str[6:]
-                if data_str.strip() == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data_str)
-                    token = chunk['choices'][0]['delta'].get('content', '')
-                    if token:
-                        _content_parts.append(token)
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    continue
-        except Exception:
-            pass
-        full_content = ''.join(_content_parts)
-
-        # Fallback: if streaming yielded nothing, try non-streaming parse
-        if not full_content.strip():
-            try:
-                bot_reply = _extract_text(response.json(), istext)
-            except Exception:
-                queue_message("ERROR: LLM returned empty response")
-                return None
-        else:
-            bot_reply = full_content.strip()
-
-        finalReply = llm_process(user_prompt, bot_reply, source=source, has_image=image_b64 is not None)
-        return finalReply
-
-    except requests.RequestException as e:
-        queue_message(f"ERROR: LLM request failed: {e}")
+        ticket.raise_if_cancelled()
+        _maybe_play_thinking_response()
+        prompt = build_prompt(
+            user_prompt,
+            character_manager,
+            memory_manager,
+            CONFIG,
+            debug=False,
+        )
+        ticket.raise_if_cancelled()
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {CONFIG['LLM']['api_key']}"
+        }
+        llm_backend = CONFIG['LLM']['llm_backend']
+        url, data = _prepare_request_data(llm_backend, prompt, image_b64=image_b64)
+        bot_reply = stream_chat_completion(
+            _get_http_session(),
+            url,
+            headers,
+            data,
+            _transport_settings(),
+            ticket,
+            on_retry=lambda attempt, error: _log_retry(
+                ticket.request_id, attempt, error
+            ),
+        )
+        if not _request_coordinator.is_current(ticket):
+            raise LLMRequestCancelled("LLM result was superseded")
+        if not bot_reply:
+            queue_message("ERROR: LLM returned an empty response")
+            return None
+        return llm_process(
+            user_prompt,
+            bot_reply,
+            source=source,
+            has_image=image_b64 is not None,
+        )
+    except LLMRequestCancelled as error:
+        queue_message(f"INFO: LLM request {ticket.request_id} cancelled: {error}")
         return None
+    except LLMRequestTimeout as error:
+        queue_message(f"ERROR: LLM request {ticket.request_id} timed out: {error}")
+        return "The language service did not respond in time. Please try again."
+    except (requests.RequestException, LLMTransportError) as error:
+        queue_message(f"ERROR: LLM request {ticket.request_id} failed: {error}")
+        return None
+    finally:
+        _request_coordinator.finish(ticket)
 
 def _prepare_request_data(llm_backend, prompt, image_b64=None, *, stream=True, json_mode=True):
 
@@ -294,22 +326,42 @@ def _extract_text(response_json, istext):
     except (KeyError, IndexError, TypeError) as error:
         return f"Text extraction failed: {str(error)}"
 
-def process_completion(prompt, image_b64=None):
+def process_completion(
+    prompt,
+    image_b64=None,
+    *,
+    source="voice",
+    reply_chunk_callback=None,
+    sid_start_time=None,
+):
     """Run LLM completion and return parsed dict with reply + side effects deferred.
 
     Returns a dict with 'reply', 'function_calls', 'new_memories' fields,
     or a plain string on error.
     """
+    ticket = _request_coordinator.begin(source)
+    delivered_visible = False
+
     def _get_parsed(prompt):
+        nonlocal delivered_visible
         if memory_manager is None or character_manager is None:
             raise ValueError("Managers must be initialized")
 
+        ticket.raise_if_cancelled()
         _maybe_play_thinking_response()
 
         import modules.module_speed as speed
         _t0 = time.perf_counter()
-        built_prompt = build_prompt(prompt, character_manager, memory_manager, CONFIG, debug=False)
+        built_prompt = build_prompt(
+            prompt,
+            character_manager,
+            memory_manager,
+            CONFIG,
+            debug=False,
+            sid_start_time=sid_start_time,
+        )
         _t_prompt = time.perf_counter()
+        ticket.raise_if_cancelled()
 
         headers = {
             "Content-Type": "application/json",
@@ -318,59 +370,51 @@ def process_completion(prompt, image_b64=None):
         llm_backend = CONFIG['LLM']['llm_backend']
         url, data = _prepare_request_data(llm_backend, built_prompt, image_b64=image_b64)
 
-        response = _http_session.post(url, headers=headers, json=data, stream=True)
-        response.raise_for_status()
         _t_first_byte = None
-
-        _content_parts = []
         _token_count = 0
         _extractor = _ReplyExtractor()
-        try:
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                line_str = line.decode('utf-8')
-                if not line_str.startswith("data: "):
-                    continue
-                data_str = line_str[6:]
-                if data_str.strip() == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data_str)
-                    token = chunk['choices'][0]['delta'].get('content', '')
-                    if not token:
-                        continue
-                    if _t_first_byte is None:
-                        _t_first_byte = time.perf_counter()
-                    _content_parts.append(token)
-                    _token_count += 1
-                    # Extract visible reply text and invoke callback if set
-                    cb = _reply_chunk_callback
-                    if cb is not None:
-                        visible, is_first = _extractor.feed(token)
-                        if visible:
-                            if is_first:
-                                speed.mark_first_token()
-                            try:
-                                cb(visible, is_first)
-                            except Exception:
-                                pass
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    continue
-        except Exception:
-            pass
-        full_content = ''.join(_content_parts)
+
+        def _on_token(token):
+            nonlocal _t_first_byte, _token_count, delivered_visible
+            if _t_first_byte is None:
+                _t_first_byte = time.perf_counter()
+            _token_count += 1
+            if reply_chunk_callback is None:
+                return
+            visible, is_first = _extractor.feed(token)
+            if not visible:
+                return
+            delivered_visible = True
+            if is_first:
+                speed.mark_first_token()
+            try:
+                reply_chunk_callback(visible, is_first)
+            except Exception as error:
+                queue_message(f"WARNING: LLM stream callback failed: {error}")
+
+        full_content = stream_chat_completion(
+            _get_http_session(),
+            url,
+            headers,
+            data,
+            _transport_settings(),
+            ticket,
+            on_token=_on_token,
+            on_retry=lambda attempt, error: _log_retry(
+                ticket.request_id, attempt, error
+            ),
+        )
         _t_llm_done = time.perf_counter()
         if _t_first_byte is None:
             _t_first_byte = _t_prompt  # no tokens received
 
         if not full_content.strip():
-            try:
-                bot_reply = _extract_text(response.json(), True)
-            except Exception:
-                return None
-        else:
-            bot_reply = full_content.strip()
+            queue_message("ERROR: LLM returned an empty streaming response")
+            return None
+        bot_reply = full_content.strip()
+
+        if not _request_coordinator.is_current(ticket):
+            raise LLMRequestCancelled("LLM result was superseded")
 
         result = llm_parse_response(bot_reply)
         _t_parse = time.perf_counter()
@@ -393,7 +437,26 @@ def process_completion(prompt, image_b64=None):
             }
         return result
 
-    return _get_parsed(prompt)
+    try:
+        return _get_parsed(prompt)
+    except LLMRequestCancelled as error:
+        queue_message(f"INFO: LLM request {ticket.request_id} cancelled: {error}")
+        return None
+    except LLMRequestTimeout as error:
+        queue_message(f"ERROR: LLM request {ticket.request_id} timed out: {error}")
+        reply = "The language service did not respond in time. Please try again."
+    except (requests.RequestException, LLMTransportError) as error:
+        queue_message(f"ERROR: LLM request {ticket.request_id} failed: {error}")
+        reply = "I could not reach the language service. Please try again."
+    finally:
+        _request_coordinator.finish(ticket)
+
+    if reply_chunk_callback is not None and not delivered_visible:
+        try:
+            reply_chunk_callback(reply, True)
+        except Exception as error:
+            queue_message(f"WARNING: LLM failure callback failed: {error}")
+    return _failure_result(reply)
 
 _emotion_cache = {}
 _EMOTION_CACHE_MAX = 128
@@ -617,6 +680,8 @@ def llm_execute_side_effects(parsed, user_input, source="voice", has_image=False
     has_image: True when the user already provided an image (skip camera capture).
     """
     global memory_manager
+    if parsed.get("_llm_error"):
+        return
     try:
         fc = parsed.get("function_calls")
         if fc:
@@ -807,7 +872,7 @@ def execute_function_call(func_call, bot_response, user_input, source="voice", h
     speed.log_tool(function_name, speed.stop('tool'))
 
 
-def raw_complete_llm(user_prompt, istext=True):
+def raw_complete_llm(user_prompt, istext=True, source="followup"):
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {CONFIG['LLM']['api_key']}"
@@ -824,14 +889,26 @@ def raw_complete_llm(user_prompt, istext=True):
         json_mode=False,
     )
 
+    ticket = _request_coordinator.begin(source)
     try:
-        response = _http_session.post(url, headers=headers, json=data)
-        response.raise_for_status()
-        bot_reply = _extract_text(response.json(), istext)
+        response_json = post_json_completion(
+            _get_http_session(),
+            url,
+            headers,
+            data,
+            _transport_settings(),
+            ticket,
+            on_retry=lambda attempt, error: _log_retry(
+                ticket.request_id, attempt, error
+            ),
+        )
+        bot_reply = _extract_text(response_json, istext)
         return bot_reply
-
-    except requests.RequestException as e:
-        response = getattr(e, "response", None)
+    except LLMRequestCancelled as error:
+        queue_message(f"INFO: LLM request {ticket.request_id} cancelled: {error}")
+        return None
+    except (requests.RequestException, LLMTransportError) as error:
+        response = getattr(error, "response", None)
         detail = ""
         if response is not None:
             try:
@@ -839,8 +916,12 @@ def raw_complete_llm(user_prompt, istext=True):
             except Exception:
                 pass
         suffix = f" | {detail}" if detail else ""
-        queue_message(f"ERROR: LLM request failed: {e}{suffix}")
+        queue_message(
+            f"ERROR: LLM request {ticket.request_id} failed: {error}{suffix}"
+        )
         return None
+    finally:
+        _request_coordinator.finish(ticket)
 
 def initialize_manager_llm(mem_manager, char_manager):
     global memory_manager, character_manager

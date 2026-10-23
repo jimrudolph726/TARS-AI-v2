@@ -73,7 +73,7 @@ def _fire_reminder(task_id, meta):
     try:
         from modules.module_llm import process_completion, llm_execute_side_effects
         prompt = f"[SYSTEM: A reminder just fired. The user previously asked you to remind them: \"{message}\". Respond naturally — acknowledge the reminder and fulfill the request if it was an action (e.g. tell a joke, suggest something, etc.). Keep it concise.]"
-        parsed = process_completion(prompt)
+        parsed = process_completion(prompt, source="reminder")
         if isinstance(parsed, dict):
             llm_reply = parsed.get("reply", "")
             # Run any side effects (function calls, memories) in background

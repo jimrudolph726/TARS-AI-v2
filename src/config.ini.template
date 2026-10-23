@@ -49,6 +49,12 @@ seed = -1
 temperature = 0.8
 # Token diversity: 0.0–1.0 (0.9 recommended, leave as-is)
 top_p = 0.9
+# Network reliability. Existing config.ini files may omit these and use these defaults.
+connect_timeout = 10
+read_timeout = 45
+total_timeout = 120
+max_retries = 1
+retry_backoff = 0.5
 # Force JSON output via API (True/False). Disable for backends that don't support response_format (e.g. LM Studio)
 json_mode = True
 # Token counting encoding — only change if token errors occur (cl100k_base works for most models)

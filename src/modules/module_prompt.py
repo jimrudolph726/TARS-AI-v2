@@ -290,7 +290,14 @@ def get_last_prompt():
     """Return the most recently built prompt text (in-memory, no file I/O)."""
     return _last_built_prompt
 
-def build_prompt(user_prompt, character_manager, memory_manager, config, debug=False):
+def build_prompt(
+    user_prompt,
+    character_manager,
+    memory_manager,
+    config,
+    debug=False,
+    sid_start_time=None,
+):
     global _last_prompt_timings
     import modules.module_speed as speed
     speed.start('prompt_build')
@@ -594,8 +601,7 @@ Current Time: {now.strftime('%H:%M:%S')}
     # location resolution.  This is the latest point we can wait while still
     # guaranteeing 100% correct speaker identification in the prompt.
     try:
-        import modules.module_llm as _llm_mod
-        _sid_t0 = getattr(_llm_mod, '_sid_start_time', None)
+        _sid_t0 = sid_start_time
         if _sid_t0 is not None:
             from modules.module_speaker_id import get_speaker_id_manager
             _sid = get_speaker_id_manager()
@@ -606,7 +612,6 @@ Current Time: {now.strftime('%H:%M:%S')}
                     identified = _sid.wait_for_identification(timeout=_sid_remaining)
                     if not identified:
                         queue_message(f"DEBUG: Speaker ID timed out ({_sid_elapsed + _sid_remaining:.1f}s total) — using default name")
-            _llm_mod._sid_start_time = None
     except Exception:
         pass
 

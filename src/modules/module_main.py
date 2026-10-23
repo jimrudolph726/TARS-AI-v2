@@ -155,7 +155,6 @@ def utterance_callback(message):
 
     try:
         import modules.module_speed as speed
-        import modules.module_llm as llm_mod
         speed.mark_utterance_start()
         speed.start('total')
 
@@ -297,16 +296,15 @@ def utterance_callback(message):
                 pass
 
             pipeline.start()
-            llm_mod._reply_chunk_callback = on_reply_chunk
-
-            # Pass speaker ID start time so the deferred wait happens in
-            # build_prompt (before speaker context and memory retrieval).
-            llm_mod._sid_start_time = _sid_start
-
             try:
                 stt_to_llm_dur = speed.stop('stt_to_llm')
                 speed.start('llm_total')
-                parsed = process_completion(user_text)
+                parsed = process_completion(
+                    user_text,
+                    source="voice",
+                    reply_chunk_callback=on_reply_chunk,
+                    sid_start_time=_sid_start,
+                )
                 llm_total_dur = speed.stop('llm_total')
                 # Refresh UI display name now that speaker ID has resolved
                 try:
@@ -320,7 +318,6 @@ def utterance_callback(message):
                 except Exception:
                     pass
             finally:
-                llm_mod._reply_chunk_callback = None
                 # Flush remaining — try pipeline remainder, fall back to raw
                 remaining = pipeline.remainder.strip()
                 if not remaining:

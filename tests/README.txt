@@ -18,6 +18,11 @@ failures. The suite verifies controller retry/recovery, calibrated endpoint
 mapping, safe pulse bounds, startup/shutdown behavior, calibration handoff,
 movement serialization, cancellation, and both original forward-step profiles.
 
+The LLM transport tests use fake HTTP sessions and never contact an AI service.
+They verify network deadlines, bounded retries, permanent-error handling,
+partial-stream duplicate prevention, response cleanup, and cancellation of
+outdated preemptive voice requests.
+
 These tests validate software behavior only. They cannot prove that a gait is
 mechanically stable or that physical calibration endpoints are safe for a
 particular TARS build.

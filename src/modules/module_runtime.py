@@ -269,7 +269,9 @@ class TarsRuntime(threading.Thread):
         self.stt_manager.set_wake_word_callback(wake_word_callback)
         self.stt_manager.set_utterance_callback(utterance_callback)
         self.stt_manager.set_post_utterance_callback(post_utterance_callback)
-        self.stt_manager.set_preemptive_llm_callback(process_completion)
+        self.stt_manager.set_preemptive_llm_callback(
+            lambda prompt: process_completion(prompt, source="preemptive")
+        )
         self.ui.attach_sources(stt=self.stt_manager)
 
         def pause_for_movement():

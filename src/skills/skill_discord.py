@@ -57,7 +57,11 @@ def _process_message(user_message, image_b64=None):
     """Process a Discord message through the LLM pipeline."""
     try:
         from modules.module_llm import process_completion
-        return process_completion(user_message, image_b64=image_b64)
+        return process_completion(
+            user_message,
+            image_b64=image_b64,
+            source="discord",
+        )
     except Exception as e:
         queue_message(f"ERROR: Discord LLM processing: {e}")
         return "Sorry, I encountered an error processing your message."

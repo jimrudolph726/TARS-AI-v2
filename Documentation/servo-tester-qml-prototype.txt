@@ -12,9 +12,23 @@ From the repository root, with the project's virtual environment active:
     python src/app-servotester-qml.py --fullscreen
 
 On a Raspberry Pi, the app automatically connects to the PCA9685 through the
-existing modules.module_servoctl code. Moving a slider previews that offset on
-the corresponding physical servo. Slider changes remain temporary until SAVE
-CALIBRATION is pressed; Save writes the ten offset values to src/config.ini.
+existing modules.module_servoctl code. Press ENABLE PWM only after physically
+supporting TARS. Dragging a calibration slider continuously previews its offset
+on the corresponding physical servo. Slider changes remain temporary until
+SAVE is pressed; Save writes the ten offset values to the active config.ini.
+A copy of the previous file is kept as config.calibration-backup.ini.
+
+Calibration and range testing
+-----------------------------
+
+CALIBRATION changes the ten offsets consumed by the main TARS application.
+Each slider's limits are calculated from that servo's configured endpoints, so
+an offset cannot push either endpoint outside the accepted 10–600 PWM range.
+
+RANGE TEST is deliberately separate from calibration. Select and arm one joint,
+then move it from 0% to 100% of its currently calibrated endpoint range. Motion
+is rate-limited, only one joint is commanded, and range tests never alter or
+save an offset. Disarm the range test before supporting or repositioning TARS.
 
 Use this mode when you want to inspect the UI without moving hardware:
 
@@ -36,11 +50,18 @@ Safety and controls
 
 - Offset changes are rejected if either configured servo endpoint would leave
   the existing safe pulse range of 10–600.
-- DISABLE SERVOS immediately removes PWM output from all channels.
+- Slider events are coalesced and PWM writes run on a serialized worker, keeping
+  touch and VNC dragging responsive without competing with movement routines.
+- DISABLE PWM first cancels active movement, then removes PWM from every channel
+  under the shared movement lock.
 - Closing the tester also disables all servo channels.
 - REVERT restores the last saved offsets and previews those positions.
-- RESET POSITION runs the project's existing neutral-position routine without
+- NEUTRAL runs the project's existing neutral-position routine without
   changing saved calibration offsets.
+- If an I2C write fails, the tester attempts to reconnect but deliberately
+  leaves PWM off. Support TARS and press ENABLE PWM again to apply the complete
+  calibrated pose safely.
+- Closing with unsaved offsets asks whether to save, discard, or cancel.
 - Escape closes the fullscreen window.
 
 Architecture

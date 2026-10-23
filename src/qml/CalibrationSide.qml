@@ -5,6 +5,7 @@ Rectangle {
     required property var servoModel
     required property string sideName
     property color panelAccent: "#ff3b52"
+    property bool controlsEnabled: true
     color: "#091115"
     radius: 7
     border.color: "#28353b"
@@ -65,6 +66,8 @@ Rectangle {
                 maximum: modelData.maximum
                 unit: modelData.unit
                 accent: root.panelAccent
+                enabled: root.controlsEnabled
+                onPreviewRequested: value => controller.previewServoValue(servoId, value)
                 onValueRequested: value => controller.setServoValue(servoId, value)
                 onAdjustmentRequested: delta => controller.adjustServo(servoId, delta)
             }

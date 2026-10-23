@@ -17,6 +17,83 @@ ApplicationWindow {
     readonly property color textPrimary: "#eef3f5"
     readonly property color textMuted: "#8f9ba1"
     property int currentPage: 0
+    property bool closeConfirmed: false
+
+    onClosing: close => {
+        if (controller.unsavedChanges && !closeConfirmed) {
+            close.accepted = false
+            unsavedDialog.open()
+        }
+    }
+
+    Dialog {
+        id: unsavedDialog
+        anchors.centerIn: parent
+        width: Math.min(440, window.width - 40)
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        background: Rectangle {
+            color: "#0a1216"
+            radius: 7
+            border.color: window.accent
+        }
+        contentItem: ColumnLayout {
+            spacing: 12
+            Text {
+                Layout.fillWidth: true
+                text: "UNSAVED CALIBRATION"
+                color: window.textPrimary
+                font.pixelSize: 15
+                font.bold: true
+                font.letterSpacing: 1.4
+            }
+            Text {
+                Layout.fillWidth: true
+                text: "Save the new servo offsets before closing?"
+                color: window.textMuted
+                wrapMode: Text.WordWrap
+                font.pixelSize: 11
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                TacticalButton {
+                    Layout.fillWidth: true
+                    height: 34
+                    text: "CANCEL"
+                    onClicked: unsavedDialog.close()
+                }
+                TacticalButton {
+                    Layout.fillWidth: true
+                    height: 34
+                    text: "DISCARD"
+                    accent: "#8b9ca4"
+                    onClicked: {
+                        window.closeConfirmed = true
+                        unsavedDialog.close()
+                        window.close()
+                    }
+                }
+                TacticalButton {
+                    Layout.fillWidth: true
+                    height: 34
+                    text: "SAVE"
+                    primary: true
+                    accent: window.accent
+                    onClicked: {
+                        controller.saveCalibration()
+                        Qt.callLater(function() {
+                            if (!controller.unsavedChanges) {
+                                window.closeConfirmed = true
+                                unsavedDialog.close()
+                                window.close()
+                            }
+                        })
+                    }
+                }
+            }
+        }
+    }
 
     Shortcut {
         sequence: "Esc"
@@ -97,7 +174,7 @@ ApplicationWindow {
             height: parent.height
             spacing: 4
             Repeater {
-                model: ["CALIBRATION", "MOVEMENTS", "GAIT DIAGNOSTIC"]
+                model: ["CALIBRATION", "RANGE TEST", "MOVEMENTS", "GAIT DIAGNOSTIC"]
                 delegate: Rectangle {
                     required property string modelData
                     required property int index
@@ -122,7 +199,12 @@ ApplicationWindow {
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: window.currentPage = index
+                        onClicked: {
+                            if (window.currentPage === 1 && index !== 1
+                                    && controller.rangeTestArmed)
+                                controller.setRangeTestArmed(false)
+                            window.currentPage = index
+                        }
                     }
                 }
             }
@@ -147,6 +229,7 @@ ApplicationWindow {
                 servoModel: controller.leftServos
                 sideName: "LEFT"
                 panelAccent: window.accent
+                controlsEnabled: !controller.movementActive && !controller.rangeTestArmed
             }
             CalibrationSide {
                 Layout.fillWidth: true
@@ -154,6 +237,7 @@ ApplicationWindow {
                 servoModel: controller.rightServos
                 sideName: "RIGHT"
                 panelAccent: window.accent
+                controlsEnabled: !controller.movementActive && !controller.rangeTestArmed
             }
         }
 
@@ -161,6 +245,202 @@ ApplicationWindow {
             anchors.fill: parent
             spacing: 10
             visible: window.currentPage === 1
+
+            Rectangle {
+                Layout.preferredWidth: 255
+                Layout.fillHeight: true
+                radius: 7
+                color: "#091115"
+                border.color: "#28353b"
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 9
+                    spacing: 6
+                    Text {
+                        Layout.fillWidth: true
+                        text: "SELECT ONE SERVO"
+                        color: window.textPrimary
+                        font.pixelSize: 12
+                        font.bold: true
+                        font.letterSpacing: 1.2
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Range testing never changes saved calibration."
+                        color: window.textMuted
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 8
+                    }
+                    ListView {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        spacing: 4
+                        model: controller.rangeServoOptions
+                        delegate: TacticalButton {
+                            required property var modelData
+                            width: ListView.view.width
+                            height: 31
+                            text: modelData.label
+                            primary: controller.selectedRangeServo === modelData.id
+                            accent: controller.selectedRangeServo === modelData.id
+                                    ? window.accent : "#68767d"
+                            enabled: modelData.available && !controller.rangeTestBusy
+                            onClicked: controller.selectRangeServo(modelData.id)
+                        }
+                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                    }
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                radius: 7
+                color: "#091115"
+                border.color: controller.rangeTestArmed ? window.accent : "#28353b"
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 18
+                    spacing: 10
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: controller.selectedRangeServoLabel
+                        color: window.textPrimary
+                        font.pixelSize: 17
+                        font.bold: true
+                        font.letterSpacing: 1.5
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "CALIBRATED ENDPOINTS  "
+                              + controller.rangeTestMinimumPulse + "  →  "
+                              + controller.rangeTestMaximumPulse
+                        color: window.green
+                        font.family: "Consolas"
+                        font.pixelSize: 10
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 88
+                        radius: 6
+                        color: "#0c1519"
+                        border.color: "#26343a"
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 10
+                            spacing: 3
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text {
+                                    text: "REQUESTED  " + controller.rangeTestPercent + "%"
+                                    color: window.accent
+                                    font.family: "Consolas"
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+                                Item { Layout.fillWidth: true }
+                                Text {
+                                    text: "PWM " + controller.rangeTestPulse
+                                    color: window.textPrimary
+                                    font.family: "Consolas"
+                                    font.pixelSize: 12
+                                }
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "APPLIED  " + controller.rangeTestAppliedPercent + "%"
+                                      + (controller.rangeTestBusy ? "  ·  MOVING" : "  ·  HOLDING")
+                                color: controller.rangeTestBusy ? window.green : window.textMuted
+                                font.family: "Consolas"
+                                font.pixelSize: 9
+                            }
+                        }
+                    }
+
+                    Slider {
+                        id: rangeSlider
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 50
+                        from: 0
+                        to: 100
+                        stepSize: 1
+                        snapMode: Slider.SnapAlways
+                        live: true
+                        value: controller.rangeTestPercent
+                        enabled: controller.rangeTestArmed && !controller.movementActive
+                        onMoved: controller.previewRangePosition(value)
+                        onPressedChanged: {
+                            if (!pressed)
+                                controller.setRangePosition(value)
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        TacticalButton {
+                            Layout.fillWidth: true
+                            height: 34
+                            text: "-10%"
+                            enabled: controller.rangeTestArmed
+                            onClicked: controller.nudgeRangePosition(-10)
+                        }
+                        TacticalButton {
+                            Layout.fillWidth: true
+                            height: 34
+                            text: "-1%"
+                            enabled: controller.rangeTestArmed
+                            onClicked: controller.nudgeRangePosition(-1)
+                        }
+                        TacticalButton {
+                            Layout.fillWidth: true
+                            height: 34
+                            text: "+1%"
+                            enabled: controller.rangeTestArmed
+                            onClicked: controller.nudgeRangePosition(1)
+                        }
+                        TacticalButton {
+                            Layout.fillWidth: true
+                            height: 34
+                            text: "+10%"
+                            enabled: controller.rangeTestArmed
+                            onClicked: controller.nudgeRangePosition(10)
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        text: "SAFETY\nSupport the selected joint before arming. Motion is limited to the calibrated endpoints and ramped at a controlled rate. DISABLE PWM releases all torque immediately."
+                        color: "#b6c0c4"
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 9
+                        lineHeight: 1.2
+                    }
+
+                    TacticalButton {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 40
+                        text: controller.rangeTestArmed ? "DISARM RANGE TEST" : "ARM SELECTED SERVO"
+                        accent: controller.rangeTestArmed ? window.accent : window.green
+                        primary: true
+                        enabled: controller.hardwareConnected && controller.servoPower
+                                 && !controller.movementActive
+                        onClicked: controller.setRangeTestArmed(!controller.rangeTestArmed)
+                    }
+                }
+            }
+        }
+
+        RowLayout {
+            anchors.fill: parent
+            spacing: 10
+            visible: window.currentPage === 2
 
             Rectangle {
                 Layout.preferredWidth: 166
@@ -268,7 +548,7 @@ ApplicationWindow {
         RowLayout {
             anchors.fill: parent
             spacing: 10
-            visible: window.currentPage === 2
+            visible: window.currentPage === 3
 
             Rectangle {
                 Layout.preferredWidth: 205
@@ -546,6 +826,7 @@ ApplicationWindow {
                 text: controller.servoPower ? "DISABLE PWM" : "ENABLE PWM"
                 iconText: "⏻"
                 accent: window.accent
+                enabled: !controller.powerTransition
                 onClicked: controller.servoPower ? controller.disableServos() : controller.enableServos()
             }
             TacticalButton {

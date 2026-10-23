@@ -11,10 +11,11 @@ Rectangle {
     required property string unit
     property color accent: "#ff3b52"
     property real previewValue: servoValue
+    signal previewRequested(real value)
     signal valueRequested(real value)
     signal adjustmentRequested(int delta)
 
-    onServoValueChanged: if (!trackInteraction.pressed) previewValue = servoValue
+    onServoValueChanged: if (!slider.pressed) previewValue = servoValue
     color: "#0c1519"
     radius: 5
     border.color: "#202d33"
@@ -57,7 +58,17 @@ Rectangle {
         from: root.minimum
         to: root.maximum
         stepSize: 1
+        snapMode: Slider.SnapAlways
+        live: true
         value: root.previewValue
+        onMoved: {
+            root.previewValue = value
+            root.previewRequested(value)
+        }
+        onPressedChanged: {
+            if (!pressed)
+                root.valueRequested(value)
+        }
         background: Rectangle {
             x: slider.leftPadding
             y: slider.topPadding + slider.availableHeight / 2 - height / 2
@@ -81,21 +92,6 @@ Rectangle {
             color: "#11191d"
             border.width: 3
             border.color: root.accent
-        }
-        MouseArea {
-            id: trackInteraction
-            anchors.fill: parent
-            preventStealing: true
-            cursorShape: pressed ? Qt.ClosedHandCursor : Qt.PointingHandCursor
-            function applyPointer(pointerX) {
-                const usable = Math.max(1, slider.availableWidth)
-                const position = Math.max(0, Math.min(1, (pointerX - slider.leftPadding) / usable))
-                root.previewValue = Math.round(slider.from + position * (slider.to - slider.from))
-            }
-            onPressed: mouse => applyPointer(mouse.x)
-            onPositionChanged: mouse => { if (pressed) applyPointer(mouse.x) }
-            onReleased: root.valueRequested(root.previewValue)
-            onCanceled: root.previewValue = root.servoValue
         }
     }
 

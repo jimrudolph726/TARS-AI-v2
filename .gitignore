@@ -153,6 +153,7 @@ llm/
 vision/
 config.ini
 config_backup.ini
+config.calibration-backup.ini
 config-server.ini
 src/models/
 src/logs/

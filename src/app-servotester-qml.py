@@ -10,8 +10,10 @@ from __future__ import annotations
 import argparse
 import configparser
 import os
+import shutil
 import sys
 import threading
+import time
 from copy import deepcopy
 from pathlib import Path
 
@@ -36,11 +38,11 @@ if ARGS.screenshot and "QT_QPA_PLATFORM" not in os.environ:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
-from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
+import shiboken6
+from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow
-import shiboken6
 
 
 ROOT = Path(__file__).resolve().parent
@@ -128,15 +130,14 @@ def _read_servo_config(path: Path | None) -> dict[str, str]:
     return dict(parser.items("SERVO")) if parser.has_section("SERVO") else {}
 
 
-def _servo(servo_id: str, value: int) -> dict:
+def _servo(servo_id: str, value: int, minimum: int, maximum: int) -> dict:
     definition = SERVO_DEFINITIONS[servo_id]
-    is_arm = "_height" not in servo_id and "_leg" not in servo_id
     return {
         "id": servo_id,
         "label": definition["label"],
         "value": value,
-        "minimum": -90 if is_arm else -50,
-        "maximum": 90 if is_arm else 50,
+        "minimum": minimum,
+        "maximum": maximum,
         "unit": "ticks",
     }
 
@@ -150,12 +151,21 @@ class ServoCalibrationController(QObject):
     profileChanged = Signal()
     movementsChanged = Signal()
     diagnosticsChanged = Signal()
+    rangeTestChanged = Signal()
 
     def __init__(self) -> None:
         super().__init__()
         self._config_path = _find_config_path()
         self._servo_config = _read_servo_config(self._config_path)
         self._servoctl = None
+        self._io_lock = threading.RLock()
+        self._preview_condition = threading.Condition()
+        self._preview_request: dict | None = None
+        self._preview_stop = False
+        self._preview_cancel = threading.Event()
+        self._preview_thread: threading.Thread | None = None
+        self._preview_interval = 0.04
+        self._preview_step_ticks = 6
         # Keep strong references to the standalone tester's I2C/PCA objects.
         # The working legacy tester owns this hardware session directly, so the
         # QML tester does the same instead of relying on module import state.
@@ -167,6 +177,12 @@ class ServoCalibrationController(QObject):
         self._movement_category = "Locomotion"
         self._diagnostic_direction = "forward"
         self._diagnostic_phase = -1
+        self._range_servo_id = "left_height"
+        self._range_percent = 50
+        self._range_applied_percent = 50
+        self._range_armed = False
+        self._range_busy = False
+        self._power_transition = False
 
         self._servos = {}
         for servo_id, definition in SERVO_DEFINITIONS.items():
@@ -175,7 +191,9 @@ class ServoCalibrationController(QObject):
                 value = int(raw)
             except (TypeError, ValueError):
                 value = 0
-            self._servos[servo_id] = _servo(servo_id, value)
+            minimum, maximum = self._offset_bounds(servo_id)
+            value = max(minimum, min(maximum, value))
+            self._servos[servo_id] = _servo(servo_id, value, minimum, maximum)
 
         self._saved_servos = deepcopy(self._servos)
         self._dirty = False
@@ -199,32 +217,81 @@ class ServoCalibrationController(QObject):
         else:
             self._status = "Mock mode · use --hardware to force PCA9685 control"
 
-    def _connect_hardware(self) -> None:
-        try:
-            import board
-            import busio
-            from adafruit_pca9685 import PCA9685
-            import modules.module_servoctl as servoctl
+        self._preview_thread = threading.Thread(
+            target=self._preview_worker,
+            name="servo-preview",
+            daemon=True,
+        )
+        self._preview_thread.start()
 
-            # Match the hardware path used by the original, known-working
-            # servotester: open a fresh bus/controller for this standalone app
-            # and explicitly give that controller to module_servoctl.
-            self._i2c = busio.I2C(board.SCL, board.SDA)
-            self._pca = PCA9685(self._i2c, address=0x40)
-            self._pca.frequency = 50
-            servoctl.pca = self._pca
-            servoctl._channels_initialized.clear()
-            self._servoctl = servoctl
-            self._hardware_connected = self._pca is not None
-            if not self._hardware_connected:
-                raise RuntimeError("PCA9685 was not detected")
-            # Begin from a known, torque-free state. POWER ON will issue fresh
-            # PWM writes to every installed servo.
-            servoctl.disable_all_servos()
-        except Exception as exc:
-            self._hardware_error = str(exc)
-            self._hardware_connected = False
-            print(f"[SERVO TESTER] Hardware mode unavailable: {exc}", file=sys.stderr)
+    def _connect_hardware(self) -> None:
+        with self._io_lock:
+            candidate_i2c = None
+            candidate_pca = None
+            try:
+                import board
+                import busio
+                from adafruit_pca9685 import PCA9685
+
+                import modules.module_servoctl as servoctl
+
+                # The standalone tester owns both objects. Mirroring both into
+                # module_servoctl lets its recovery and cleanup paths close the
+                # complete hardware session rather than only the PCA object.
+                candidate_i2c = busio.I2C(board.SCL, board.SDA)
+                candidate_pca = PCA9685(candidate_i2c, address=0x40)
+                candidate_pca.frequency = 50
+                candidate_pca.channels[15].duty_cycle = 0
+
+                self._i2c = candidate_i2c
+                self._pca = candidate_pca
+                servoctl._i2c = candidate_i2c
+                servoctl.pca = candidate_pca
+                servoctl._channels_initialized.clear()
+                self._servoctl = servoctl
+                self._hardware_connected = True
+                self._hardware_error = ""
+
+                # Begin from a known, torque-free state. ENABLE PWM issues
+                # fresh writes only after the user has supported the robot.
+                servoctl.disable_all_servos()
+            except Exception as exc:
+                if candidate_pca is not None:
+                    try:
+                        candidate_pca.deinit()
+                    except Exception:
+                        pass
+                if candidate_i2c is not None:
+                    try:
+                        candidate_i2c.deinit()
+                    except Exception:
+                        pass
+                self._hardware_error = str(exc)
+                self._hardware_connected = False
+                self._pca = None
+                self._i2c = None
+                print(f"[SERVO TESTER] Hardware mode unavailable: {exc}", file=sys.stderr)
+        self.stateChanged.emit()
+
+    def _reconnect_hardware(self) -> bool:
+        """Reopen a discarded controller, leaving every PWM output off."""
+        self._set_status("PCA9685 connection lost · attempting recovery")
+        self._connect_hardware()
+        if self._hardware_connected:
+            # A reconnect disables every channel.  Do not silently energize
+            # only the joint whose write failed while the other joints are
+            # unsupported; require the operator to re-enable the complete pose.
+            self._servo_power = False
+            self._range_armed = False
+            self._range_busy = False
+            self.stateChanged.emit()
+            self.rangeTestChanged.emit()
+            self._set_status("PCA9685 recovered · PWM remains off; support TARS and enable it again")
+            return True
+        self._servo_power = False
+        self.stateChanged.emit()
+        self._set_status(f"PCA9685 recovery failed · {self._hardware_error}")
+        return False
 
     def _side(self, prefix: str) -> list[dict]:
         return [deepcopy(item) for key, item in self._servos.items() if key.startswith(prefix)]
@@ -245,7 +312,7 @@ class ServoCalibrationController(QObject):
     def servoPower(self) -> bool:
         return self._servo_power
 
-    @Property(bool, constant=True)
+    @Property(bool, notify=stateChanged)
     def hardwareConnected(self) -> bool:
         return self._hardware_connected
 
@@ -274,6 +341,63 @@ class ServoCalibrationController(QObject):
     @Property(bool, notify=stateChanged)
     def movementActive(self) -> bool:
         return self._movement_active
+
+    @Property(bool, notify=stateChanged)
+    def powerTransition(self) -> bool:
+        return self._power_transition
+
+    @Property(bool, notify=rangeTestChanged)
+    def rangeTestArmed(self) -> bool:
+        return self._range_armed
+
+    @Property(bool, notify=rangeTestChanged)
+    def rangeTestBusy(self) -> bool:
+        return self._range_busy
+
+    @Property("QVariantList", notify=rangeTestChanged)
+    def rangeServoOptions(self) -> list[dict]:
+        options = []
+        arms_present = self._arms_present()
+        for servo_id, definition in SERVO_DEFINITIONS.items():
+            is_arm = "_height" not in servo_id and "_leg" not in servo_id
+            minimum, maximum = self._effective_endpoints(servo_id)
+            options.append({
+                "id": servo_id,
+                "label": definition["label"],
+                "channel": definition["channel"],
+                "available": arms_present or not is_arm,
+                "minimumPulse": minimum,
+                "maximumPulse": maximum,
+            })
+        return options
+
+    @Property(str, notify=rangeTestChanged)
+    def selectedRangeServo(self) -> str:
+        return self._range_servo_id
+
+    @Property(str, notify=rangeTestChanged)
+    def selectedRangeServoLabel(self) -> str:
+        return SERVO_DEFINITIONS[self._range_servo_id]["label"]
+
+    @Property(int, notify=rangeTestChanged)
+    def rangeTestPercent(self) -> int:
+        return self._range_percent
+
+    @Property(int, notify=rangeTestChanged)
+    def rangeTestAppliedPercent(self) -> int:
+        return self._range_applied_percent
+
+    @Property(int, notify=rangeTestChanged)
+    def rangeTestPulse(self) -> int:
+        return self._range_target_pulse(self._range_servo_id, self._range_percent)
+
+    @Property(int, notify=rangeTestChanged)
+    def rangeTestMinimumPulse(self) -> int:
+        return self._effective_endpoints(self._range_servo_id)[0]
+
+    @Property(int, notify=rangeTestChanged)
+    def rangeTestMaximumPulse(self) -> int:
+        return self._effective_endpoints(self._range_servo_id)[1]
 
     @Property("QVariantList", constant=True)
     def movementCategories(self) -> list[str]:
@@ -363,10 +487,165 @@ class ServoCalibrationController(QObject):
         except (TypeError, ValueError):
             return default
 
+    def _offset_bounds(self, servo_id: str) -> tuple[int, int]:
+        """Return only offsets that keep every configured endpoint valid."""
+        definition = SERVO_DEFINITIONS[servo_id]
+        is_arm = "_height" not in servo_id and "_leg" not in servo_id
+        lower, upper = (-90, 90) if is_arm else (-50, 50)
+        sign = int(definition.get("limit_sign", 1))
+        for key in definition["limits"]:
+            base = self._config_int(key, 300)
+            if sign > 0:
+                lower = max(lower, 10 - base)
+                upper = min(upper, 600 - base)
+            else:
+                lower = max(lower, base - 600)
+                upper = min(upper, base - 10)
+        if lower > upper:
+            return 0, 0
+        return int(lower), int(upper)
+
+    def _effective_endpoints(self, servo_id: str) -> tuple[int, int]:
+        definition = SERVO_DEFINITIONS[servo_id]
+        offset = int(self._servos.get(servo_id, {}).get("value", 0))
+        sign = int(definition.get("limit_sign", 1))
+        first, second = definition["limits"]
+        return (
+            self._config_int(first, 300) + sign * offset,
+            self._config_int(second, 300) + sign * offset,
+        )
+
+    def _range_target_pulse(self, servo_id: str, percent: int) -> int:
+        start, end = self._effective_endpoints(servo_id)
+        normalized = max(0, min(100, int(percent))) / 100.0
+        return round(start + (end - start) * normalized)
+
     def _arms_present(self) -> bool:
         return str(self._servo_config.get("arms_present", "false")).lower() in (
             "1", "true", "yes", "on"
         )
+
+    def _queue_preview_targets(self, targets: list[dict], source: str) -> bool:
+        if not self._hardware_connected:
+            self._set_status("Servo preview unavailable · PCA9685 is not connected")
+            return False
+        if not self._servo_power:
+            self._set_status("Servo power is disabled · enable PWM before previewing")
+            return False
+        if self._movement_active:
+            self._set_status("Servo preview blocked · movement is active")
+            return False
+        self._preview_cancel.clear()
+        with self._preview_condition:
+            self._preview_request = {"targets": targets, "source": source}
+            self._range_busy = source == "range"
+            self._preview_condition.notify()
+        if source == "range":
+            self.rangeTestChanged.emit()
+        return True
+
+    def _write_preview_pwm(self, channel: int, pulse: int) -> bool:
+        """Write under the movement lock and recover one lost I2C session."""
+        if self._servoctl is None:
+            return False
+        lock = self._servoctl._movement_command_lock
+        if not lock.acquire(timeout=0.35):
+            return False
+        try:
+            with self._io_lock:
+                if self._servoctl.set_servo_pwm(channel, pulse):
+                    return True
+            # set_servo_pwm discards a controller after its bounded retries.
+            # Reopen once but leave PWM off.  Re-enabling writes the complete
+            # calibrated pose; retrying only this joint could drop support on
+            # every other joint and destabilize the robot.
+            if not self._reconnect_hardware():
+                return False
+            return False
+        finally:
+            lock.release()
+
+    def _take_latest_preview(self) -> dict | None:
+        with self._preview_condition:
+            if self._preview_request is not None:
+                request = self._preview_request
+                self._preview_request = None
+                return request
+        return None
+
+    def _preview_worker(self) -> None:
+        """Coalesce drag events and ramp one servo command at a time."""
+        while True:
+            with self._preview_condition:
+                while self._preview_request is None and not self._preview_stop:
+                    self._preview_condition.wait()
+                if self._preview_stop:
+                    return
+                request = self._preview_request
+                self._preview_request = None
+
+            targets = list(request.get("targets") or [])
+            source = str(request.get("source") or "calibration")
+            failed = False
+            superseded = False
+            for target in targets:
+                channel = int(target["channel"])
+                desired = int(target["pulse"])
+                servo_id = str(target.get("servo_id") or "")
+                current = int(self._servoctl.servo_positions.get(channel, desired))
+                needs_write = channel not in self._servoctl._channels_initialized
+
+                while (
+                    (current != desired or needs_write)
+                    and not self._preview_stop
+                    and not self._preview_cancel.is_set()
+                ):
+                    replacement_request = self._take_latest_preview()
+                    if replacement_request is not None:
+                        replacement_targets = list(replacement_request.get("targets") or [])
+                        if not replacement_targets:
+                            continue
+                        replacement = replacement_targets[-1]
+                        if int(replacement["channel"]) != channel:
+                            with self._preview_condition:
+                                self._preview_request = replacement_request
+                                self._preview_condition.notify()
+                            superseded = True
+                            break
+                        desired = int(replacement["pulse"])
+                        servo_id = str(replacement.get("servo_id") or servo_id)
+                        source = str(replacement_request.get("source") or source)
+
+                    delta = desired - current
+                    step = max(-self._preview_step_ticks, min(self._preview_step_ticks, delta))
+                    next_pulse = current + step
+                    if not self._write_preview_pwm(channel, next_pulse):
+                        failed = True
+                        break
+                    current = next_pulse
+                    needs_write = False
+                    self._servoctl.servo_positions[channel] = current
+                    if source == "range" and servo_id == self._range_servo_id:
+                        start, end = self._effective_endpoints(servo_id)
+                        span = end - start
+                        self._range_applied_percent = (
+                            round((current - start) * 100 / span) if span else 0
+                        )
+                        self.rangeTestChanged.emit()
+                    time.sleep(self._preview_interval)
+                if failed:
+                    break
+                if superseded:
+                    break
+
+            if source == "range":
+                self._range_busy = False
+                self.rangeTestChanged.emit()
+            if failed:
+                if not self._hardware_connected:
+                    self._set_status("Servo preview failed · controller is offline")
+                elif self._servo_power:
+                    self._set_status("Servo preview failed · controller is busy")
 
     def _target_pulse(self, servo_id: str, offset: int) -> int:
         definition = SERVO_DEFINITIONS[servo_id]
@@ -376,71 +655,176 @@ class ServoCalibrationController(QObject):
         return int(base) + int(definition.get("preview_sign", 1)) * offset
 
     def _offset_is_safe(self, servo_id: str, offset: int) -> bool:
-        definition = SERVO_DEFINITIONS[servo_id]
-        sign = int(definition.get("limit_sign", 1))
-        return all(
-            10 <= self._config_int(key, 300) + sign * offset <= 600
-            for key in definition["limits"]
-        )
+        minimum, maximum = self._offset_bounds(servo_id)
+        return minimum <= offset <= maximum
 
     def _preview_servo(self, servo_id: str) -> bool:
-        if not self._hardware_connected:
-            return True
-        if not self._servo_power:
-            self._set_status("Servo power is disabled · enable servos before previewing")
-            return False
         definition = SERVO_DEFINITIONS[servo_id]
         offset = int(self._servos[servo_id]["value"])
         pulse = self._target_pulse(servo_id, offset)
-        try:
-            if not self._servoctl.set_servo_pwm(definition["channel"], pulse):
-                raise RuntimeError("I2C write failed")
-            self._servoctl.servo_positions[definition["channel"]] = pulse
+        if not self._hardware_connected:
             return True
-        except Exception as exc:
-            self._set_status(f"Servo preview failed · {exc}")
-            return False
+        return self._queue_preview_targets([
+            {"channel": definition["channel"], "pulse": pulse, "servo_id": servo_id}
+        ], "calibration")
 
     def _preview_all(self) -> bool:
         servo_ids = list(self._servos)
         if not self._arms_present():
             servo_ids = [servo_id for servo_id in servo_ids if "_height" in servo_id or "_leg" in servo_id]
+        if not self._hardware_connected:
+            return True
+        targets = []
         for servo_id in servo_ids:
-            if not self._preview_servo(servo_id):
-                return False
-        return True
+            definition = SERVO_DEFINITIONS[servo_id]
+            targets.append({
+                "channel": definition["channel"],
+                "pulse": self._target_pulse(servo_id, int(self._servos[servo_id]["value"])),
+                "servo_id": servo_id,
+            })
+        return self._queue_preview_targets(targets, "calibration")
 
-    @Slot(str, float)
-    def setServoValue(self, servo_id: str, raw_value: float) -> None:
+    def _apply_servo_value(self, servo_id: str, raw_value: float, final: bool) -> None:
         servo = self._servos.get(servo_id)
         if not servo:
             return
+        if self._movement_active:
+            self._set_status("Calibration blocked · movement is active")
+            return
         value = max(servo["minimum"], min(servo["maximum"], round(raw_value)))
         if not self._offset_is_safe(servo_id, value):
-            self._set_status(f"Blocked {servo['label'].title()} · pulse would leave safe range 10–600")
-            self.servosChanged.emit()
+            self._set_status(
+                f"Blocked {servo['label'].title()} · allowed offset is "
+                f"{servo['minimum']:+d} to {servo['maximum']:+d}"
+            )
+            if final:
+                self.servosChanged.emit()
             return
-        if servo["value"] == value:
+        if servo["value"] == value and final:
             self._preview_servo(servo_id)
             return
         old_value = servo["value"]
         servo["value"] = value
         if not self._preview_servo(servo_id):
             servo["value"] = old_value
-            self.servosChanged.emit()
+            if final:
+                self.servosChanged.emit()
             return
         self._diagnostic_phase = -1
         self.diagnosticsChanged.emit()
-        self.servosChanged.emit()
+        if final:
+            self.servosChanged.emit()
+        self.rangeTestChanged.emit()
         self._set_dirty(self._servos != self._saved_servos)
-        mode = "Moved" if self._hardware_connected else "Previewing"
-        self._set_status(f"{mode} {servo['label'].title()}: {value:+d} ticks · not saved")
+        if final:
+            mode = "Moved" if self._hardware_connected else "Previewing"
+            pulse = self._target_pulse(servo_id, value)
+            self._set_status(
+                f"{mode} {servo['label'].title()}: {value:+d} ticks · "
+                f"PWM {pulse} · not saved"
+            )
+
+    @Slot(str, float)
+    def previewServoValue(self, servo_id: str, raw_value: float) -> None:
+        self._apply_servo_value(servo_id, raw_value, final=False)
+
+    @Slot(str, float)
+    def setServoValue(self, servo_id: str, raw_value: float) -> None:
+        self._apply_servo_value(servo_id, raw_value, final=True)
 
     @Slot(str, int)
     def adjustServo(self, servo_id: str, delta: int) -> None:
         servo = self._servos.get(servo_id)
         if servo:
             self.setServoValue(servo_id, servo["value"] + delta)
+
+    @Slot(str)
+    def selectRangeServo(self, servo_id: str) -> None:
+        if servo_id not in SERVO_DEFINITIONS or servo_id == self._range_servo_id:
+            return
+        is_arm = "_height" not in servo_id and "_leg" not in servo_id
+        if is_arm and not self._arms_present():
+            self._set_status("Range test unavailable · arms_present is disabled")
+            return
+        self._preview_cancel.set()
+        with self._preview_condition:
+            self._preview_request = None
+        self._range_armed = False
+        self._range_busy = False
+        self._range_servo_id = servo_id
+        definition = SERVO_DEFINITIONS[servo_id]
+        current = int(
+            self._servoctl.servo_positions.get(
+                definition["channel"], self._range_target_pulse(servo_id, 50)
+            )
+        ) if self._servoctl is not None else self._range_target_pulse(servo_id, 50)
+        start, end = self._effective_endpoints(servo_id)
+        span = end - start
+        percent = round((current - start) * 100 / span) if span else 0
+        self._range_percent = max(0, min(100, percent))
+        self._range_applied_percent = self._range_percent
+        self.rangeTestChanged.emit()
+        self._set_status(f"Selected range test · {SERVO_DEFINITIONS[servo_id]['label'].title()}")
+
+    @Slot(bool)
+    def setRangeTestArmed(self, armed: bool) -> None:
+        armed = bool(armed)
+        if armed:
+            if not self._hardware_connected or not self._servo_power:
+                self._set_status("Enable PWM before arming the range test")
+                return
+            if self._movement_active:
+                self._set_status("Range test blocked · movement is active")
+                return
+        else:
+            self._preview_cancel.set()
+            with self._preview_condition:
+                self._preview_request = None
+            self._range_busy = False
+        self._range_armed = armed
+        self.rangeTestChanged.emit()
+        self._set_status(
+            f"Range test {'armed' if armed else 'disarmed'} · "
+            f"{self.selectedRangeServoLabel.title()}"
+        )
+
+    def _apply_range_percent(self, raw_percent: float, final: bool) -> None:
+        if not self._range_armed:
+            if final:
+                self._set_status("Range test is disarmed · arm the selected servo first")
+            return
+        if self._movement_active:
+            self._set_status("Range test blocked · movement is active")
+            return
+        percent = max(0, min(100, round(raw_percent)))
+        self._range_percent = percent
+        pulse = self._range_target_pulse(self._range_servo_id, percent)
+        definition = SERVO_DEFINITIONS[self._range_servo_id]
+        queued = self._queue_preview_targets([
+            {
+                "channel": definition["channel"],
+                "pulse": pulse,
+                "servo_id": self._range_servo_id,
+            }
+        ], "range")
+        self.rangeTestChanged.emit()
+        if final and queued:
+            self._set_status(
+                f"Range target · {self.selectedRangeServoLabel.title()} · "
+                f"{percent}% · PWM {pulse}"
+            )
+
+    @Slot(float)
+    def previewRangePosition(self, raw_percent: float) -> None:
+        self._apply_range_percent(raw_percent, final=False)
+
+    @Slot(float)
+    def setRangePosition(self, raw_percent: float) -> None:
+        self._apply_range_percent(raw_percent, final=True)
+
+    @Slot(int)
+    def nudgeRangePosition(self, delta: int) -> None:
+        self.setRangePosition(self._range_percent + int(delta))
 
     def _run_movement_worker(self, movement: str, label: str) -> None:
         try:
@@ -477,10 +861,16 @@ class ServoCalibrationController(QObject):
         if self._movement_active:
             self._set_status("Movement already in progress")
             return
+        self._preview_cancel.set()
+        with self._preview_condition:
+            self._preview_request = None
+        self._range_armed = False
+        self._range_busy = False
         self._movement_active = True
         self._diagnostic_phase = -1
         self.diagnosticsChanged.emit()
         self.stateChanged.emit()
+        self.rangeTestChanged.emit()
         self._set_status(f"Running movement · {label}")
         threading.Thread(
             target=self._run_movement_worker,
@@ -530,6 +920,12 @@ class ServoCalibrationController(QObject):
             self._set_status("Movement already in progress")
             return
 
+        self._preview_cancel.set()
+        with self._preview_condition:
+            self._preview_request = None
+        self._range_armed = False
+        self._range_busy = False
+        self.rangeTestChanged.emit()
         phases = body_swing_diagnostic_phases(
             self._diagnostic_direction,
             self._arms_present(),
@@ -602,17 +998,49 @@ class ServoCalibrationController(QObject):
 
     @Slot()
     def disableServos(self) -> None:
-        if self._hardware_connected:
-            self._servoctl.request_movement_stop()
-            self._servoctl.disable_all_servos()
+        if self._power_transition:
+            return
+        self._preview_cancel.set()
+        with self._preview_condition:
+            self._preview_request = None
         self._servo_power = False
+        self._range_armed = False
+        self._range_busy = False
         self._diagnostic_phase = -1
+        self._power_transition = self._hardware_connected and self._servoctl is not None
         self.stateChanged.emit()
         self.diagnosticsChanged.emit()
-        self._set_status("Servo output disabled")
+        self.rangeTestChanged.emit()
+        if not self._power_transition:
+            self._set_status("Servo output disabled")
+            return
+
+        self._servoctl.request_movement_stop()
+        self._set_status("Stopping movement and disabling servo output…")
+
+        def disable_worker() -> None:
+            lock = self._servoctl._movement_command_lock
+            acquired = lock.acquire(timeout=6.0)
+            try:
+                if not acquired:
+                    self._set_status("Servo disable timed out · use the hardware power switch")
+                    return
+                with self._io_lock:
+                    self._servoctl.disable_all_servos()
+                self._set_status("Servo output disabled")
+            finally:
+                if acquired:
+                    lock.release()
+                self._power_transition = False
+                self.stateChanged.emit()
+
+        threading.Thread(target=disable_worker, name="servo-disable", daemon=True).start()
 
     @Slot()
     def enableServos(self) -> None:
+        if self._power_transition:
+            self._set_status("Wait for servo power shutdown to finish")
+            return
         if not self._hardware_connected or self._servoctl is None:
             self._servo_power = False
             self.stateChanged.emit()
@@ -625,6 +1053,7 @@ class ServoCalibrationController(QObject):
         self._diagnostic_phase = -1
         self.stateChanged.emit()
         self.diagnosticsChanged.emit()
+        self.rangeTestChanged.emit()
         if self._preview_all():
             self._set_status("Servo output enabled · calibrated positions written to PCA9685")
         else:
@@ -646,6 +1075,12 @@ class ServoCalibrationController(QObject):
             self._set_status("Movement already in progress")
             return
 
+        self._preview_cancel.set()
+        with self._preview_condition:
+            self._preview_request = None
+        self._range_armed = False
+        self._range_busy = False
+        self.rangeTestChanged.emit()
         def reset_worker() -> None:
             guarded_reset = self._servoctl.movement_command(self._servoctl.reset_positions)
             completed = False
@@ -697,6 +1132,8 @@ class ServoCalibrationController(QObject):
         missing = [key for key in values if key not in updated]
         if missing:
             raise KeyError("Missing [SERVO] settings: " + ", ".join(missing))
+        backup = self._config_path.with_name("config.calibration-backup.ini")
+        shutil.copy2(self._config_path, backup)
         temporary = self._config_path.with_suffix(self._config_path.suffix + ".tmp")
         temporary.write_text("".join(lines), encoding="utf-8", newline="")
         temporary.replace(self._config_path)
@@ -707,7 +1144,7 @@ class ServoCalibrationController(QObject):
             self._write_offsets()
             self._servo_config = _read_servo_config(self._config_path)
             if self._hardware_connected:
-                import modules.module_config as module_config
+                from modules import module_config
                 module_config._config_cache = None
                 self._servoctl.refresh_config()
             self._saved_servos = deepcopy(self._servos)
@@ -718,8 +1155,10 @@ class ServoCalibrationController(QObject):
 
     @Slot()
     def revertCalibration(self) -> None:
+        self._preview_cancel.set()
         self._servos = deepcopy(self._saved_servos)
         self.servosChanged.emit()
+        self.rangeTestChanged.emit()
         self._set_dirty(False)
         self._preview_all()
         self._set_status("Unsaved calibration changes reverted")
@@ -733,17 +1172,25 @@ class ServoCalibrationController(QObject):
         self._set_status(f"Active profile: {profile}")
 
     def shutdown(self) -> None:
-        if self._hardware_connected:
+        self._preview_cancel.set()
+        with self._preview_condition:
+            self._preview_stop = True
+            self._preview_request = None
+            self._preview_condition.notify_all()
+        if self._preview_thread is not None and self._preview_thread.is_alive():
+            self._preview_thread.join(timeout=2.0)
+
+        if self._servoctl is not None:
             try:
-                self._servoctl.request_movement_stop()
-                self._servoctl.disable_all_servos()
+                # cleanup waits for the movement lock before disabling and
+                # deinitializing hardware, so close cannot race a final write.
+                self._servoctl.cleanup(timeout=6.0)
             except Exception as exc:
                 print(f"[SERVO TESTER] Shutdown warning: {exc}", file=sys.stderr)
-        if self._pca is not None:
-            try:
-                self._pca.deinit()
-            except Exception:
-                pass
+        self._pca = None
+        self._i2c = None
+        self._hardware_connected = False
+        self._servo_power = False
 
 
 def main() -> int:
@@ -759,7 +1206,7 @@ def main() -> int:
         return 1
     window = engine.rootObjects()[0]
     if ARGS.diagnostic:
-        window.setProperty("currentPage", 2)
+        window.setProperty("currentPage", 3)
     if ARGS.window_size:
         try:
             width, height = (int(part) for part in ARGS.window_size.lower().split("x", 1))

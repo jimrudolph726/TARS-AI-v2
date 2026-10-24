@@ -49,15 +49,24 @@ def _confirm_parked_pose(include_arms=False, settle_seconds=0.75):
     is removed.
     """
     if include_arms and servoctl.ARMS_PRESENT:
-        # Retract one joint at a time. Moving all six arm servos together at
-        # the end of an energetic routine can trip the shared servo supply
-        # precisely when the robot is trying to return to its safe pose.
-        move_arm_timed(None, None, 1, None, None, None, duration=0.35)
-        move_arm_timed(None, None, None, None, None, 1, duration=0.35)
-        move_arm_timed(None, 1, None, None, None, None, duration=0.45)
-        move_arm_timed(None, None, None, None, 1, None, duration=0.45)
-        move_arm_timed(1, None, None, None, None, None, duration=0.60)
-        move_arm_timed(None, None, None, 1, None, None, duration=0.60)
+        move_arm(1, 1, 1, 1, 1, 1, 0.45)
+        servoctl.wait_for_movement(settle_seconds)
+    move_legs(50, 50, 50, 50, 0.5)
+    servoctl.wait_for_movement(0.4)
+
+
+def _confirm_monster_parked_pose(settle_seconds=1.0):
+    """Park the monster pose without loading all six arm servos at once."""
+    if servoctl.ARMS_PRESENT:
+        # Retract one joint at a time. The monster routine finishes with the
+        # arms extended, so commanding all six joints home together creates a
+        # large current spike and unnecessary mechanical shock.
+        move_arm_timed(None, None, 1, None, None, None, duration=0.60)
+        move_arm_timed(None, None, None, None, None, 1, duration=0.60)
+        move_arm_timed(None, 1, None, None, None, None, duration=0.75)
+        move_arm_timed(None, None, None, None, 1, None, duration=0.75)
+        move_arm_timed(1, None, None, None, None, None, duration=0.90)
+        move_arm_timed(None, None, None, 1, None, None, duration=0.90)
         servoctl.wait_for_movement(settle_seconds)
     move_legs(50, 50, 50, 50, 0.5)
     servoctl.wait_for_movement(0.4)
@@ -506,36 +515,44 @@ def monster():
         servoctl._notify_movement_start()
         try:
             move_legs(50, 50, 50, 50, 0.4)
-            move_legs(75, 75, 50, 50, 0.45)
-            move_legs(75, 75, 62, 62, 0.45)
-            servoctl.wait_for_movement(0.25)
+            move_legs(80, 80, 50, 50, 0.5)
+            move_legs(80, 80, 65, 65, 0.5)
+            time.sleep(0.2)
+            move_arm(1, 1, 1, 1, 1, 1, 0.8)
+            time.sleep(0.2)
+            move_arm(100, 1, 1, 100, 1, 1, 0.8)
+            time.sleep(0.2)
+            move_arm(HOLD, 100, 1, HOLD, 100, 1, 1)
+            time.sleep(0.2)
+            move_arm(HOLD, HOLD, 100, HOLD, HOLD, 100, 1)
+            time.sleep(0.2)
+            move_arm(HOLD, 100, 100, HOLD, 50, 50, 0.8)
+            time.sleep(0.2)
+            move_arm(HOLD, 50, 50, HOLD, 100, 100, 0.8)
+            time.sleep(0.2)
+            move_arm(HOLD, 100, 100, HOLD, 50, 50, 0.8)
+            time.sleep(0.2)
+            move_arm(HOLD, 50, 50, HOLD, 100, 100, 0.8)
+            time.sleep(0.2)
+            move_arm(HOLD, 100, 100, HOLD, 100, 100, 0.8)
+            time.sleep(0.2)
+            move_arm(HOLD, HOLD, 1, HOLD, HOLD, 100, 0.9)
+            time.sleep(0.2)
+            move_arm(HOLD, HOLD, 100, HOLD, HOLD, 1, 0.9)
+            time.sleep(0.2)
+            move_arm(HOLD, HOLD, 1, HOLD, HOLD, 100, 0.9)
+            time.sleep(0.2)
+            move_arm(HOLD, HOLD, 100, HOLD, HOLD, 1, 0.9)
+            time.sleep(0.2)
+            move_arm(HOLD, HOLD, 100, HOLD, HOLD, 100, 0.8)
+            time.sleep(0.2)
 
-            # Build the monster pose one powered joint at a time. The visual
-            # result stays broad and animated without six simultaneous stalls.
-            move_arm_timed(100, None, None, None, None, None, duration=0.65)
-            move_arm_timed(None, None, None, 100, None, None, duration=0.65)
-            move_arm_timed(None, 100, None, None, None, None, duration=0.50)
-            move_arm_timed(None, None, None, None, 100, None, duration=0.50)
-            move_arm_timed(None, None, 100, None, None, None, duration=0.35)
-            move_arm_timed(None, None, None, None, None, 100, duration=0.35)
-            servoctl.wait_for_movement(0.20)
-
-            for _ in range(2):
-                move_arm_timed(None, 45, 40, None, None, None, duration=0.42)
-                move_arm_timed(None, None, None, None, 45, 40, duration=0.42)
-                move_arm_timed(None, 100, 100, None, None, None, duration=0.42)
-                move_arm_timed(None, None, None, None, 100, 100, duration=0.42)
-
-            # Alternating claws retain the character of the original routine
-            # while avoiding opposing full-range hand changes at the same time.
-            move_arm_timed(None, None, 1, None, None, None, duration=0.32)
-            move_arm_timed(None, None, None, None, None, 1, duration=0.32)
-            move_arm_timed(None, None, 100, None, None, None, duration=0.32)
-            move_arm_timed(None, None, None, None, None, 100, duration=0.32)
-            servoctl.wait_for_movement(0.20)
-
-            move_legs(75, 75, 50, 50, 0.45)
-            _confirm_parked_pose(include_arms=True)
+            # From this point onward, the animation is complete. Return to
+            # neutral through the slower, one-joint-at-a-time safety sequence
+            # instead of retracting both hands, forearms, and main arms in
+            # simultaneous pairs.
+            move_legs(80, 80, 50, 50, 0.5)
+            _confirm_monster_parked_pose()
             disable_all_servos()
         finally:
             servoctl.MOVING = False

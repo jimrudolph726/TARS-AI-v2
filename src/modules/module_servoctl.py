@@ -1322,6 +1322,39 @@ def move_arm(left_main=None, left_forearm=None, left_hand=None,
 
     move_servos_synchronized(movements, adjusted_speed, easing_strength=arm_easing_strength)
 
+
+def move_arm_timed(left_main=None, left_forearm=None, left_hand=None,
+                   right_main=None, right_forearm=None, right_hand=None,
+                   duration=0.5, easing_strength=0.9):
+    """Move selected arm joints over an explicit duration.
+
+    The legacy arm speed curve intentionally makes gestures snappy, but it is
+    unsuitable for power-sensitive transitions involving several large
+    servos. This API lets demanding routines stagger joints and cap their
+    acceleration without changing the behavior of every existing gesture.
+    """
+    def percentage_to_value(percent, min_val, max_val):
+        if percent is None or percent == 0:
+            return None
+        if percent == -1:
+            return -1
+        normalized = (float(percent) - 1.0) / 99.0
+        return int(round(min_val + (max_val - min_val) * normalized))
+
+    movements = [
+        (4, percentage_to_value(left_main, leftMainMin, leftMainMax)),
+        (5, percentage_to_value(left_forearm, leftForarmMin, leftForarmMax)),
+        (6, percentage_to_value(left_hand, leftHandMin, leftHandMax)),
+        (7, percentage_to_value(right_main, rightMainMin, rightMainMax)),
+        (8, percentage_to_value(right_forearm, rightForarmMin, rightForarmMax)),
+        (9, percentage_to_value(right_hand, rightHandMin, rightHandMax)),
+    ]
+    move_servos_timed(
+        movements,
+        duration=max(0.10, float(duration)),
+        easing_strength=easing_strength,
+    )
+
 def cleanup(timeout=8.0):
     """Stop active motion and explicitly release PCA9685 ownership."""
     _hardware_handoff_event.set()

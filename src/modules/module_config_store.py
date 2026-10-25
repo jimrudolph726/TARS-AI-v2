@@ -167,6 +167,9 @@ class RAGSettings:
 @dataclass(frozen=True)
 class ServoSettings:
     arms_present: bool
+    movement_watchdog_enabled: bool
+    movement_watchdog_timeout: float
+    movement_stall_timeout: float
     left_up_height: int
     left_down_height: int
     perfect_left_height_offset: int
@@ -202,6 +205,9 @@ class ServoSettings:
         """Return the historical key spelling used by existing movement code."""
         return {
             "arms_present": self.arms_present,
+            "movement_watchdog_enabled": self.movement_watchdog_enabled,
+            "movement_watchdog_timeout": self.movement_watchdog_timeout,
+            "movement_stall_timeout": self.movement_stall_timeout,
             "leftUpHeight": self.left_up_height,
             "leftDownHeight": self.left_down_height,
             "perfectLeftHeightOffset": self.perfect_left_height_offset,
@@ -624,6 +630,15 @@ def parse_typed_config(
 
     servo = ServoSettings(
         arms_present=r.boolean("SERVO", "arms_present"),
+        movement_watchdog_enabled=r.boolean(
+            "SERVO", "movement_watchdog_enabled", True
+        ),
+        movement_watchdog_timeout=r.number(
+            "SERVO", "movement_watchdog_timeout", 45.0, 10.0, 120.0
+        ),
+        movement_stall_timeout=r.number(
+            "SERVO", "movement_stall_timeout", 8.0, 6.0, 30.0
+        ),
         left_up_height=r.integer("SERVO", "leftUpHeight"),
         left_down_height=r.integer("SERVO", "leftDownHeight"),
         perfect_left_height_offset=r.integer("SERVO", "perfectLeftHeightOffset"),

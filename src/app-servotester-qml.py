@@ -1017,22 +1017,24 @@ class ServoCalibrationController(QObject):
             self._set_status("Servo output disabled")
             return
 
-        self._servoctl.request_movement_stop()
-        self._set_status("Stopping movement and disabling servo output…")
+        self._set_status("Emergency PWM power-off requested…")
 
         def disable_worker() -> None:
-            lock = self._servoctl._movement_command_lock
-            acquired = lock.acquire(timeout=6.0)
             try:
-                if not acquired:
-                    self._set_status("Servo disable timed out · use the hardware power switch")
-                    return
-                with self._io_lock:
-                    self._servoctl.disable_all_servos()
-                self._set_status("Servo output disabled")
+                # Do not wait for the servo tester's preview/calibration lock.
+                # The controller layer serializes the short I2C transaction and
+                # must be able to latch emergency-off even if a UI operation is
+                # still winding down.
+                released = self._servoctl.emergency_power_off(
+                    "Servo tester emergency PWM power-off",
+                    source="servo tester",
+                )
+                self._set_status(
+                    "Emergency PWM off · reset with ENABLE PWM"
+                    if released
+                    else "PWM release unconfirmed · use the hardware power switch"
+                )
             finally:
-                if acquired:
-                    lock.release()
                 self._power_transition = False
                 self.stateChanged.emit()
 
@@ -1051,6 +1053,12 @@ class ServoCalibrationController(QObject):
         if self._movement_active:
             self._set_status("Finish or stop the active movement before enabling servo output")
             return
+        if self._servoctl.emergency_stop_active():
+            if not self._servoctl.reset_emergency_stop():
+                self._set_status(
+                    "Emergency latch reset failed · inspect PCA9685 and servo power"
+                )
+                return
         self._servo_power = True
         self._diagnostic_phase = -1
         self.stateChanged.emit()

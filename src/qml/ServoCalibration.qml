@@ -475,7 +475,7 @@ ApplicationWindow {
                         width: parent.width
                         wrapMode: Text.WordWrap
                         text: controller.movementActive
-                              ? "Movement active. STOP interrupts at the next safe motion checkpoint."
+                              ? "Movement active. STOP cancels cooperatively; EMERGENCY PWM OFF cuts torque immediately."
                               : "Choose a preset. Arm presets are disabled when arms_present is false."
                         color: window.textMuted
                         font.pixelSize: 8
@@ -659,7 +659,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         wrapMode: Text.WordWrap
-                        text: "SAFETY\nKeep one hand ready to support TARS. A phase replays the untouched original step from neutral, then holds at that phase. DISABLE PWM releases torque immediately."
+                        text: "SAFETY\nKeep one hand ready to support TARS. A phase replays the untouched original step from neutral, then holds at that phase. EMERGENCY PWM OFF releases torque immediately and stays latched."
                         color: "#b6c0c4"
                         font.pixelSize: 8
                         lineHeight: 1.15
@@ -823,7 +823,7 @@ ApplicationWindow {
             TacticalButton {
                 Layout.preferredWidth: 112
                 Layout.preferredHeight: 34
-                text: controller.servoPower ? "DISABLE PWM" : "ENABLE PWM"
+                text: controller.servoPower ? "EMERGENCY OFF" : "ENABLE PWM"
                 iconText: "⏻"
                 accent: window.accent
                 enabled: !controller.powerTransition

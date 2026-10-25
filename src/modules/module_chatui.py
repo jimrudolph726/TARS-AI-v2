@@ -1207,19 +1207,57 @@ def move_legs_endpoint():
 
 @flask_app.route('/disable_servos', methods=['POST'])
 def disable_servos_endpoint():
-    """
-    Disables all servos
-    """
+    """Immediately release PWM and latch movement offline."""
     try:
-        disable_all_servos()
+        released = emergency_power_off(
+            "WebUI emergency PWM power-off",
+            source="WebUI",
+        )
+        status = get_movement_status()
         return jsonify({
-            "success": True, 
-            "message": "All servos disabled"
-        }), 200
+            "success": released,
+            "message": (
+                "Emergency PWM power-off latched"
+                if released else
+                "Emergency stop latched, but PWM release could not be confirmed"
+            ),
+            "servo_status": status,
+        }), 200 if released else 503
         
     except Exception as e:
         queue_message(f"Error disabling servos: {e}")
         return jsonify({"error": f"Failed to disable servos: {str(e)}"}), 500
+
+
+@flask_app.route('/stop_movement', methods=['POST'])
+def stop_movement_endpoint():
+    """Request a cooperative stop without latching future movement offline."""
+    request_controlled_stop("WebUI controlled stop")
+    return jsonify({
+        "success": True,
+        "message": "Controlled stop requested",
+        "servo_status": get_movement_status(),
+    }), 202
+
+
+@flask_app.route('/enable_servos', methods=['POST'])
+def enable_servos_endpoint():
+    """Reset the emergency latch while leaving every PWM output disabled."""
+    try:
+        reset = reset_emergency_stop()
+        status = get_movement_status(probe=reset)
+        return jsonify({
+            "success": reset,
+            "message": (
+                "Emergency latch reset; outputs remain disabled"
+                if reset else
+                "Emergency latch reset was refused"
+            ),
+            "servo_status": status,
+        }), 200 if reset else 503
+    except Exception as e:
+        queue_message(f"Error resetting emergency servo stop: {e}")
+        return jsonify({"error": f"Failed to reset emergency stop: {str(e)}"}), 500
 
 @flask_app.route('/reset_positions', methods=['POST'])
 def reset_positions_endpoint():

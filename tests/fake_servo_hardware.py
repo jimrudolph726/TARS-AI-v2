@@ -15,6 +15,9 @@ DEFAULT_CONFIG = {
     },
     "SERVO": {
         "arms_present": True,
+        "movement_watchdog_enabled": True,
+        "movement_watchdog_timeout": 45.0,
+        "movement_stall_timeout": 8.0,
         "leftUpHeight": 220,
         "leftDownHeight": 460,
         "perfectLeftHeightOffset": 7,
@@ -108,6 +111,10 @@ class FakeChannel:
             raise OSError("controller is deinitialized")
         backend = self.controller.backend
         backend.write_attempts.append((self.controller, self.index, value))
+        if backend.write_hook is not None:
+            backend.write_hook(self.controller, self.index, value)
+        if self.index in backend.persistent_failure_channels:
+            raise OSError(121, "simulated persistent PWM failure")
         if self.index == 15 and backend.probe_failures > 0:
             backend.probe_failures -= 1
             raise OSError(121, "simulated probe failure")
@@ -141,6 +148,8 @@ class FakeServoBackend:
         self.write_attempts = []
         self.successful_writes = []
         self.write_failures = {}
+        self.persistent_failure_channels = set()
+        self.write_hook = None
         self.probe_failures = 0
 
     def create_i2c(self, scl, sda):

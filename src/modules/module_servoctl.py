@@ -46,15 +46,29 @@ SERVO_MIN_PULSE = 10
 SERVO_MAX_PULSE = 600
 
 _movement_stop_event = threading.Event()
+_emergency_stop_event = threading.Event()
 _movement_command_lock = threading.RLock()
+_pwm_io_lock = threading.RLock()
 _hardware_handoff_event = threading.Event()
 _hardware_lifecycle_lock = threading.RLock()
 _movement_thread_state = threading.local()
+_emergency_state_lock = threading.Lock()
+_watchdog_state_lock = threading.Lock()
 
 MOVEMENT_LOCK_TIMEOUT = 8.0
 MOVEMENT_MIN_IDLE_SECONDS = 0.75
 SERVO_WRITE_LOCK_TIMEOUT = 0.25
 PCA_PROBE_CHANNEL = 15
+MOVEMENT_WATCHDOG_ENABLED = bool(
+    config.get("SERVO", {}).get("movement_watchdog_enabled", True)
+)
+MOVEMENT_WATCHDOG_TIMEOUT = float(
+    config.get("SERVO", {}).get("movement_watchdog_timeout", 45.0)
+)
+MOVEMENT_STALL_TIMEOUT = float(
+    config.get("SERVO", {}).get("movement_stall_timeout", 8.0)
+)
+WATCHDOG_CHECK_INTERVAL = 0.1
 
 _movement_status_lock = threading.Lock()
 _movement_last_name = None
@@ -63,19 +77,190 @@ _movement_last_success_at = None
 _movement_last_failure_at = None
 _movement_finished_at = 0.0
 _movement_consecutive_failures = 0
+_controlled_stop_reason = None
+_emergency_stop_reason = None
+_emergency_stop_at = None
+_active_watchdog = None
+_watchdog_trip_count = 0
 
 
 class MovementCancelled(RuntimeError):
     """Raised internally when an active movement is asked to stop."""
 
 
-def request_movement_stop():
-    """Request a prompt, cooperative stop of the active movement."""
+def request_controlled_stop(reason="Controlled stop requested"):
+    """Ask the active routine to stop at its next cooperative checkpoint.
+
+    This does not latch movement offline. The movement owner remains
+    responsible for leaving its critical section, and its wrapper releases PWM
+    before another command may start.
+    """
+    global _controlled_stop_reason
+
+    _controlled_stop_reason = str(reason or "Controlled stop requested")
+    was_set = _movement_stop_event.is_set()
     _movement_stop_event.set()
+    if not was_set and not _emergency_stop_event.is_set():
+        queue_message(f"MOVEMENT: {_controlled_stop_reason}")
+    return True
+
+
+def request_movement_stop(reason="Controlled stop requested"):
+    """Backward-compatible name for a controlled, non-latching stop."""
+    return request_controlled_stop(reason)
 
 
 def movement_stop_requested():
     return _movement_stop_event.is_set()
+
+
+def emergency_stop_active():
+    """Return whether emergency PWM-off is latched."""
+    return _emergency_stop_event.is_set()
+
+
+def emergency_power_off(reason="Emergency power-off requested", source="manual"):
+    """Immediately request cancellation, cut PWM, and latch movement offline.
+
+    This deliberately does not wait for the movement lock. In an emergency the
+    release attempt must not sit behind a stalled movement thread. The physical
+    rear power switch remains the final authority if I2C itself is unavailable.
+    """
+    global _channels_initialized, _emergency_stop_reason, _emergency_stop_at
+
+    reason = str(reason or "Emergency power-off requested")
+    with _emergency_state_lock:
+        first_trip = not _emergency_stop_event.is_set()
+        _emergency_stop_reason = reason
+        _emergency_stop_at = time.time()
+        _emergency_stop_event.set()
+        _movement_stop_event.set()
+
+    controller = pca
+    failed_channels = _disable_controller_outputs(controller)
+    _channels_initialized.intersection_update(failed_channels)
+    if first_trip:
+        queue_message(
+            f"EMERGENCY: Servo PWM power-off latched by {source}: {reason}"
+        )
+    if failed_channels:
+        queue_message(
+            "CRITICAL: Emergency PWM release could not be confirmed on "
+            f"channel(s) {', '.join(map(str, failed_channels))}; "
+            "use the physical servo-power switch"
+        )
+    return not failed_channels
+
+
+def reset_emergency_stop():
+    """Clear the emergency latch without energizing or moving a servo."""
+    global _emergency_stop_reason, _emergency_stop_at, _controlled_stop_reason
+
+    if MOVING:
+        queue_message("ERROR: Emergency stop cannot be reset while movement is active")
+        return False
+    if pca is not None:
+        if not _probe_controller(pca):
+            queue_message("ERROR: Emergency stop reset refused; PCA9685 health check failed")
+            return False
+        if not disable_all_servos():
+            queue_message("ERROR: Emergency stop reset refused; PWM release is unconfirmed")
+            return False
+
+    with _emergency_state_lock:
+        _emergency_stop_event.clear()
+        _movement_stop_event.clear()
+        _emergency_stop_reason = None
+        _emergency_stop_at = None
+        _controlled_stop_reason = None
+    queue_message("SERVO: Emergency power-off latch reset; outputs remain disabled")
+    return True
+
+
+def _mark_movement_progress():
+    with _watchdog_state_lock:
+        if _active_watchdog is not None:
+            _active_watchdog["last_progress"] = time.monotonic()
+            _active_watchdog["writes"] += 1
+
+
+def _movement_watchdog_worker(state):
+    global _watchdog_trip_count
+
+    while not state["done"].wait(WATCHDOG_CHECK_INTERVAL):
+        with _watchdog_state_lock:
+            if _active_watchdog is not state:
+                return
+            started_at = state["started_at"]
+            last_progress = state["last_progress"]
+            writes = state["writes"]
+
+        now = time.monotonic()
+        reason = None
+        if MOVEMENT_WATCHDOG_TIMEOUT > 0 and now - started_at > MOVEMENT_WATCHDOG_TIMEOUT:
+            reason = (
+                f"movement '{state['name']}' exceeded "
+                f"{MOVEMENT_WATCHDOG_TIMEOUT:g}s"
+            )
+        elif (
+            MOVEMENT_STALL_TIMEOUT > 0
+            and writes > 0
+            and bool(_channels_initialized)
+            and now - last_progress > MOVEMENT_STALL_TIMEOUT
+        ):
+            reason = (
+                f"movement '{state['name']}' made no PWM progress for "
+                f"{MOVEMENT_STALL_TIMEOUT:g}s"
+            )
+
+        if reason is None:
+            continue
+
+        with _watchdog_state_lock:
+            if _active_watchdog is not state or state["done"].is_set():
+                return
+            state["tripped"] = True
+            state["reason"] = reason
+            _watchdog_trip_count += 1
+        emergency_power_off(reason, source="movement watchdog")
+        return
+
+
+def _start_movement_watchdog(name):
+    global _active_watchdog
+
+    if not MOVEMENT_WATCHDOG_ENABLED:
+        return None
+    now = time.monotonic()
+    state = {
+        "name": str(name),
+        "started_at": now,
+        "last_progress": now,
+        "writes": 0,
+        "tripped": False,
+        "reason": None,
+        "done": threading.Event(),
+    }
+    with _watchdog_state_lock:
+        _active_watchdog = state
+    threading.Thread(
+        target=_movement_watchdog_worker,
+        args=(state,),
+        name=f"servo-watchdog-{name}",
+        daemon=True,
+    ).start()
+    return state
+
+
+def _finish_movement_watchdog(state):
+    global _active_watchdog
+
+    if state is None:
+        return
+    state["done"].set()
+    with _watchdog_state_lock:
+        if _active_watchdog is state:
+            _active_watchdog = None
 
 
 def set_movement_confirmation_event(event):
@@ -90,6 +275,7 @@ def clear_movement_confirmation_event():
 
 
 def _confirm_servo_write():
+    _mark_movement_progress()
     event = getattr(_movement_thread_state, "confirmation_event", None)
     if event is not None:
         event.set()
@@ -104,8 +290,18 @@ def movement_command(function):
     """
     @wraps(function)
     def wrapped(*args, **kwargs):
-        global _movement_finished_at
+        global _movement_finished_at, _controlled_stop_reason
 
+        watchdog_state = None
+
+        if _emergency_stop_event.is_set():
+            message = _emergency_stop_reason or "Emergency power-off is latched"
+            _record_movement_failure(function.__name__, message)
+            queue_message(
+                f"ERROR: MOVEMENT: Emergency power-off is latched; "
+                f"ignored {function.__name__}"
+            )
+            return False
         if _hardware_handoff_event.is_set():
             message = "Hardware is reserved for servo calibration"
             _record_movement_failure(function.__name__, message)
@@ -117,6 +313,7 @@ def movement_command(function):
             queue_message(f"ERROR: MOVEMENT: {message}")
             return False
         _movement_stop_event.clear()
+        _controlled_stop_reason = None
         try:
             if MOVING:
                 message = "Another movement is still active"
@@ -140,6 +337,7 @@ def movement_command(function):
             if idle_remaining > 0 and _movement_stop_event.wait(idle_remaining):
                 raise MovementCancelled()
 
+            watchdog_state = _start_movement_watchdog(function.__name__)
             result = function(*args, **kwargs)
             if result is False:
                 _record_movement_failure(
@@ -160,19 +358,33 @@ def movement_command(function):
                     "Unable to confirm that all servo PWM outputs were released"
                 )
             if _movement_stop_event.is_set():
-                _record_movement_failure(function.__name__, "Movement was stopped")
+                detail = (
+                    _emergency_stop_reason
+                    if _emergency_stop_event.is_set()
+                    else (_controlled_stop_reason or "Movement was stopped")
+                )
+                _record_movement_failure(function.__name__, detail)
                 return False
             _record_movement_success(function.__name__)
             return True
         except MovementCancelled:
-            # A cancelled pose may have skipped its normal end-of-routine
-            # release. Never leave a partially completed movement energized.
             disable_all_servos()
-            _record_movement_failure(function.__name__, "Movement was stopped")
-            queue_message(f"MOVEMENT: Stopped {function.__name__}")
+            if _emergency_stop_event.is_set():
+                detail = _emergency_stop_reason or "Emergency power-off"
+                queue_message(
+                    f"EMERGENCY: Aborted {function.__name__}: {detail}"
+                )
+            else:
+                detail = _controlled_stop_reason or "Movement was stopped"
+                queue_message(f"MOVEMENT: Controlled stop completed for {function.__name__}")
+            _record_movement_failure(function.__name__, detail)
             return False
         except Exception as exc:
-            detail = _describe_hardware_error(exc)
+            detail = (
+                _emergency_stop_reason
+                if _emergency_stop_event.is_set()
+                else _describe_hardware_error(exc)
+            )
             # Exceptions can occur after one or more channels were energized.
             # Release every output before attempting controller recovery.
             disable_all_servos()
@@ -185,7 +397,11 @@ def movement_command(function):
             # so the next WebUI or voice command does not inherit an offline
             # controller. Never repeat the movement automatically: it may have
             # completed only part of its physical path.
-            if pca is None and not _hardware_handoff_event.is_set():
+            if (
+                pca is None
+                and not _hardware_handoff_event.is_set()
+                and not _emergency_stop_event.is_set()
+            ):
                 if initialize_pca9685(retries=1):
                     queue_message(
                         "SERVO: Controller recovered after movement failure; "
@@ -193,6 +409,7 @@ def movement_command(function):
                     )
             return False
         finally:
+            _finish_movement_watchdog(watchdog_state)
             _movement_finished_at = time.monotonic()
             _movement_command_lock.release()
     return wrapped
@@ -226,16 +443,39 @@ def get_movement_status(probe=False):
     if probe and controller_connected and not _hardware_handoff_event.is_set():
         controller_connected = _probe_controller(pca)
 
+    with _watchdog_state_lock:
+        watchdog = _active_watchdog
+        watchdog_status = {
+            "active": watchdog is not None,
+            "movement": watchdog["name"] if watchdog else None,
+            "elapsed": (
+                round(time.monotonic() - watchdog["started_at"], 3)
+                if watchdog else None
+            ),
+            "progress_age": (
+                round(time.monotonic() - watchdog["last_progress"], 3)
+                if watchdog else None
+            ),
+            "writes": watchdog["writes"] if watchdog else 0,
+            "tripped": bool(watchdog and watchdog["tripped"]),
+            "trip_count": _watchdog_trip_count,
+        }
+
     with _movement_status_lock:
         return {
             "ready": bool(
                 controller_connected
                 and not MOVING
                 and not _hardware_handoff_event.is_set()
+                and not _emergency_stop_event.is_set()
             ),
             "moving": bool(MOVING),
             "controller_connected": bool(controller_connected),
             "calibration_handoff": _hardware_handoff_event.is_set(),
+            "emergency_stop": _emergency_stop_event.is_set(),
+            "emergency_reason": _emergency_stop_reason,
+            "emergency_at": _emergency_stop_at,
+            "watchdog": watchdog_status,
             "energized_channels": sorted(_channels_initialized),
             "last_movement": _movement_last_name,
             "last_error": _movement_last_error,
@@ -299,7 +539,8 @@ def _probe_controller(controller):
     try:
         # Channel 15 is not assigned to a TARS servo. Writing zero verifies
         # the I2C path without energizing any mechanism.
-        controller.channels[PCA_PROBE_CHANNEL].duty_cycle = 0
+        with _pwm_io_lock:
+            controller.channels[PCA_PROBE_CHANNEL].duty_cycle = 0
         return True
     except Exception as exc:
         queue_message(f"WARNING: PCA9685 health probe failed: {_describe_hardware_error(exc)}")
@@ -409,6 +650,9 @@ def ensure_servo_hardware():
     This gives a later voice command one recovery attempt when startup saw a
     transient I2C failure, without moving or energizing any servo by itself.
     """
+    if _emergency_stop_event.is_set():
+        queue_message("MOVEMENT: Emergency power-off is latched; reset it before moving")
+        return False
     if _hardware_handoff_event.is_set():
         return False
     if pca is not None:
@@ -527,7 +771,8 @@ def refresh_config():
     global perfectRightHeightOffset, rightUpHeight, rightNeutralHeight, rightDownHeight
     global perfectLeftLegOffset, forwardLeftLeg, neutralLeftLeg, backLeftLeg
     global perfectRightLegOffset, forwardRightLeg, neutralRightLeg, backRightLeg
-    global ARMS_PRESENT
+    global ARMS_PRESENT, MOVEMENT_WATCHDOG_ENABLED
+    global MOVEMENT_WATCHDOG_TIMEOUT, MOVEMENT_STALL_TIMEOUT
 
     cfg = load_config()
     config = cfg
@@ -589,6 +834,15 @@ def refresh_config():
     backRightLeg = int(servo["backRightLeg"]) + perfectRightLegOffset
 
     ARMS_PRESENT = servo["arms_present"]
+    MOVEMENT_WATCHDOG_ENABLED = bool(
+        servo.get("movement_watchdog_enabled", True)
+    )
+    MOVEMENT_WATCHDOG_TIMEOUT = float(
+        servo.get("movement_watchdog_timeout", 45.0)
+    )
+    MOVEMENT_STALL_TIMEOUT = float(
+        servo.get("movement_stall_timeout", 8.0)
+    )
 
 
 def set_movement_callbacks(on_start=None, on_end=None):
@@ -720,7 +974,11 @@ def _validate_servo_write(channel, pwm_value, enforce_calibrated_bounds=True):
 def _write_servo_pwm_unlocked(channel, pwm_value):
     global _channels_initialized
 
-    if pca is None or _hardware_handoff_event.is_set():
+    if (
+        pca is None
+        or _hardware_handoff_event.is_set()
+        or _emergency_stop_event.is_set()
+    ):
         return False
 
     controller = pca
@@ -729,7 +987,12 @@ def _write_servo_pwm_unlocked(channel, pwm_value):
 
     for attempt in range(MAX_RETRIES):
         try:
-            controller.channels[channel].duty_cycle = duty_cycle
+            if _emergency_stop_event.is_set():
+                return False
+            with _pwm_io_lock:
+                if _emergency_stop_event.is_set():
+                    return False
+                controller.channels[channel].duty_cycle = duty_cycle
             _channels_initialized.add(channel)
             _confirm_servo_write()
             return True
@@ -766,6 +1029,12 @@ def _write_servo_pwm_unlocked(channel, pwm_value):
 
 def _write_validated_servo_pwm(channel, pwm_value):
     """Serialize even direct low-level writes with the movement owner."""
+    if _emergency_stop_event.is_set():
+        queue_message(
+            f"ERROR: Refused servo write on channel {channel}; "
+            "emergency power-off is latched"
+        )
+        return False
     if not _movement_command_lock.acquire(timeout=SERVO_WRITE_LOCK_TIMEOUT):
         queue_message(
             f"ERROR: Refused servo write on channel {channel}; "
@@ -882,20 +1151,25 @@ def _disable_controller_outputs(controller, attempts=3):
 
     pending = list(range(16))
     last_errors = {}
-    for attempt in range(max(1, int(attempts))):
-        failed = []
-        for channel in pending:
-            try:
-                controller.channels[channel].duty_cycle = 0
-                last_errors.pop(channel, None)
-            except Exception as exc:
-                failed.append(channel)
-                last_errors[channel] = exc
-        pending = failed
-        if not pending:
-            return []
-        if attempt < attempts - 1:
-            time.sleep(0.03 * (attempt + 1))
+    # Emergency release bypasses the movement command lock, but it must not
+    # interleave register writes with the one I2C transaction already in
+    # flight. Once this short bus lock is acquired, the emergency latch blocks
+    # the movement thread from issuing another non-zero write.
+    with _pwm_io_lock:
+        for attempt in range(max(1, int(attempts))):
+            failed = []
+            for channel in pending:
+                try:
+                    controller.channels[channel].duty_cycle = 0
+                    last_errors.pop(channel, None)
+                except Exception as exc:
+                    failed.append(channel)
+                    last_errors[channel] = exc
+            pending = failed
+            if not pending:
+                return []
+            if attempt < attempts - 1:
+                time.sleep(0.03 * (attempt + 1))
 
     for channel in pending:
         queue_message(
@@ -956,9 +1230,13 @@ def release_hardware_for_calibration(timeout=8.0):
         return False
 
     _hardware_handoff_event.set()
-    request_movement_stop()
+    request_controlled_stop("Stopping movement for servo calibration")
     acquired = _movement_command_lock.acquire(timeout=max(0.1, float(timeout)))
     if not acquired:
+        emergency_power_off(
+            "Calibration handoff timed out waiting for movement",
+            source="calibration handoff",
+        )
         _hardware_handoff_event.clear()
         queue_message("ERROR: Servo calibration handoff timed out waiting for movement to stop")
         return False
@@ -1071,6 +1349,11 @@ def begin_direct_servo_session(name):
     """Begin a manually scoped direct-servo command on the current thread."""
     global MOVING
 
+    if _emergency_stop_event.is_set():
+        _record_movement_failure(
+            name, _emergency_stop_reason or "Emergency power-off is latched"
+        )
+        return False
     if _hardware_handoff_event.is_set():
         _record_movement_failure(name, "Hardware is reserved for servo calibration")
         return False
@@ -1099,6 +1382,7 @@ def begin_direct_servo_session(name):
 
         MOVING = True
         _movement_thread_state.direct_session_name = str(name)
+        _movement_thread_state.direct_watchdog = _start_movement_watchdog(name)
         _notify_movement_start()
         return True
     except Exception as exc:
@@ -1118,15 +1402,33 @@ def end_direct_servo_session(name, success=True, error=None):
     try:
         MOVING = False
         _notify_movement_end()
-        if success and not _movement_stop_event.is_set():
+        if (
+            success
+            and not _movement_stop_event.is_set()
+            and not _emergency_stop_event.is_set()
+        ):
             _record_movement_success(name)
         else:
-            detail = error or "Movement was stopped"
+            detail = (
+                error
+                or _emergency_stop_reason
+                or _controlled_stop_reason
+                or "Movement was stopped"
+            )
             _record_movement_failure(name, detail)
-            if pca is None and not _hardware_handoff_event.is_set():
+            if (
+                pca is None
+                and not _hardware_handoff_event.is_set()
+                and not _emergency_stop_event.is_set()
+            ):
                 initialize_pca9685(retries=1)
-        return bool(success)
+        return bool(success and not _emergency_stop_event.is_set())
     finally:
+        _finish_movement_watchdog(
+            getattr(_movement_thread_state, "direct_watchdog", None)
+        )
+        if hasattr(_movement_thread_state, "direct_watchdog"):
+            del _movement_thread_state.direct_watchdog
         del _movement_thread_state.direct_session_name
         _movement_finished_at = time.monotonic()
         _movement_command_lock.release()
@@ -1545,9 +1847,13 @@ def move_arm_timed(left_main=None, left_forearm=None, left_hand=None,
 def cleanup(timeout=8.0):
     """Stop active motion and explicitly release PCA9685 ownership."""
     _hardware_handoff_event.set()
-    request_movement_stop()
+    request_controlled_stop("Application shutdown requested")
     acquired = _movement_command_lock.acquire(timeout=max(0.1, float(timeout)))
     if not acquired:
+        emergency_power_off(
+            "Shutdown timed out waiting for active movement",
+            source="runtime shutdown",
+        )
         queue_message("ERROR: Timed out waiting for active movement during servo shutdown")
         return False
     try:
@@ -1618,8 +1924,7 @@ def execute_registered_movement(name):
     """Execute a named movement through the one shared reliability path."""
     canonical_name = resolve_name(name)
     if canonical_name == "stop":
-        request_movement_stop()
-        return True
+        return request_controlled_stop("Voice or controller stop command")
     if canonical_name == "reset_positions":
         return execute_direct_servo_command("reset_positions", reset_positions)
     if canonical_name not in MOVEMENTS:

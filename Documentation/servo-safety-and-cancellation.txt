@@ -54,3 +54,61 @@ poses cancel promptly, PWM is released after cancellation, and every registered
 movement remains inside its calibrated envelope. It also covers transient
 release failures, controller discard after a failed write, stale-position
 recovery, and the complete handshake cleanup path.
+
+CONTROLLED STOP VS. EMERGENCY POWER-OFF
+---------------------------------------
+A controlled stop (request_controlled_stop, including the voice/controller
+"stop" action and the servo tester STOP buttons) sets the cooperative cancel
+event. The active routine exits at its next motion checkpoint, releases PWM,
+and gives up the movement lock. It does not latch the controller offline, so a
+later movement may run normally.
+
+An emergency power-off (emergency_power_off) does not wait for the movement
+lock. It requests cancellation, immediately attempts to write zero duty cycle
+to all PCA9685 channels, and latches every future PWM write and movement command
+offline. The latch is cleared only by reset_emergency_stop, which first checks
+the controller and confirms that outputs remain disabled. Resetting the latch
+does not move or energize a servo.
+
+"Power-off" here means PWM/servo torque release. Software cannot open the
+physical power circuit. If the I2C controller is unreachable and the terminal
+reports a CRITICAL release failure, use the rear hardware servo-power switch.
+
+The QML servo tester exposes cooperative STOP separately from EMERGENCY OFF.
+The WebUI Motion page provides CONTROLLED STOP, EMERGENCY OFF, and RESET
+EMERGENCY LATCH controls. The historical /disable_servos endpoint now performs
+the latched emergency action; /enable_servos resets it safely.
+
+MOVEMENT WATCHDOG
+-----------------
+Every named movement and manually scoped WebUI servo session has an independent
+watchdog. It triggers emergency power-off when either:
+
+- The complete command exceeds movement_watchdog_timeout (45 seconds by
+  default).
+- One or more channels remain energized but no successful PWM write is seen
+  for movement_stall_timeout (8 seconds by default).
+
+The eight-second progress limit is deliberately longer than the longest
+intentional static hold in the built-in movements (five seconds). The longest
+built-in routine, happy_dance, has an estimated programmed duration of about
+28.6 seconds, leaving substantial room below the 45-second total limit.
+
+These settings are typed and validated in [SERVO]:
+
+    movement_watchdog_enabled = True
+    movement_watchdog_timeout = 45
+    movement_stall_timeout = 8
+
+The watchdog observes software execution and confirmed PCA9685 writes. Because
+standard hobby servos provide no position feedback, it cannot prove that a
+shaft physically reached its target. Mechanical stall detection would require
+position feedback or a separately calibrated current-limit design.
+
+EXPANDED FAKE-HARDWARE TESTS
+----------------------------
+The fake PCA9685 now supports persistent per-channel I2C failures. Tests cover
+controlled cancellation followed by another successful command, emergency
+latching and reset, refusal of writes while latched, best-effort release past a
+permanently failing channel, watchdog progress stalls, watchdog total-runtime
+limits, and typed watchdog configuration bounds.

@@ -1240,6 +1240,28 @@ document.addEventListener('DOMContentLoaded', function () {
   btnDown.addEventListener('click',  () => move(getSpeed() === 'fast' ? 'backward' : 'backward_slow'));
   btnLeft.addEventListener('click',  () => move(getSpeed() === 'fast' ? 'left'     : 'left_slow'));
   btnRight.addEventListener('click', () => move(getSpeed() === 'fast' ? 'right'    : 'right_slow'));
+
+  async function servoSafetyAction(path, fallbackMessage) {
+    try {
+      const response = await fetch(path, { method: 'POST' });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || data.message || fallbackMessage);
+      if (window.showToast) showToast(data.message || fallbackMessage, 'success');
+    } catch (error) {
+      console.error(fallbackMessage + ':', error);
+      if (window.showToast) showToast(error.message, 'error');
+    }
+  }
+
+  const stopButton = $('motionStopBtn');
+  const emergencyButton = $('motionEmergencyBtn');
+  const resetEmergencyButton = $('motionResetEmergencyBtn');
+  if (stopButton) stopButton.addEventListener('click', () =>
+    servoSafetyAction('/stop_movement', 'Controlled stop requested'));
+  if (emergencyButton) emergencyButton.addEventListener('click', () =>
+    servoSafetyAction('/disable_servos', 'Emergency PWM power-off latched'));
+  if (resetEmergencyButton) resetEmergencyButton.addEventListener('click', () =>
+    servoSafetyAction('/enable_servos', 'Emergency latch reset'));
 });
 
 // ── MOTION CAMERA TOGGLE ─────────────────────────────────────────────────────

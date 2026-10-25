@@ -31,6 +31,7 @@ movements = importlib.import_module("modules.module_movements")
 
 class ServoFakeHardwareTests(unittest.TestCase):
     def setUp(self):
+        servoctl._finish_movement_watchdog(servoctl._active_watchdog)
         MESSAGES.clear()
         TEST_CONFIG.clear()
         TEST_CONFIG.update(make_config())
@@ -43,19 +44,32 @@ class ServoFakeHardwareTests(unittest.TestCase):
         servoctl._i2c = None
         servoctl._channels_initialized = set()
         servoctl._movement_stop_event = FakeStopEvent()
+        servoctl._emergency_stop_event = threading.Event()
         servoctl._movement_command_lock = threading.RLock()
+        servoctl._pwm_io_lock = threading.RLock()
         servoctl._hardware_handoff_event = threading.Event()
         servoctl._hardware_lifecycle_lock = threading.RLock()
         servoctl._movement_thread_state = threading.local()
+        servoctl._emergency_state_lock = threading.Lock()
+        servoctl._watchdog_state_lock = threading.Lock()
         servoctl.MOVEMENT_LOCK_TIMEOUT = 0.05
         servoctl.MOVEMENT_MIN_IDLE_SECONDS = 0.0
         servoctl.SERVO_WRITE_LOCK_TIMEOUT = 0.05
+        servoctl.MOVEMENT_WATCHDOG_ENABLED = True
+        servoctl.MOVEMENT_WATCHDOG_TIMEOUT = 45.0
+        servoctl.MOVEMENT_STALL_TIMEOUT = 8.0
+        servoctl.WATCHDOG_CHECK_INTERVAL = 0.005
         servoctl._movement_last_name = None
         servoctl._movement_last_error = None
         servoctl._movement_last_success_at = None
         servoctl._movement_last_failure_at = None
         servoctl._movement_finished_at = 0.0
         servoctl._movement_consecutive_failures = 0
+        servoctl._controlled_stop_reason = None
+        servoctl._emergency_stop_reason = None
+        servoctl._emergency_stop_at = None
+        servoctl._active_watchdog = None
+        servoctl._watchdog_trip_count = 0
         servoctl.MOVING = False
         servoctl.battery_module = None
         servoctl._on_movement_start = None
@@ -421,6 +435,179 @@ class ServoFakeHardwareTests(unittest.TestCase):
         self.assertFalse(cancellable_movement())
         self.assertNotEqual(servoctl.servo_positions[0], 460)
         self.assertTrue(servoctl.movement_stop_requested())
+
+    def test_controlled_stop_releases_pwm_without_latching_future_movement(self):
+        controller = self._initialize()
+        servoctl._movement_stop_event = threading.Event()
+        energized = threading.Event()
+        result = []
+
+        @servoctl.movement_command
+        def long_pose():
+            self.assertTrue(servoctl.set_servo_pwm(7, servoctl.rightMainMax))
+            energized.set()
+            servoctl.wait_for_movement(5.0)
+
+        worker = threading.Thread(target=lambda: result.append(long_pose()), daemon=True)
+        worker.start()
+        self.assertTrue(energized.wait(timeout=0.5))
+        self.assertTrue(servoctl.request_controlled_stop("test controlled stop"))
+        worker.join(timeout=0.5)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [False])
+        self.assertFalse(servoctl.emergency_stop_active())
+        self.assertTrue(self.backend.all_outputs_disabled(controller))
+
+        @servoctl.movement_command
+        def next_pose():
+            self.assertTrue(servoctl.set_servo_pwm(7, servoctl.rightMainMin))
+            servoctl.disable_all_servos()
+
+        self.assertTrue(next_pose())
+
+    def test_emergency_power_off_is_immediate_and_latched_until_reset(self):
+        controller = self._initialize()
+        self.assertTrue(servoctl.set_servo_pwm(7, servoctl.rightMainMax))
+
+        self.assertTrue(
+            servoctl.emergency_power_off("test emergency", source="fake hardware")
+        )
+
+        self.assertTrue(servoctl.emergency_stop_active())
+        self.assertTrue(self.backend.all_outputs_disabled(controller))
+        self.assertFalse(servoctl.set_servo_pwm(7, servoctl.rightMainMin))
+        self.assertFalse(servoctl.execute_registered_movement("step_forward"))
+        self.assertFalse(servoctl.get_movement_status()["ready"])
+
+        self.assertTrue(servoctl.reset_emergency_stop())
+        self.assertFalse(servoctl.emergency_stop_active())
+        self.assertTrue(servoctl.set_servo_pwm(7, servoctl.rightMainMin))
+        self.assertTrue(servoctl.disable_all_servos())
+
+    def test_emergency_release_continues_past_persistent_channel_failure(self):
+        controller = self._initialize()
+        for channel in (7, 8, 9):
+            self.assertTrue(
+                servoctl.set_servo_pwm(channel, servoctl.servo_positions[channel])
+            )
+        self.backend.persistent_failure_channels.add(8)
+
+        self.assertFalse(
+            servoctl.emergency_power_off(
+                "persistent fake I2C failure", source="fake hardware"
+            )
+        )
+
+        self.assertEqual(controller.channels[7].duty_cycle, 0)
+        self.assertNotEqual(controller.channels[8].duty_cycle, 0)
+        self.assertEqual(controller.channels[9].duty_cycle, 0)
+        self.assertTrue(servoctl.emergency_stop_active())
+        self.assertTrue(any("CRITICAL:" in message for message in MESSAGES))
+
+        self.backend.persistent_failure_channels.clear()
+        self.assertTrue(servoctl.emergency_power_off("retry release", source="test"))
+        self.assertTrue(self.backend.all_outputs_disabled(controller))
+
+    def test_emergency_release_finishes_after_an_inflight_pwm_write(self):
+        controller = self._initialize()
+        write_entered = threading.Event()
+        release_write = threading.Event()
+        writer_result = []
+        emergency_result = []
+
+        def block_first_nonzero_write(_controller, channel, value):
+            if channel == 7 and value != 0 and not write_entered.is_set():
+                write_entered.set()
+                release_write.wait(timeout=0.5)
+
+        self.backend.write_hook = block_first_nonzero_write
+        writer = threading.Thread(
+            target=lambda: writer_result.append(
+                servoctl.set_servo_pwm(7, servoctl.rightMainMax)
+            ),
+            daemon=True,
+        )
+        writer.start()
+        self.assertTrue(write_entered.wait(timeout=0.5))
+
+        emergency = threading.Thread(
+            target=lambda: emergency_result.append(
+                servoctl.emergency_power_off("race test", source="fake hardware")
+            ),
+            daemon=True,
+        )
+        emergency.start()
+        deadline = time.monotonic() + 0.5
+        while not servoctl.emergency_stop_active() and time.monotonic() < deadline:
+            threading.Event().wait(0.005)
+        self.assertTrue(servoctl.emergency_stop_active())
+        release_write.set()
+        writer.join(timeout=0.5)
+        emergency.join(timeout=0.5)
+
+        self.assertFalse(writer.is_alive())
+        self.assertFalse(emergency.is_alive())
+        self.assertEqual(writer_result, [True])
+        self.assertEqual(emergency_result, [True])
+        self.assertTrue(self.backend.all_outputs_disabled(controller))
+        self.assertEqual(controller.channels[7].duty_cycle, 0)
+
+    def test_watchdog_emergency_stops_a_stalled_energized_movement(self):
+        controller = self._initialize()
+        servoctl._movement_stop_event = threading.Event()
+        servoctl.MOVEMENT_WATCHDOG_TIMEOUT = 1.0
+        servoctl.MOVEMENT_STALL_TIMEOUT = 0.04
+        energized = threading.Event()
+        result = []
+
+        @servoctl.movement_command
+        def stalled_pose():
+            self.assertTrue(servoctl.set_servo_pwm(7, servoctl.rightMainMax))
+            energized.set()
+            threading.Event().wait(0.15)
+
+        worker = threading.Thread(target=lambda: result.append(stalled_pose()), daemon=True)
+        worker.start()
+        self.assertTrue(energized.wait(timeout=0.5))
+        worker.join(timeout=0.5)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [False])
+        self.assertTrue(servoctl.emergency_stop_active())
+        self.assertTrue(self.backend.all_outputs_disabled(controller))
+        status = servoctl.get_movement_status()
+        self.assertEqual(status["watchdog"]["trip_count"], 1)
+        self.assertIn("no PWM progress", status["emergency_reason"])
+
+    def test_watchdog_enforces_total_runtime_even_with_pwm_progress(self):
+        controller = self._initialize()
+        servoctl._movement_stop_event = threading.Event()
+        servoctl.MOVEMENT_WATCHDOG_TIMEOUT = 0.06
+        servoctl.MOVEMENT_STALL_TIMEOUT = 1.0
+        result = []
+
+        @servoctl.movement_command
+        def endless_progress():
+            value = servoctl.rightMainMin
+            deadline = time.monotonic() + 0.25
+            while time.monotonic() < deadline:
+                if not servoctl.set_servo_pwm(7, value):
+                    break
+                value = min(servoctl.rightMainMax, value + 1)
+                threading.Event().wait(0.005)
+
+        worker = threading.Thread(
+            target=lambda: result.append(endless_progress()), daemon=True
+        )
+        worker.start()
+        worker.join(timeout=0.5)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [False])
+        self.assertTrue(servoctl.emergency_stop_active())
+        self.assertTrue(self.backend.all_outputs_disabled(controller))
+        self.assertIn("exceeded", servoctl.get_movement_status()["emergency_reason"])
 
     def test_legacy_pose_wait_is_cancellable_and_releases_pwm(self):
         controller = self._initialize()

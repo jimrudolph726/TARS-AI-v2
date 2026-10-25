@@ -289,6 +289,13 @@ battery_cutoff_voltage = 10
 [SERVO]
 # True if arm servos are physically installed (affects movement calculations)
 arms_present = False
+# Safety watchdog for stalled or unexpectedly long movement routines.
+movement_watchdog_enabled = True
+# Maximum total duration for one movement command, in seconds.
+movement_watchdog_timeout = 45
+# Maximum time with energized servos but no successful PWM progress.
+# Keep this above the longest intentional pose hold (currently five seconds).
+movement_stall_timeout = 8
 # Servo 0 - Left leg height
 leftUpHeight = 220
 leftDownHeight = 460

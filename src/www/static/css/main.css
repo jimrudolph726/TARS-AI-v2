@@ -1196,6 +1196,11 @@ body::after {
 }
 
 .actions-panel { display: flex; flex-direction: column; gap: 12px; }
+.motion-safety-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.motion-safety-grid .hud-btn { min-width: 0; font-size: 0.68rem; }
+.motion-safety-grid .motion-reset-estop { grid-column: 1 / -1; }
+.hud-btn-danger { border-color: #ff405d; color: #ff405d; }
+.hud-btn-danger:hover { background: rgba(255, 64, 93, 0.14); }
 
 /* ══════════════════════════════════════════════
    SERVO TABS (LEGS + ARMS)

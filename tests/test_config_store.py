@@ -32,8 +32,32 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertIsInstance(config.stt.speaker_id_enabled, bool)
         self.assertEqual(config.ui.rotation, 90)
         self.assertEqual(config.servo.legacy_dict()["leftMainMin"], 550)
+        self.assertTrue(config.servo.movement_watchdog_enabled)
+        self.assertEqual(config.servo.movement_watchdog_timeout, 45.0)
+        self.assertEqual(config.servo.movement_stall_timeout, 8.0)
         with self.assertRaises(TypeError):
             config.sections["SERVO"]["leftmainmin"] = "10"
+
+    def test_watchdog_limits_reject_unsafe_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = self._copy_template(directory)
+            text = target.read_text(encoding="utf-8")
+            text = text.replace(
+                "movement_watchdog_timeout = 45",
+                "movement_watchdog_timeout = 4",
+            )
+            text = text.replace(
+                "movement_stall_timeout = 8",
+                "movement_stall_timeout = 2",
+            )
+            target.write_text(text, encoding="utf-8")
+
+            with self.assertRaises(ConfigValidationError) as raised:
+                load_typed_config(target)
+
+            message = str(raised.exception)
+            self.assertIn("movement_watchdog_timeout must be at least 10", message)
+            self.assertIn("movement_stall_timeout must be at least 6", message)
 
     def test_invalid_boolean_and_rotation_are_reported_together(self):
         with tempfile.TemporaryDirectory() as directory:

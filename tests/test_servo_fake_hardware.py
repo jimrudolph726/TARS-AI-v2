@@ -192,6 +192,29 @@ class ServoFakeHardwareTests(unittest.TestCase):
             with self.subTest(channel=channel, boundary="maximum"):
                 self.assertTrue(servoctl.set_servo_pwm(channel, maximum))
 
+    def test_stale_saved_position_can_only_move_back_into_calibrated_range(self):
+        self._initialize()
+        channel = 8
+        minimum, maximum = servoctl.get_servo_channel_bounds(channel)
+        stale_position = maximum + 20
+        servoctl.servo_positions[channel] = stale_position
+
+        # Moving farther outside remains forbidden.
+        self.assertFalse(servoctl.set_servo_pwm(channel, stale_position + 1))
+        self.raw_pwm_writes.clear()
+
+        # The interpolator may walk a stale saved position monotonically back
+        # into the envelope instead of failing and stranding the joint there.
+        servoctl.move_servos_timed([(channel, minimum)], duration=0.04)
+        self.assertEqual(servoctl.servo_positions[channel], minimum)
+        self.assertTrue(
+            all(
+                pulse <= stale_position
+                for written_channel, pulse in self.raw_pwm_writes
+                if written_channel == channel
+            )
+        )
+
     def test_calibration_gateway_can_preview_unsaved_but_absolute_safe_offset(self):
         self._initialize()
         _, current_maximum = servoctl.get_servo_channel_bounds(0)
@@ -238,6 +261,49 @@ class ServoFakeHardwareTests(unittest.TestCase):
         self.assertTrue(servoctl.ensure_servo_hardware())
         self.assertIsNotNone(servoctl.pca)
         self.assertIsNot(servoctl.pca, failed_controller)
+
+    def test_failed_write_releases_all_outputs_before_discarding_controller(self):
+        failed_controller = self._initialize()
+        for channel in (7, 8, 9):
+            self.assertTrue(servoctl.set_servo_pwm(channel, servoctl.servo_positions[channel]))
+
+        # Three failures exhaust the target write retries. The fourth simulates
+        # the old failure mode where the first release attempt also failed and
+        # caused the remaining channels to be skipped.
+        self.backend.write_failures[8] = servoctl.MAX_RETRIES + 1
+        self.assertFalse(
+            servoctl.set_servo_pwm(8, servoctl.servo_positions[8] + 1)
+        )
+
+        self.assertIsNone(servoctl.pca)
+        self.assertTrue(self.backend.all_outputs_disabled(failed_controller))
+        self.assertFalse(any("CRITICAL:" in message for message in MESSAGES))
+
+    def test_disable_retries_failed_channel_and_continues_with_later_channels(self):
+        controller = self._initialize()
+        for channel in (7, 8, 9):
+            self.assertTrue(servoctl.set_servo_pwm(channel, servoctl.servo_positions[channel]))
+
+        self.backend.write_failures[8] = 1
+        self.assertTrue(servoctl.disable_all_servos())
+
+        self.assertTrue(self.backend.all_outputs_disabled(controller))
+        self.assertEqual(servoctl._channels_initialized, set())
+
+    def test_named_movement_wrapper_releases_an_energized_output(self):
+        controller = self._initialize()
+
+        def incomplete_pose():
+            self.assertTrue(
+                servoctl.set_servo_pwm(7, servoctl.servo_positions[7])
+            )
+
+        incomplete_pose.__module__ = "modules.module_movements"
+        wrapped = servoctl.movement_command(incomplete_pose)
+
+        self.assertTrue(wrapped())
+        self.assertTrue(self.backend.all_outputs_disabled(controller))
+        self.assertEqual(servoctl._channels_initialized, set())
 
     def test_failed_movement_recovers_controller_for_next_command(self):
         failed_controller = self._initialize()
@@ -456,6 +522,17 @@ class ServoFakeHardwareTests(unittest.TestCase):
         self.assertEqual(servoctl.servo_positions[9], servoctl.rightHandMin)
         self.assertTrue(self.backend.all_outputs_disabled(controller))
         self.assert_all_raw_pulses_safe()
+
+    def test_handshake_recovers_a_stale_saved_forearm_position(self):
+        controller = self._initialize()
+        servoctl.ARMS_PRESENT = True
+        _, maximum = servoctl.get_servo_channel_bounds(8)
+        servoctl.servo_positions[8] = maximum + 20
+
+        self.assertTrue(movements.right_handshake())
+
+        self.assertEqual(servoctl.servo_positions[8], servoctl.rightForarmMin)
+        self.assertTrue(self.backend.all_outputs_disabled(controller))
 
     def test_repeated_registered_movements_remain_available(self):
         self._initialize()

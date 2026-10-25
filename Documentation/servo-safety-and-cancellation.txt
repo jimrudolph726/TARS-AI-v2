@@ -12,6 +12,12 @@ before the I2C write. A command is rejected when:
 - Another thread owns the movement lock.
 - The PCA9685 is unavailable or reserved for calibration.
 
+If a saved joint position predates a calibration change and is already just
+outside the new envelope, the runtime permits only successive values that move
+that joint back toward the nearest calibrated boundary. It still rejects any
+command that moves farther outward. This prevents the safety gate itself from
+stranding an arm at an obsolete saved position.
+
 The QML calibrator uses a separate explicit calibration gateway. Calibration
 must be able to preview an offset before it is saved, so that gateway enforces
 assigned channels and the absolute 10 through 600 range while the tester keeps
@@ -29,6 +35,13 @@ after its normal cleanup path was skipped. Controlled movement-specific return
 to neutral remains a separate future milestone; the current stop is a prompt
 motion abort followed by torque release.
 
+PWM release is best-effort per channel: one I2C failure no longer aborts the
+rest of the release loop, and failed channels are retried. A failed movement
+write also attempts to release all outputs before the PCA9685 object is
+discarded. Named movement presets receive a final torque-free check in their
+shared wrapper. A persistent controller or wiring failure is reported as a
+critical condition and still requires the physical servo-power switch.
+
 No servo targets, gait phases, gesture speeds, or routine choreography were
 changed by this work.
 
@@ -38,4 +51,6 @@ tests/test_servo_fake_hardware.py verifies invalid writes never reach fake
 hardware, calibrated endpoints remain usable, calibration preview remains
 possible, direct writes cannot bypass another movement owner, long legacy
 poses cancel promptly, PWM is released after cancellation, and every registered
-movement remains inside its calibrated envelope.
+movement remains inside its calibrated envelope. It also covers transient
+release failures, controller discard after a failed write, stale-position
+recovery, and the complete handshake cleanup path.

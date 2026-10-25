@@ -146,6 +146,19 @@ def movement_command(function):
                     function.__name__, "Movement implementation returned failure"
                 )
                 return False
+            # Named pose scripts are required to finish torque-free. Most
+            # release PWM in their own finally block; this catches either an
+            # omitted release or a channel that remained active after bounded
+            # I2C retries. Direct WebUI positioning is intentionally excluded
+            # because those controls may hold a requested manual pose.
+            if (
+                function.__module__ == "modules.module_movements"
+                and _channels_initialized
+                and not disable_all_servos()
+            ):
+                raise RuntimeError(
+                    "Unable to confirm that all servo PWM outputs were released"
+                )
             if _movement_stop_event.is_set():
                 _record_movement_failure(function.__name__, "Movement was stopped")
                 return False
@@ -678,11 +691,29 @@ def _validate_servo_write(channel, pwm_value, enforce_calibrated_bounds=True):
     if enforce_calibrated_bounds:
         minimum, maximum = bounds
         if not minimum <= pwm_value <= maximum:
-            queue_message(
-                f"ERROR: Refused PWM value {pwm_value} on channel {channel}; "
-                f"calibrated range is {minimum}-{maximum}"
+            # A saved position can legitimately predate the current offsets.
+            # Refusing every out-of-envelope intermediate value would strand
+            # that joint at the stale position: it could not travel back into
+            # the newly calibrated range. Permit only monotonic recovery toward
+            # the nearest boundary. A joint already inside its envelope can
+            # never use this exception to travel outside it.
+            current = servo_positions.get(channel)
+            recovering_low = (
+                isinstance(current, Real)
+                and current < minimum
+                and current < pwm_value < minimum
             )
-            return None
+            recovering_high = (
+                isinstance(current, Real)
+                and current > maximum
+                and maximum < pwm_value < current
+            )
+            if not (recovering_low or recovering_high):
+                queue_message(
+                    f"ERROR: Refused PWM value {pwm_value} on channel {channel}; "
+                    f"calibrated range is {minimum}-{maximum}"
+                )
+                return None
     return channel, pwm_value
 
 
@@ -713,6 +744,20 @@ def _write_servo_pwm_unlocked(channel, pwm_value):
         f"ERROR: Servo write failed on channel {channel} after "
         f"{MAX_RETRIES} attempts: {detail}"
     )
+
+    # The failed target may have occurred after several joints were already
+    # energized. Deinitializing the Python driver does not guarantee that the
+    # PCA9685 stops generating the last programmed PWM signal, so first make a
+    # bounded, best-effort attempt to release every output on the still-open
+    # controller. This is especially important after a transient I2C error in
+    # the middle of a gesture.
+    failed_release_channels = _disable_controller_outputs(controller)
+    if failed_release_channels:
+        queue_message(
+            "CRITICAL: Unable to release PWM on servo channel(s) "
+            f"{', '.join(str(value) for value in failed_release_channels)}; "
+            "switch servo power off before touching TARS"
+        )
     with _hardware_lifecycle_lock:
         if pca is controller:
             _discard_controller(f"PWM write failure on channel {channel}")
@@ -824,22 +869,53 @@ def initialize_servos(startup_attempts=2):
     )
     return False
 
+def _disable_controller_outputs(controller, attempts=3):
+    """Best-effort PWM release that never abandons later channels.
+
+    A single transient I2C failure used to abort the entire 16-channel loop.
+    If (for example) channel 8 failed, channels 9-15 were never told to stop.
+    Retry only the channels that failed while continuing to release every
+    other output. Return the channels that could not be confirmed off.
+    """
+    if controller is None:
+        return []
+
+    pending = list(range(16))
+    last_errors = {}
+    for attempt in range(max(1, int(attempts))):
+        failed = []
+        for channel in pending:
+            try:
+                controller.channels[channel].duty_cycle = 0
+                last_errors.pop(channel, None)
+            except Exception as exc:
+                failed.append(channel)
+                last_errors[channel] = exc
+        pending = failed
+        if not pending:
+            return []
+        if attempt < attempts - 1:
+            time.sleep(0.03 * (attempt + 1))
+
+    for channel in pending:
+        queue_message(
+            f"ERROR: Could not disable servo channel {channel}: "
+            f"{_describe_hardware_error(last_errors[channel])}"
+        )
+    return pending
+
+
 def disable_all_servos():
     global _channels_initialized
 
     if pca is None:
         _channels_initialized.clear()
-        return
-    
-    try:
-        for channel in range(16):
-            pca.channels[channel].duty_cycle = 0
-    except Exception as e:
-        queue_message(f"Error disabling servos: {e}")
+        return True
 
-    _channels_initialized.clear()
-    
+    failed_channels = _disable_controller_outputs(pca)
+    _channels_initialized.intersection_update(failed_channels)
     time.sleep(0.05)
+    return not failed_channels
 
 
 def _deinitialize_pca9685():

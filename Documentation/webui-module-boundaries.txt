@@ -1,0 +1,49 @@
+TARS V2 WebUI module boundaries
+================================
+
+The browser interface now lives under src/modules/webui.  The historical
+src/modules/module_chatui.py import remains as a deliberately small
+compatibility facade because module_runtime.py and the QML remote-access pane
+already depend on that public path.
+
+Import rules
+------------
+
+1. Importing modules.webui must not create Flask state, start threads, probe
+   Wi-Fi, open cameras, initialize audio, or import servo hardware.
+2. The active Qt/QML and WebUI modules must not import Pygame.
+3. Servo hardware is loaded only when a motion endpoint is invoked.
+4. Wi-Fi discovery is initialized on demand by a Wi-Fi endpoint, never as a
+   side effect of importing the WebUI.
+5. Existing route URLs are a compatibility contract.  Moving handlers must
+   not silently rename endpoints used by the browser frontend.
+
+The rules are enforced by tests/test_webui_import_boundaries.py.  These are
+static architecture tests plus an inert-package import test; they do not open
+network sockets or physical hardware.
+
+Current package layout
+----------------------
+
+    modules/module_chatui.py       compatibility facade
+    modules/webui/__init__.py      inert package boundary
+    modules/webui/application.py   Flask/SocketIO application and core routes
+    modules/webui/motion.py        motion, servo safety, and sequence routes
+
+Motion and movement-builder handlers are registered as a Flask blueprint. The
+blueprint imports servo hardware only inside request handlers. New browser
+features should be placed under modules.webui rather than added to the
+compatibility facade.
+
+Camera streaming
+----------------
+
+The WebUI now reads the camera's RGB array directly and encodes it with OpenCV.
+It no longer converts camera frames through pygame.Surface.
+
+Wi-Fi initialization
+--------------------
+
+The previous WebUI import immediately started a background Wi-Fi manager
+thread.  Wi-Fi manager construction is now protected by a lock and happens
+only when a Wi-Fi endpoint is requested.

@@ -23,6 +23,11 @@ They verify network deadlines, bounded retries, permanent-error handling,
 partial-stream duplicate prevention, response cleanup, and cancellation of
 outdated preemptive voice requests.
 
+The WebUI boundary tests parse the active Python modules without starting the
+Flask server. They prevent Pygame from leaking back into the Qt/QML or browser
+interfaces, verify that importing the WebUI package starts no threads or servo
+hardware, and preserve the browser route contract during module extraction.
+
 These tests validate software behavior only. They cannot prove that a gait is
 mechanically stable or that physical calibration endpoints are safe for a
 particular TARS build.

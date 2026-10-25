@@ -1,0 +1,41 @@
+TARS V2 SERVO SAFETY GATE AND CANCELLATION
+===========================================
+
+RUNTIME WRITE GATE
+------------------
+modules/module_servoctl.py validates every normal PWM command immediately
+before the I2C write. A command is rejected when:
+
+- The channel is not one of TARS channels 0 through 9.
+- The pulse is non-numeric, non-finite, fractional, or outside 10 through 600.
+- The pulse is outside that joint's configured and offset-adjusted envelope.
+- Another thread owns the movement lock.
+- The PCA9685 is unavailable or reserved for calibration.
+
+The QML calibrator uses a separate explicit calibration gateway. Calibration
+must be able to preview an offset before it is saved, so that gateway enforces
+assigned channels and the absolute 10 through 600 range while the tester keeps
+its existing endpoint checks and ramped writes.
+
+CANCELLATION
+------------
+All delays in module_movements.py and the reset-position motion now use
+wait_for_movement(). A voice, WebUI, or tester stop request wakes those waits
+immediately instead of waiting through a three- or five-second pose.
+
+Cancellation and unexpected movement exceptions release PWM centrally. This
+prevents a partially completed gesture from leaving one or more servos powered
+after its normal cleanup path was skipped. Controlled movement-specific return
+to neutral remains a separate future milestone; the current stop is a prompt
+motion abort followed by torque release.
+
+No servo targets, gait phases, gesture speeds, or routine choreography were
+changed by this work.
+
+TEST COVERAGE
+-------------
+tests/test_servo_fake_hardware.py verifies invalid writes never reach fake
+hardware, calibrated endpoints remain usable, calibration preview remains
+possible, direct writes cannot bypass another movement owner, long legacy
+poses cancel promptly, PWM is released after cancellation, and every registered
+movement remains inside its calibrated envelope.

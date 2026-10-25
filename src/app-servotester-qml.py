@@ -553,9 +553,11 @@ class ServoCalibrationController(QObject):
             return False
         try:
             with self._io_lock:
-                if self._servoctl.set_servo_pwm(channel, pulse):
+                # Calibration intentionally explores offsets that are not yet
+                # saved, so use the explicit absolute-safe/ramped gateway.
+                if self._servoctl.set_calibration_servo_pwm(channel, pulse):
                     return True
-            # set_servo_pwm discards a controller after its bounded retries.
+            # The shared gateway discards a controller after bounded retries.
             # Reopen once but leave PWM off.  Re-enabling writes the complete
             # calibrated pose; retrying only this joint could drop support on
             # every other joint and destabilize the robot.

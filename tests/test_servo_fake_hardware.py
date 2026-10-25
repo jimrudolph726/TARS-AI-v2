@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import sys
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -47,6 +49,7 @@ class ServoFakeHardwareTests(unittest.TestCase):
         servoctl._movement_thread_state = threading.local()
         servoctl.MOVEMENT_LOCK_TIMEOUT = 0.05
         servoctl.MOVEMENT_MIN_IDLE_SECONDS = 0.0
+        servoctl.SERVO_WRITE_LOCK_TIMEOUT = 0.05
         servoctl._movement_last_name = None
         servoctl._movement_last_error = None
         servoctl._movement_last_success_at = None
@@ -163,6 +166,64 @@ class ServoFakeHardwareTests(unittest.TestCase):
             servoctl.move_servos_timed([(0, 601)], duration=0.02)
 
         self.assertEqual(self.raw_pwm_writes, before)
+
+    def test_low_level_gateway_rejects_invalid_or_out_of_envelope_writes(self):
+        self._initialize()
+        successful_before = len(self.backend.successful_writes)
+        channel_zero_min, channel_zero_max = servoctl.get_servo_channel_bounds(0)
+
+        self.assertFalse(servoctl.set_servo_pwm(10, 300))
+        self.assertFalse(servoctl.set_servo_pwm(0, servoctl.SERVO_MAX_PULSE + 1))
+        self.assertFalse(servoctl.set_servo_pwm(0, channel_zero_max + 1))
+        self.assertFalse(servoctl.set_servo_pwm(0, channel_zero_min - 1))
+        self.assertFalse(servoctl.set_servo_pwm(0, 350.5))
+        self.assertFalse(servoctl.set_servo_pwm(0, float("nan")))
+
+        self.assertEqual(len(self.backend.successful_writes), successful_before)
+        self.assertTrue(any("calibrated range" in message for message in MESSAGES))
+
+    def test_low_level_gateway_accepts_each_calibrated_boundary(self):
+        self._initialize()
+
+        for channel in range(10):
+            minimum, maximum = servoctl.get_servo_channel_bounds(channel)
+            with self.subTest(channel=channel, boundary="minimum"):
+                self.assertTrue(servoctl.set_servo_pwm(channel, minimum))
+            with self.subTest(channel=channel, boundary="maximum"):
+                self.assertTrue(servoctl.set_servo_pwm(channel, maximum))
+
+    def test_calibration_gateway_can_preview_unsaved_but_absolute_safe_offset(self):
+        self._initialize()
+        _, current_maximum = servoctl.get_servo_channel_bounds(0)
+        prospective_target = current_maximum + 5
+
+        self.assertFalse(servoctl.set_servo_pwm(0, prospective_target))
+        self.assertTrue(
+            servoctl.set_calibration_servo_pwm(0, prospective_target)
+        )
+        self.assertFalse(
+            servoctl.set_calibration_servo_pwm(0, servoctl.SERVO_MAX_PULSE + 1)
+        )
+        self.assertFalse(servoctl.set_calibration_servo_pwm(10, 300))
+
+    def test_direct_low_level_write_cannot_bypass_movement_owner(self):
+        self._initialize()
+        successful_before = len(self.backend.successful_writes)
+        result = []
+        servoctl._movement_command_lock.acquire()
+        try:
+            worker = threading.Thread(
+                target=lambda: result.append(servoctl.set_servo_pwm(0, 350)),
+                daemon=True,
+            )
+            worker.start()
+            worker.join(timeout=0.25)
+        finally:
+            servoctl._movement_command_lock.release()
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [False])
+        self.assertEqual(len(self.backend.successful_writes), successful_before)
 
     def test_failed_write_discards_controller_then_recovers(self):
         failed_controller = self._initialize()
@@ -295,6 +356,41 @@ class ServoFakeHardwareTests(unittest.TestCase):
         self.assertNotEqual(servoctl.servo_positions[0], 460)
         self.assertTrue(servoctl.movement_stop_requested())
 
+    def test_legacy_pose_wait_is_cancellable_and_releases_pwm(self):
+        controller = self._initialize()
+        servoctl._movement_stop_event = threading.Event()
+        first_phase = threading.Event()
+        move_calls = []
+        result = []
+
+        def record_leg_phase(*args, **kwargs):
+            move_calls.append((args, kwargs))
+            first_phase.set()
+
+        with patch.object(movements, "move_legs", side_effect=record_leg_phase):
+            worker = threading.Thread(
+                target=lambda: result.append(movements.pose()), daemon=True
+            )
+            worker.start()
+            self.assertTrue(first_phase.wait(timeout=0.5))
+            started = time.monotonic()
+            servoctl.request_movement_stop()
+            worker.join(timeout=0.5)
+            elapsed = time.monotonic() - started
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [False])
+        self.assertLess(elapsed, 0.25)
+        # The four return phases after the three-second pose must not execute.
+        self.assertLessEqual(len(move_calls), 3)
+        self.assertFalse(servoctl.MOVING)
+        self.assertTrue(self.backend.all_outputs_disabled(controller))
+        self.assertTrue(servoctl._movement_command_lock.acquire(blocking=False))
+        servoctl._movement_command_lock.release()
+
+    def test_movement_module_contains_no_blocking_sleep_calls(self):
+        self.assertNotIn("time.sleep(", inspect.getsource(movements))
+
     def test_original_arms_step_is_bounded_and_returns_to_center(self):
         controller = self._initialize()
         servoctl.ARMS_PRESENT = True
@@ -382,6 +478,22 @@ class ServoFakeHardwareTests(unittest.TestCase):
                 self.assertIsNone(status["last_error"])
 
         self.assertEqual(servoctl.get_movement_status()["consecutive_failures"], 0)
+        self.assert_all_raw_pulses_safe()
+
+    def test_every_registered_movement_stays_inside_calibrated_envelopes(self):
+        self._initialize()
+        servoctl.ARMS_PRESENT = True
+
+        for movement_name in servoctl.MOVEMENTS:
+            with self.subTest(movement=movement_name):
+                servoctl.servo_positions = self._neutral_positions()
+                servoctl._channels_initialized.clear()
+                servoctl._movement_stop_event.clear()
+                self.assertTrue(
+                    servoctl.execute_registered_movement(movement_name),
+                    msg=servoctl.get_movement_status().get("last_error"),
+                )
+
         self.assert_all_raw_pulses_safe()
 
 

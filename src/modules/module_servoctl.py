@@ -23,6 +23,7 @@ import os
 import math
 import threading
 from functools import wraps
+from numbers import Integral, Real
 import board
 import busio
 from adafruit_pca9685 import PCA9685
@@ -52,6 +53,7 @@ _movement_thread_state = threading.local()
 
 MOVEMENT_LOCK_TIMEOUT = 8.0
 MOVEMENT_MIN_IDLE_SECONDS = 0.75
+SERVO_WRITE_LOCK_TIMEOUT = 0.25
 PCA_PROBE_CHANNEL = 15
 
 _movement_status_lock = threading.Lock()
@@ -150,11 +152,17 @@ def movement_command(function):
             _record_movement_success(function.__name__)
             return True
         except MovementCancelled:
+            # A cancelled pose may have skipped its normal end-of-routine
+            # release. Never leave a partially completed movement energized.
+            disable_all_servos()
             _record_movement_failure(function.__name__, "Movement was stopped")
             queue_message(f"MOVEMENT: Stopped {function.__name__}")
             return False
         except Exception as exc:
             detail = _describe_hardware_error(exc)
+            # Exceptions can occur after one or more channels were energized.
+            # Release every output before attempting controller recovery.
+            disable_all_servos()
             _record_movement_failure(function.__name__, detail)
             queue_message(
                 f"ERROR: MOVEMENT: {function.__name__} failed: {detail}"
@@ -613,7 +621,72 @@ def pulse_to_duty_cycle(pulse_value):
     duty_cycle = int((pulse_us / 20000.0) * 65535)
     return duty_cycle
 
-def set_servo_pwm(channel, pwm_value):
+
+def get_servo_channel_bounds(channel):
+    """Return the calibrated mechanical envelope for a TARS servo channel."""
+    ranges = {
+        0: (leftUpHeight, leftNeutralHeight, leftDownHeight),
+        1: (rightUpHeight, rightNeutralHeight, rightDownHeight),
+        2: (forwardLeftLeg, neutralLeftLeg, backLeftLeg),
+        3: (forwardRightLeg, neutralRightLeg, backRightLeg),
+        4: (leftMainMin, leftMainMax),
+        5: (leftForarmMin, leftForarmMax),
+        6: (leftHandMin, leftHandMax),
+        7: (rightMainMin, rightMainMax),
+        8: (rightForarmMin, rightForarmMax),
+        9: (rightHandMin, rightHandMax),
+    }
+    values = ranges.get(channel)
+    if values is None:
+        return None
+    return max(SERVO_MIN_PULSE, min(values)), min(SERVO_MAX_PULSE, max(values))
+
+
+def _validate_servo_write(channel, pwm_value, enforce_calibrated_bounds=True):
+    """Validate the final hardware command at the last boundary before I2C."""
+    if isinstance(channel, bool) or not isinstance(channel, Integral):
+        queue_message(f"ERROR: Refused servo write with invalid channel {channel!r}")
+        return None
+    channel = int(channel)
+    bounds = get_servo_channel_bounds(channel)
+    if bounds is None:
+        queue_message(
+            f"ERROR: Refused servo write to unassigned channel {channel}; "
+            "TARS servo channels are 0-9"
+        )
+        return None
+
+    if isinstance(pwm_value, bool) or not isinstance(pwm_value, Real):
+        queue_message(
+            f"ERROR: Refused non-numeric PWM value {pwm_value!r} on channel {channel}"
+        )
+        return None
+    numeric_value = float(pwm_value)
+    if not math.isfinite(numeric_value) or not numeric_value.is_integer():
+        queue_message(
+            f"ERROR: Refused non-integer PWM value {pwm_value!r} on channel {channel}"
+        )
+        return None
+    pwm_value = int(numeric_value)
+    if not SERVO_MIN_PULSE <= pwm_value <= SERVO_MAX_PULSE:
+        queue_message(
+            f"ERROR: Refused unsafe PWM value {pwm_value} on channel {channel}; "
+            f"controller range is {SERVO_MIN_PULSE}-{SERVO_MAX_PULSE}"
+        )
+        return None
+
+    if enforce_calibrated_bounds:
+        minimum, maximum = bounds
+        if not minimum <= pwm_value <= maximum:
+            queue_message(
+                f"ERROR: Refused PWM value {pwm_value} on channel {channel}; "
+                f"calibrated range is {minimum}-{maximum}"
+            )
+            return None
+    return channel, pwm_value
+
+
+def _write_servo_pwm_unlocked(channel, pwm_value):
     global _channels_initialized
 
     if pca is None or _hardware_handoff_event.is_set():
@@ -644,6 +717,44 @@ def set_servo_pwm(channel, pwm_value):
         if pca is controller:
             _discard_controller(f"PWM write failure on channel {channel}")
     return False
+
+
+def _write_validated_servo_pwm(channel, pwm_value):
+    """Serialize even direct low-level writes with the movement owner."""
+    if not _movement_command_lock.acquire(timeout=SERVO_WRITE_LOCK_TIMEOUT):
+        queue_message(
+            f"ERROR: Refused servo write on channel {channel}; "
+            "another movement owns the controller"
+        )
+        return False
+    try:
+        return _write_servo_pwm_unlocked(channel, pwm_value)
+    finally:
+        _movement_command_lock.release()
+
+
+def set_servo_pwm(channel, pwm_value):
+    """Write only within the servo's currently calibrated mechanical range."""
+    validated = _validate_servo_write(channel, pwm_value)
+    if validated is None:
+        return False
+    return _write_validated_servo_pwm(*validated)
+
+
+def set_calibration_servo_pwm(channel, pwm_value):
+    """Calibration-only write bounded by assigned channels and controller limits.
+
+    A calibrator must be able to explore a prospective envelope that is not
+    saved yet.  It still cannot address an unassigned channel or leave the
+    absolute safe PWM range.  The QML tester performs its own endpoint checks
+    and ramps to every prospective target before using this explicit API.
+    """
+    validated = _validate_servo_write(
+        channel, pwm_value, enforce_calibrated_bounds=False
+    )
+    if validated is None:
+        return False
+    return _write_validated_servo_pwm(*validated)
 
 def initialize_servos(startup_attempts=2):
     """Validate the controller and perform a bounded, retryable startup pose."""
@@ -843,12 +954,12 @@ def reset_positions():
 
     disable_all_servos()
     move_legs(30, 30, 50, 50, 0.5)
-    time.sleep(0.2)
+    wait_for_movement(0.2)
     move_legs(50, 50, 50, 50, 0.5)
-    time.sleep(0.3)
+    wait_for_movement(0.3)
 
     move_arm(1, 1, 1, 1, 1, 1, 0.3)
-    time.sleep(0.5)
+    wait_for_movement(0.5)
 
     disable_all_servos()
 

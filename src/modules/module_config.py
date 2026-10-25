@@ -10,12 +10,20 @@ variables, providing a structured dictionary for easy access throughout the appl
 import os
 import sys
 import configparser
+import io
 from dotenv import load_dotenv
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Set
 from enum import Enum
 
 from modules.module_messageQue import queue_message
+from modules.module_config_store import (
+    ConfigValidationError,
+    TypedConfig,
+    atomic_write_text,
+    load_typed_config,
+    validate_ini_file,
+)
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app_cms import TarsConfigManager
@@ -349,6 +357,12 @@ def load_config():
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     config = configparser.ConfigParser()
     config_path = os.path.join(base_dir, 'config.ini')
+    try:
+        typed_config = load_typed_config(config_path)
+    except ConfigValidationError as exc:
+        for error in exc.errors:
+            queue_message(f"CONFIG ERROR: {error}")
+        raise
     config.read(config_path)
 
     character_path = config.get("CHAR", "character_card_path")
@@ -409,23 +423,23 @@ def load_config():
             "openai_stt_delay": config.get('STT', 'openai_stt_delay', fallback='low'),
             "openai_stt_fallback": config.get('STT', 'openai_stt_fallback', fallback='sherpa-onnx'),
             "openai_stt_timeout": config.getfloat('STT', 'openai_stt_timeout', fallback=12.0),
-            "sherpa_onnx_denoise": config.get('STT', 'sherpa_onnx_denoise', fallback='False'),
-            "sherpa_onnx_punctuation": config.get('STT', 'sherpa_onnx_punctuation', fallback='False'),
+            "sherpa_onnx_denoise": typed_config.stt.sherpa_onnx_denoise,
+            "sherpa_onnx_punctuation": typed_config.stt.sherpa_onnx_punctuation,
             "wake_word": config['STT']['wake_word'],
             "wake_word_processor": config['STT']['wake_word_processor'],
             "atomik_mode": config.get('STT', 'atomik_mode', fallback='auto'),
-            "sensitivity": config['STT']['sensitivity'],
-            "vad_transcript_verify": config.get('STT', 'vad_transcript_verify', fallback='False'),
+            "sensitivity": typed_config.stt.sensitivity,
+            "vad_transcript_verify": typed_config.stt.vad_transcript_verify,
             "vad_presence_gate": config.get('STT', 'vad_presence_gate', fallback='off'),
             "vad_speaker_verify": config.get('STT', 'vad_speaker_verify', fallback='off'),
-            "vad_speaker_threshold": config.get('STT', 'vad_speaker_threshold', fallback='0.60'),
+            "vad_speaker_threshold": typed_config.stt.vad_speaker_threshold,
             "enable_bargein": config.getboolean('STT', 'enable_bargein', fallback=True),
             "bargein_mode": config.get('STT', 'bargein_mode', fallback='fuzzy'),
             "bargein_sensitivity": config.getint('STT', 'bargein_sensitivity', fallback=5),
             "vad_method": config['STT']['vad_method'],
             "speechdelay": int(config['STT']['speechdelay']),
-            "speaker_id_enabled": config.get('STT', 'speaker_id_enabled', fallback='False'),
-            "speaker_id_threshold": config.get('STT', 'speaker_id_threshold', fallback='0.75'),
+            "speaker_id_enabled": typed_config.stt.speaker_id_enabled,
+            "speaker_id_threshold": typed_config.stt.speaker_id_threshold,
             "mic_amp_gain": config.getfloat('STT', 'mic_amp_gain', fallback=10.0),
             "silence_margin": config.getfloat('STT', 'silence_margin', fallback=3.0),
         },
@@ -512,39 +526,9 @@ def load_config():
             "embedding_source": config.get('RAG', 'embedding_source', fallback='local'),
             "embedding_url": config.get('RAG', 'embedding_url', fallback=''),
         },
-        "SERVO": {
-            "arms_present": config.getboolean('SERVO', 'arms_present'),
-            "leftMainMin": config['SERVO']['leftMainMin'],
-            "leftForarmMin": config['SERVO']['leftForarmMin'],
-            "leftHandMin": config['SERVO']['leftHandMin'],
-            "leftMainMax": config['SERVO']['leftMainMax'],
-            "leftForarmMax": config['SERVO']['leftForarmMax'],
-            "leftHandMax": config['SERVO']['leftHandMax'],
-            "leftMainOffset": config['SERVO']['leftMainOffset'],
-            "leftForearmOffset": config['SERVO']['leftForearmOffset'],
-            "leftHandOffset": config['SERVO']['leftHandOffset'],
-            "rightMainMin": config['SERVO']['rightMainMin'],
-            "rightForarmMin": config['SERVO']['rightForarmMin'],
-            "rightHandMin": config['SERVO']['rightHandMin'],
-            "rightMainMax": config['SERVO']['rightMainMax'],
-            "rightForarmMax": config['SERVO']['rightForarmMax'],
-            "rightHandMax": config['SERVO']['rightHandMax'],
-            "rightMainOffset": config['SERVO']['rightMainOffset'],
-            "rightForearmOffset": config['SERVO']['rightForearmOffset'],
-            "rightHandOffset": config['SERVO']['rightHandOffset'],
-            "leftUpHeight": config['SERVO']['leftUpHeight'],
-            "leftDownHeight": config['SERVO']['leftDownHeight'],
-            "perfectLeftHeightOffset": config['SERVO']['perfectLeftHeightOffset'],
-            "rightUpHeight": config['SERVO']['rightUpHeight'],
-            "rightDownHeight": config['SERVO']['rightDownHeight'],
-            "perfectRightHeightOffset": config['SERVO']['perfectRightHeightOffset'],
-            "forwardLeftLeg": config['SERVO']['forwardLeftLeg'],
-            "backLeftLeg": config['SERVO']['backLeftLeg'],
-            "perfectLeftLegOffset": config['SERVO']['perfectLeftLegOffset'],
-            "forwardRightLeg": config['SERVO']['forwardRightLeg'],
-            "backRightLeg": config['SERVO']['backRightLeg'],
-            "perfectRightLegOffset": config['SERVO']['perfectRightLegOffset'],
-        },
+        # Keep the historical dictionary interface while sourcing every servo
+        # value from the validated, integer-valued configuration snapshot.
+        "SERVO": typed_config.servo.legacy_dict(),
         "ACCESS": {
             "webui_enabled": config.getboolean('ACCESS', 'webui_enabled', fallback=True),
             "webui_port": config.getint('ACCESS', 'webui_port', fallback=80),
@@ -579,9 +563,15 @@ def load_config():
         }
     }
 
+    config_dict["_typed"] = typed_config
     config_dict = apply_device_overrides(config_dict, capabilities)
     _config_cache = config_dict
     return config_dict
+
+
+def get_typed_config() -> TypedConfig:
+    """Return the immutable typed snapshot backing the compatibility dictionary."""
+    return load_config()["_typed"]
 
 
 def get_api_key(llm_backend: str) -> str:
@@ -642,8 +632,15 @@ def update_character_setting(trait: str, value: int):
         if 'PERSONA' not in persona_config:
             persona_config['PERSONA'] = {}
         persona_config['PERSONA'][trait] = str(value)
-        with open(persona_path, 'w') as f:
-            persona_config.write(f)
+        rendered = io.StringIO()
+        persona_config.write(rendered)
+        atomic_write_text(
+            persona_path,
+            rendered.getvalue(),
+            validator=validate_ini_file,
+            backup_path=os.path.join(os.path.dirname(persona_path), 'persona_backup.ini'),
+            keep_history=False,
+        )
         # Invalidate persona cache so next reload picks up the change
         _persona_cache = None
         _persona_mtime = 0.0

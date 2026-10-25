@@ -18,11 +18,12 @@ import asyncio
 import re
 import base64
 from collections import OrderedDict
-from io import BytesIO
+from io import BytesIO, StringIO
 
 from PIL import Image, UnidentifiedImageError
 
 import configparser
+from modules.module_config_store import atomic_write_text, validate_ini_file
 
 from flask import (
     Flask,
@@ -2174,8 +2175,14 @@ def save_character(name):
     if traits:
         p = configparser.ConfigParser()
         p['PERSONA'] = {k: str(int(v)) for k, v in traits.items()}
-        with open(persona_path, 'w', encoding='utf-8') as f:
-            p.write(f)
+        rendered_persona = StringIO()
+        p.write(rendered_persona)
+        atomic_write_text(
+            persona_path,
+            rendered_persona.getvalue(),
+            validator=validate_ini_file,
+            backup_path=os.path.join(char_dir, 'persona_backup.ini'),
+        )
 
     return jsonify({'success': True})
 

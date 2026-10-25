@@ -23,9 +23,11 @@ import board
 import busio
 from adafruit_pca9685 import PCA9685
 import os
+from pathlib import Path
 
 from modules.module_config import load_config
 import modules.module_config as module_config
+from modules.module_config_store import atomic_write_text, validate_typed_config_file
 import modules.module_servoctl as servoctl
 from modules.module_servoctl import *
 from modules.module_movement_registry import get_names, get_names_by_type, LEGS_ONLY, HAS_ARMS
@@ -212,8 +214,14 @@ def save_offset_to_config(offset_name, value):
                 lines.insert(j, f"{offset_name} = {value}\n")
                 break
 
-    with open(config_path, 'w') as f:
-        f.writelines(lines)
+    config_target = Path(config_path).resolve()
+    atomic_write_text(
+        config_target,
+        ''.join(lines),
+        validator=validate_typed_config_file,
+        backup_path=config_target.with_name('config.calibration-backup.ini'),
+        keep_history=True,
+    )
 
     module_config._config_cache = None
 

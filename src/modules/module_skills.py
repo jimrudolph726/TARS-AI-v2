@@ -39,6 +39,7 @@ import importlib
 import glob
 import configparser
 from modules.module_messageQue import queue_message
+from modules.module_config_store import atomic_update_text
 
 
 def _get_config_path():
@@ -174,21 +175,27 @@ class SkillManager:
         if not os.path.exists(config_path):
             return
         header = f'[{section_name}]'
-        with open(config_path, 'r') as config_file:
-            lines = config_file.readlines()
-        new_lines = []
-        skip = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped == header:
-                skip = True
-                continue
-            elif skip and stripped.startswith('[') and stripped.endswith(']'):
-                skip = False
-            if not skip:
-                new_lines.append(line)
-        with open(config_path, 'w') as f:
-            f.writelines(new_lines)
+
+        def remove_section(current_text):
+            new_lines = []
+            skip = False
+            for line in current_text.splitlines(keepends=True):
+                stripped = line.strip()
+                if stripped == header:
+                    skip = True
+                    continue
+                elif skip and stripped.startswith('[') and stripped.endswith(']'):
+                    skip = False
+                if not skip:
+                    new_lines.append(line)
+            return ''.join(new_lines)
+
+        atomic_update_text(
+            config_path,
+            remove_section,
+            backup_path=os.path.join(os.path.dirname(config_path), 'config_backup.ini'),
+            keep_history=True,
+        )
         queue_message(f"SKILLS: Removed legacy [{section_name}] section from config.ini")
 
     def _migrate_legacy_sections(self, config):
@@ -240,46 +247,49 @@ class SkillManager:
 
         section_header = f'[SKILL:{name}]'
         values = self._skill_config.get(name, {})
-        with open(config_path, 'r') as config_file:
-            lines = config_file.readlines()
-
-        # Remove ALL existing occurrences of this section (handles duplicates)
-        new_lines = []
-        skip = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped == section_header:
-                skip = True
-                continue
-            elif skip and stripped.startswith('[') and stripped.endswith(']'):
-                skip = False
-            if not skip:
-                new_lines.append(line)
-
-        # Only write the section if it has something to store
         is_disabled = name in self._disabled
         is_default_disabled = (
             self._skill_meta.get(name, {}).get("enabled_by_default", True) is False
         )
-        if not is_disabled and not values and not is_default_disabled:
-            with open(config_path, 'w') as f:
-                f.writelines(new_lines)
-            return
 
-        if new_lines and not new_lines[-1].endswith('\n'):
+        def replace_section(current_text):
+            lines = current_text.splitlines(keepends=True)
+            # Remove ALL existing occurrences of this section (handles duplicates).
+            new_lines = []
+            skip = False
+            for line in lines:
+                stripped = line.strip()
+                if stripped == section_header:
+                    skip = True
+                    continue
+                elif skip and stripped.startswith('[') and stripped.endswith(']'):
+                    skip = False
+                if not skip:
+                    new_lines.append(line)
+
+            # Only write the section if it has something to store.
+            if not is_disabled and not values and not is_default_disabled:
+                return ''.join(new_lines)
+
+            if new_lines and not new_lines[-1].endswith('\n'):
+                new_lines.append('\n')
+            new_lines.append(f'{section_header}\n')
+            if is_disabled:
+                new_lines.append('disabled = true\n')
+            elif is_default_disabled:
+                # Preserve an explicit user opt-in across restarts.
+                new_lines.append('disabled = false\n')
+            for field, value in sorted(values.items()):
+                new_lines.append(f'{field} = {value}\n')
             new_lines.append('\n')
-        new_lines.append(f'{section_header}\n')
-        if is_disabled:
-            new_lines.append('disabled = true\n')
-        elif is_default_disabled:
-            # Preserve an explicit user opt-in across restarts.
-            new_lines.append('disabled = false\n')
-        for field, value in sorted(values.items()):
-            new_lines.append(f'{field} = {value}\n')
-        new_lines.append('\n')
+            return ''.join(new_lines)
 
-        with open(config_path, 'w') as f:
-            f.writelines(new_lines)
+        atomic_update_text(
+            config_path,
+            replace_section,
+            backup_path=os.path.join(os.path.dirname(config_path), 'config_backup.ini'),
+            keep_history=True,
+        )
 
     def get_skill_config(self, name):
         """Get the resolved config dict for a skill (saved values merged over defaults).

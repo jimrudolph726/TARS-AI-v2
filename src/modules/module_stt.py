@@ -294,10 +294,10 @@ class STTManager:
             self._load_smart_turn()
 
         # Load optional sherpa-onnx denoiser
-        if self.config["STT"].get("sherpa_onnx_denoise", "False").lower() == "true":
+        if self.config["STT"].get("sherpa_onnx_denoise", False):
             self._load_sherpa_denoiser()
         # Load optional sherpa-onnx punctuation
-        if self.config["STT"].get("sherpa_onnx_punctuation", "False").lower() == "true":
+        if self.config["STT"].get("sherpa_onnx_punctuation", False):
             self._load_sherpa_punctuation()
 
     # === Start/Stop/Pause ===
@@ -1533,7 +1533,7 @@ class STTManager:
         # Transcript verify gate
         transcript_verify_fn = None
         stt_cfg = CONFIG.get('STT', {})
-        if stt_cfg.get('vad_transcript_verify', 'False').strip() == 'True':
+        if stt_cfg.get('vad_transcript_verify', False):
             transcript_verify_fn = self._build_transcript_verify_fn()
 
         RATE = self.MODEL_RATE
@@ -1607,7 +1607,7 @@ class STTManager:
         # Transcript verify gate
         transcript_verify_fn = None
         stt_cfg = CONFIG.get('STT', {})
-        if stt_cfg.get('vad_transcript_verify', 'False').strip() == 'True':
+        if stt_cfg.get('vad_transcript_verify', False):
             transcript_verify_fn = self._build_transcript_verify_fn()
 
         detector = WakeWordSystem(self.WAKE_WORD, self.MODEL_RATE, threshold, debug=self.DEBUG, mode=mode)
@@ -1633,7 +1633,7 @@ class STTManager:
         # Transcript verify gate
         transcript_verify_fn = None
         stt_cfg = CONFIG.get('STT', {})
-        if stt_cfg.get('vad_transcript_verify', 'False').strip() == 'True':
+        if stt_cfg.get('vad_transcript_verify', False):
             transcript_verify_fn = self._build_transcript_verify_fn()
 
         RATE = self.MODEL_RATE

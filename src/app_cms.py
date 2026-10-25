@@ -18,12 +18,15 @@ This license applies only to this file and does not override licenses of other f
 """
 
 import configparser
+import io
 import os
 import sys
 from typing import Dict, List, Tuple, Set
 from dataclasses import dataclass
 from enum import Enum
 import time
+
+from modules.module_config_store import atomic_write_text, validate_typed_config_file
 
 class ActionType(Enum):
     ADD_SECTION = "ADD_SECTION"
@@ -569,29 +572,37 @@ class TarsConfigManager:
         print(f"TARS: The cosmic dance of data alignment is finished, Cooper.")
 
     def write_config_file(self, sections: Dict[str, ConfigSection]):
-        """Write config file with complete comment preservation"""
-        with open(self.config_file, 'w', encoding='utf-8') as file:
-            for section_name, section in sections.items():
-                if section.description_comments:
-                    for comment in section.description_comments:
-                        file.write(f"# {comment}\n")
-                
-                if section.inline_comment:
-                    file.write(f"[{section_name}] # {section.inline_comment}\n")
+        """Validate and atomically write config with complete comment preservation."""
+        rendered = io.StringIO()
+        for section_name, section in sections.items():
+            if section.description_comments:
+                for comment in section.description_comments:
+                    rendered.write(f"# {comment}\n")
+
+            if section.inline_comment:
+                rendered.write(f"[{section_name}] # {section.inline_comment}\n")
+            else:
+                rendered.write(f"[{section_name}]\n")
+
+            for field_name, field in section.fields.items():
+                if field.description_comments:
+                    for comment in field.description_comments:
+                        rendered.write(f"# {comment}\n")
+
+                if field.inline_comment:
+                    rendered.write(f"{field.name} = {field.value} # {field.inline_comment}\n")
                 else:
-                    file.write(f"[{section_name}]\n")
-                
-                for field_name, field in section.fields.items():
-                    if field.description_comments:
-                        for comment in field.description_comments:
-                            file.write(f"# {comment}\n")
-                    
-                    if field.inline_comment:
-                        file.write(f"{field.name} = {field.value} # {field.inline_comment}\n")
-                    else:
-                        file.write(f"{field.name} = {field.value}\n")
-                
-                file.write("\n")
+                    rendered.write(f"{field.name} = {field.value}\n")
+
+            rendered.write("\n")
+
+        atomic_write_text(
+            self.config_file,
+            rendered.getvalue(),
+            validator=validate_typed_config_file,
+            backup_path=self.backup_file,
+            keep_history=True,
+        )
 
     def run(self):
         try:

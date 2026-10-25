@@ -95,7 +95,7 @@ class SpeakerIDManager:
         _speaker_id_instance = self
 
         self.config = config
-        self.enabled = config.get("STT", {}).get("speaker_id_enabled", "False").lower() == "true"
+        self.enabled = bool(config.get("STT", {}).get("speaker_id_enabled", False))
 
         # Speaker state
         self.current_speaker: Optional[str] = None

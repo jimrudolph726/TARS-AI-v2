@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import configparser
 import os
-import shutil
 import sys
 import threading
 import time
@@ -18,6 +17,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from modules.module_gait import body_swing_diagnostic_phases
+from modules.module_config_store import atomic_write_text, validate_typed_config_file
 
 
 def _parse_args() -> argparse.Namespace:
@@ -1133,10 +1133,13 @@ class ServoCalibrationController(QObject):
         if missing:
             raise KeyError("Missing [SERVO] settings: " + ", ".join(missing))
         backup = self._config_path.with_name("config.calibration-backup.ini")
-        shutil.copy2(self._config_path, backup)
-        temporary = self._config_path.with_suffix(self._config_path.suffix + ".tmp")
-        temporary.write_text("".join(lines), encoding="utf-8", newline="")
-        temporary.replace(self._config_path)
+        atomic_write_text(
+            self._config_path,
+            "".join(lines),
+            validator=validate_typed_config_file,
+            backup_path=backup,
+            keep_history=True,
+        )
 
     @Slot()
     def saveCalibration(self) -> None:

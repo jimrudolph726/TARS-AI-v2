@@ -373,7 +373,7 @@ class TarsRuntime(threading.Thread):
     def _start_speaker_identity(self) -> None:
         from modules.module_messageQue import queue_message
 
-        if self.config["STT"].get("speaker_id_enabled", "False").lower() == "true":
+        if self.config["STT"].get("speaker_id_enabled", False):
             try:
                 from modules.module_speaker_id import SpeakerIDManager
 

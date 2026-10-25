@@ -1,0 +1,48 @@
+TARS V2 TYPED CONFIGURATION AND ATOMIC SAVES
+================================================
+
+The user-facing configuration remains src/config.ini. API keys remain in
+src/.env and are not copied into configuration snapshots or backups.
+
+STARTUP
+-------
+modules/module_config_store.py parses config.ini into an immutable TypedConfig
+snapshot before module_config.py builds its backwards-compatible dictionary.
+Invalid booleans, numbers, ranges, rotations, timeout relationships, JSON
+response lists, and unsafe servo endpoints are reported as CONFIG ERROR lines.
+
+Servo validation checks the final PWM target after each saved offset is
+applied. The accepted PCA9685 pulse range is 10 through 600. Invalid
+configuration stops startup before hardware movement begins.
+
+SAVING
+------
+All config.ini writers use the same save sequence:
+
+1. Acquire a per-file thread and process lock.
+2. Build the complete replacement in memory.
+3. Write and fsync a temporary in the same directory.
+4. Parse and validate the completed temporary.
+5. Save config_backup.ini and a bounded history in config_backups/.
+6. Atomically replace config.ini with os.replace().
+
+If writing or validation fails, the original config.ini is not replaced.
+The history directory retains the ten newest copies and is ignored by Git.
+
+WRITERS USING THIS PATH
+-----------------------
+- WebUI and TARS Configuration Manager
+- PySide6/QML servo tester
+- Legacy Pygame servo tester
+- Skill enable/disable and skill setting persistence
+- Personality trait updates from the main application and WebUI
+
+TESTING
+-------
+Run all tests from the repository root:
+
+  source src/.venv/bin/activate
+  PYTHONPATH=src:tests python -m unittest discover -s tests -v
+
+tests/test_config_store.py covers typed parsing, aggregate validation errors,
+unsafe servo offsets, failed-write rollback, backups, and concurrent updates.

@@ -154,6 +154,9 @@ vision/
 config.ini
 config_backup.ini
 config.calibration-backup.ini
+config.ini.lock
+persona.ini.lock
+config_backups/
 config-server.ini
 src/models/
 src/logs/

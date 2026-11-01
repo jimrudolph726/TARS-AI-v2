@@ -154,6 +154,113 @@ class ServoFakeHardwareTests(unittest.TestCase):
         self.assertNotEqual(controller.channels[0].duty_cycle, 0)
         self.assertIn((0, target), self.raw_pwm_writes)
 
+    def test_new_trajectory_reengages_saved_position_before_changing_target(self):
+        self._initialize()
+        channel = 0
+        start = servoctl.servo_positions[channel]
+        target = start + 40
+        servoctl._channels_initialized.clear()
+        self.raw_pwm_writes.clear()
+
+        servoctl.move_servos_timed([(channel, target)], duration=0.10)
+
+        channel_writes = [
+            pulse for written_channel, pulse in self.raw_pwm_writes
+            if written_channel == channel
+        ]
+        self.assertGreater(len(channel_writes), 1)
+        self.assertEqual(start, channel_writes[0])
+        self.assertEqual(target, channel_writes[-1])
+        self.assertTrue(
+            any(
+                timeout == servoctl.SERVO_REENGAGE_SETTLE_SECONDS
+                for timeout in servoctl._movement_stop_event.wait_timeouts
+            )
+        )
+
+    def test_legacy_mover_batches_tick_progress_at_safe_command_rate(self):
+        self._initialize()
+        channel = 0
+        start = servoctl.servo_positions[channel]
+        target = start + 100
+        servoctl._channels_initialized.clear()
+        self.raw_pwm_writes.clear()
+
+        servoctl.move_servos_original(
+            [(channel, target)],
+            speed_factor=1.0,
+            easing_strength=0.0,
+        )
+
+        channel_writes = [
+            pulse for written_channel, pulse in self.raw_pwm_writes
+            if written_channel == channel
+        ]
+        # The previous zero-delay loop emitted all 100 intermediate values.
+        # At 50 Hz with a 300 tick/s ceiling this transition needs 17 frames,
+        # plus its initial re-engagement write.
+        self.assertLessEqual(len(channel_writes), 18)
+        self.assertEqual(start, channel_writes[0])
+        self.assertEqual(target, channel_writes[-1])
+        self.assertLessEqual(
+            max(abs(second - first) for first, second in zip(channel_writes, channel_writes[1:])),
+            6,
+        )
+
+    def test_frequency_reset_is_detected_before_target_write_and_recovers(self):
+        failed_controller = self._initialize()
+        channel = 0
+        target = servoctl.servo_positions[channel] + 10
+        target_duty = servoctl.pulse_to_duty_cycle(target)
+
+        # A real PCA9685 returns to its power-on prescale after a brownout. It
+        # can still answer I2C, but servo pulse widths are no longer valid.
+        failed_controller.frequency = 200
+        self.assertFalse(servoctl.set_servo_pwm(channel, target))
+
+        self.assertIsNone(servoctl.pca)
+        self.assertTrue(failed_controller.deinitialized)
+        self.assertTrue(self.backend.all_outputs_disabled(failed_controller))
+        self.assertNotIn(
+            (failed_controller, channel, target_duty),
+            self.backend.successful_writes,
+        )
+        self.assertTrue(any("frequency changed" in message for message in MESSAGES))
+
+        self.assertTrue(servoctl.ensure_servo_hardware())
+        self.assertEqual(50, servoctl.pca.frequency)
+        self.assertTrue(servoctl.set_servo_pwm(channel, target))
+
+    def test_mid_movement_frequency_reset_aborts_and_next_command_recovers(self):
+        failed_controller = self._initialize()
+        channel = 0
+        target = servoctl.servo_positions[channel] + 50
+        changed = threading.Event()
+
+        def reset_prescaler_after_first_motion(controller, written_channel, duty):
+            if written_channel == channel and duty and not changed.is_set():
+                changed.set()
+                controller.frequency = 200
+
+        self.backend.write_hook = reset_prescaler_after_first_motion
+
+        def faulting_movement():
+            servoctl.move_servos_timed([(channel, target)], duration=0.20)
+
+        wrapped = servoctl.movement_command(faulting_movement)
+        self.assertFalse(wrapped())
+        self.assertTrue(changed.is_set())
+        self.assertTrue(failed_controller.deinitialized)
+        self.assertIsNotNone(servoctl.pca)
+        self.assertIsNot(failed_controller, servoctl.pca)
+        self.assertEqual(50, servoctl.pca.frequency)
+
+        self.backend.write_hook = None
+        self.assertTrue(servoctl.execute_registered_movement("neutral_legs"))
+        status = servoctl.get_movement_status()
+        self.assertTrue(status["ready"])
+        self.assertFalse(status["emergency_stop"])
+
     def test_offsets_map_to_the_correct_endpoint_directions(self):
         self._initialize()
 

@@ -7,19 +7,51 @@ from collections.abc import Callable
 from contextlib import nullcontext
 
 
+class UnsafeControllerFrequency(RuntimeError):
+    """Raised when a PCA9685 responds but is no longer generating 50 Hz PWM."""
+
+
 def describe_hardware_error(exc: Exception) -> str:
     if isinstance(exc, OSError) and getattr(exc, "errno", None) == 121:
         return "I2C remote I/O error; check PCA9685 power, ground, SDA, and SCL wiring"
     return str(exc)
 
 
-def probe_controller(controller, io_lock=None, probe_channel: int = 15) -> tuple[bool, Exception | None]:
+def controller_frequency(
+    controller,
+    expected_frequency: float,
+    tolerance: float,
+) -> float:
+    """Read and validate the PCA9685 frequency after a possible power reset."""
+    actual = float(controller.frequency)
+    if abs(actual - float(expected_frequency)) > float(tolerance):
+        raise UnsafeControllerFrequency(
+            f"PCA9685 PWM frequency changed to {actual:.2f} Hz; "
+            f"expected {float(expected_frequency):.2f} Hz"
+        )
+    return actual
+
+
+def probe_controller(
+    controller,
+    io_lock=None,
+    probe_channel: int = 15,
+    *,
+    expected_frequency: float | None = None,
+    frequency_tolerance: float = 2.0,
+) -> tuple[bool, Exception | None]:
     if controller is None:
         return False, None
     try:
         context = io_lock if io_lock is not None else nullcontext()
         with context:
             controller.channels[probe_channel].duty_cycle = 0
+            if expected_frequency is not None:
+                controller_frequency(
+                    controller,
+                    expected_frequency,
+                    frequency_tolerance,
+                )
         return True, None
     except Exception as exc:
         return False, exc

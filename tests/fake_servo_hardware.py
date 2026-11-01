@@ -59,6 +59,7 @@ class FakeStopEvent:
         self._set = False
         self._lock = threading.Lock()
         self.wait_calls = 0
+        self.wait_timeouts = []
         self.cancel_after_waits = None
 
     def set(self):
@@ -69,15 +70,16 @@ class FakeStopEvent:
         with self._lock:
             self._set = False
             self.wait_calls = 0
+            self.wait_timeouts = []
 
     def is_set(self):
         with self._lock:
             return self._set
 
     def wait(self, timeout=None):
-        del timeout
         with self._lock:
             self.wait_calls += 1
+            self.wait_timeouts.append(timeout)
             if (
                 self.cancel_after_waits is not None
                 and self.wait_calls >= self.cancel_after_waits

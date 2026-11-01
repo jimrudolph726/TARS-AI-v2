@@ -133,3 +133,32 @@ permanently failing channel, watchdog progress stalls, watchdog total-runtime
 limits, automatic recovery after a healthy watchdog stop, retry after a
 transient failed health check, preservation of manual emergency overrides,
 direct-session lock release, and typed watchdog configuration bounds.
+
+RAPID-MOTION AND PCA9685 RESET PROTECTION
+-----------------------------------------
+The original forward-step interpolator previously issued one I2C command for
+every single PWM tick. At speed 1.0 that loop had no delay, so a long leg phase
+could send hundreds of target changes much faster than the 50 Hz servo signal
+could physically represent. The original gait poses and arrival order are
+preserved, but tick progress is now batched into one update per servo per 50 Hz
+frame with a maximum 300 PWM ticks per second.
+
+Because named movements finish torque-free, participating joints now
+re-engage at their last known safe positions with a short stagger and settle
+interval before beginning a new trajectory. Values outside a newly changed
+calibration envelope are never re-energized; they retain the existing
+monotonic recovery path back into range.
+
+A PCA9685 power dip can reset its prescaler while the chip continues answering
+I2C. Valid duty-cycle values then produce invalid servo pulse widths and may
+look like rapid or spastic movement. Every non-zero servo write now verifies
+the live PWM frequency remains within 2 Hz of 50 Hz. A mismatch cuts all PWM,
+discards the stale controller object, aborts the current routine, and safely
+reinitializes the controller for the next command. A failed controller is also
+best-effort disabled before deinitialization; closing the Python object alone
+is not treated as torque release.
+
+Fake-hardware tests inject both a pre-command frequency reset and a reset in
+the middle of a movement. They verify the unsafe target is not written, all
+outputs are released, the failed controller is discarded, and a later movement
+works through a newly initialized 50 Hz controller.

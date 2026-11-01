@@ -17,6 +17,9 @@ The fake backend records every channel write and can inject probe or PWM
 failures. The suite verifies controller retry/recovery, calibrated endpoint
 mapping, safe pulse bounds, startup/shutdown behavior, calibration handoff,
 movement serialization, cancellation, and both original forward-step profiles.
+They also inject PCA9685 frequency resets before and during movement, verify
+the legacy stepper cannot flood commands above its 50 Hz cadence, and confirm
+that torque-free joints re-engage and settle before following a new target.
 
 The LLM transport tests use fake HTTP sessions and never contact an AI service.
 They verify network deadlines, bounded retries, permanent-error handling,

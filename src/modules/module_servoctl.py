@@ -38,7 +38,9 @@ from modules.module_servo_math import (
     validate_write,
 )
 from modules.module_servo_hardware import (
+    UnsafeControllerFrequency,
     close_quietly,
+    controller_frequency,
     describe_hardware_error,
     disable_controller_outputs as _hardware_disable_outputs,
     probe_controller,
@@ -57,6 +59,10 @@ global_easing_strength = 0.6
 SERVO_UPDATE_HZ = 50.0
 SERVO_MIN_PULSE = 10
 SERVO_MAX_PULSE = 600
+SERVO_FREQUENCY_TOLERANCE_HZ = 2.0
+SERVO_MAX_SLEW_TICKS_PER_SECOND = 300.0
+SERVO_REENGAGE_STAGGER_SECONDS = 0.012
+SERVO_REENGAGE_SETTLE_SECONDS = 0.14
 
 _movement_stop_event = threading.Event()
 _emergency_stop_event = threading.Event()
@@ -629,7 +635,13 @@ def _describe_hardware_error(exc):
 
 def _probe_controller(controller):
     """Verify that the cached PCA9685 still answers without moving a servo."""
-    healthy, exc = probe_controller(controller, _pwm_io_lock, PCA_PROBE_CHANNEL)
+    healthy, exc = probe_controller(
+        controller,
+        _pwm_io_lock,
+        PCA_PROBE_CHANNEL,
+        expected_frequency=SERVO_UPDATE_HZ,
+        frequency_tolerance=SERVO_FREQUENCY_TOLERANCE_HZ,
+    )
     if not healthy and exc is not None:
         queue_message(f"WARNING: PCA9685 health probe failed: {_describe_hardware_error(exc)}")
     return healthy
@@ -642,6 +654,19 @@ def _discard_controller(reason=None):
     with _hardware_lifecycle_lock:
         controller = pca
         i2c_bus = _i2c
+        # A controller can still be producing its last PWM values even when a
+        # health/frequency probe fails. Best-effort zero every channel before
+        # closing the Python objects; deinit alone does not guarantee torque
+        # release on the physical PCA9685.
+        if controller is not None:
+            failed_channels = _disable_controller_outputs(controller)
+            if failed_channels:
+                queue_message(
+                    "CRITICAL: Controller reset could not confirm PWM release "
+                    "on channel(s) "
+                    f"{', '.join(map(str, failed_channels))}; use the physical "
+                    "servo-power switch"
+                )
         pca = None
         _i2c = None
         _channels_initialized.clear()
@@ -1021,6 +1046,17 @@ def _write_servo_pwm_unlocked(channel, pwm_value):
             with _pwm_io_lock:
                 if _emergency_stop_event.is_set():
                     return False
+                # A servo-power dip can reset the PCA9685 prescaler while the
+                # chip continues answering I2C. The same duty-cycle value at
+                # its reset frequency produces a radically different pulse,
+                # which presents as rapid, uncontrolled motion. Refuse every
+                # non-zero write unless the live prescaler still represents
+                # the configured 50 Hz servo signal.
+                controller_frequency(
+                    controller,
+                    SERVO_UPDATE_HZ,
+                    SERVO_FREQUENCY_TOLERANCE_HZ,
+                )
                 controller.channels[channel].duty_cycle = duty_cycle
             _channels_initialized.add(channel)
             _confirm_servo_write()
@@ -1028,6 +1064,8 @@ def _write_servo_pwm_unlocked(channel, pwm_value):
 
         except Exception as exc:
             last_error = exc
+            if isinstance(exc, UnsafeControllerFrequency):
+                break
             if attempt < MAX_RETRIES - 1:
                 time.sleep(0.05 * (attempt + 1))
 
@@ -1054,6 +1092,42 @@ def _write_servo_pwm_unlocked(channel, pwm_value):
         if pca is controller:
             _discard_controller(f"PWM write failure on channel {channel}")
     return False
+
+
+def _reengage_uninitialized_channels(channel_positions):
+    """Restore torque at last known safe positions before a new trajectory.
+
+    PWM is intentionally released after each named movement. A servo may move
+    slightly while torque-free, so immediately beginning the next trajectory
+    can make several joints chase stale positions at once. Re-engage only the
+    participating channels, stagger their writes, and provide one short settle
+    interval before changing targets.
+    """
+    reengaged = 0
+    seen = set()
+    for channel, value in channel_positions:
+        if channel in seen or channel in _channels_initialized:
+            continue
+        seen.add(channel)
+        bounds = get_servo_channel_bounds(channel)
+        if bounds is None or not bounds[0] <= int(value) <= bounds[1]:
+            # Do not energize an obsolete saved value outside a newly changed
+            # calibration envelope. The normal interpolator may only walk it
+            # monotonically back into range.
+            continue
+        if _movement_stop_event.is_set():
+            raise MovementCancelled()
+        if not set_servo_pwm(channel, int(value)):
+            raise RuntimeError(f"Unable to safely re-engage servo channel {channel}")
+        reengaged += 1
+        if SERVO_REENGAGE_STAGGER_SECONDS > 0:
+            if _movement_stop_event.wait(SERVO_REENGAGE_STAGGER_SECONDS):
+                raise MovementCancelled()
+
+    if reengaged and SERVO_REENGAGE_SETTLE_SECONDS > 0:
+        if _movement_stop_event.wait(SERVO_REENGAGE_SETTLE_SECONDS):
+            raise MovementCancelled()
+    return reengaged
 
 
 def _write_validated_servo_pwm(channel, pwm_value):
@@ -1469,6 +1543,7 @@ def move_servos_timed(movements, duration, easing_strength=None):
 
     servo_data = []
     hold_channels = []
+    starting_positions = []
 
     for channel, target_value in movements:
         if target_value is None:
@@ -1491,6 +1566,8 @@ def move_servos_timed(movements, duration, easing_strength=None):
             }
             current_value = neutral_positions.get(channel, 300)
             servo_positions[channel] = current_value
+
+        starting_positions.append((channel, int(current_value)))
 
         if target_value == -1:
             hold_channels.append((channel, current_value))
@@ -1516,6 +1593,8 @@ def move_servos_timed(movements, duration, easing_strength=None):
             'last': int(current_value),
             'target': target_value,
         })
+
+    _reengage_uninitialized_channels(starting_positions)
 
     for channel, value in hold_channels:
         if not set_servo_pwm(channel, value):
@@ -1590,7 +1669,7 @@ def move_servos_original(movements, speed_factor, easing_strength=None):
 
     servo_data = []
     hold_channels = []
-    has_uninitialized_channel = False
+    starting_positions = []
     neutral_positions = {
         0: leftNeutralHeight,
         1: rightNeutralHeight,
@@ -1612,8 +1691,7 @@ def move_servos_original(movements, speed_factor, easing_strength=None):
 
         current_value = int(servo_positions.get(channel, neutral_positions.get(channel, 300)))
         servo_positions[channel] = current_value
-        if channel not in _channels_initialized:
-            has_uninitialized_channel = True
+        starting_positions.append((channel, current_value))
 
         if target_value == -1:
             hold_channels.append((channel, current_value))
@@ -1632,12 +1710,15 @@ def move_servos_original(movements, speed_factor, easing_strength=None):
 
         servo_data.append({
             "channel": channel,
+            "start": current_value,
             "current": current_value,
             "target": target_value,
             "step": 1 if target_value > current_value else -1,
             "distance": abs(target_value - current_value),
             "steps_taken": 0,
         })
+
+    _reengage_uninitialized_channels(starting_positions)
 
     for channel, value in hold_channels:
         if not set_servo_pwm(channel, value):
@@ -1653,37 +1734,39 @@ def move_servos_original(movements, speed_factor, easing_strength=None):
         pass
 
     max_distance = max(item["distance"] for item in servo_data)
-    effective_speed = min(float(speed_factor), 0.3) if has_uninitialized_channel else float(speed_factor)
+    effective_speed = float(speed_factor)
     effective_speed = max(0.0, min(1.0, effective_speed))
-    base_delay = 0.02 * (1.0 - effective_speed)
+    requested_delay = 0.02 * (1.0 - effective_speed)
+    minimum_tick_delay = 1.0 / SERVO_MAX_SLEW_TICKS_PER_SECOND
+    effective_tick_delay = max(requested_delay, minimum_tick_delay)
+    duration = max(1.0 / SERVO_UPDATE_HZ, max_distance * effective_tick_delay)
+    frame_count = max(1, int(math.ceil(duration * SERVO_UPDATE_HZ)))
+    frame_period = duration / frame_count
+    started_at = time.monotonic()
 
-    while any(item["current"] != item["target"] for item in servo_data):
+    # The legacy algorithm used one I2C write for every PWM tick. At speed 1
+    # that loop had no delay at all, so a long leg phase could flood hundreds
+    # of target changes into a 50 Hz servo signal. Preserve its endpoints and
+    # "short joints arrive first" behavior, but batch tick progress into at
+    # most one command per servo per 50 Hz frame.
+    for frame in range(1, frame_count + 1):
         if _movement_stop_event.is_set():
             raise MovementCancelled()
 
+        progress = eased_progress(frame / frame_count, effective_easing)
+        global_ticks = min(max_distance, int(round(max_distance * progress)))
         for item in servo_data:
-            if item["current"] == item["target"]:
+            ticks = min(item["distance"], global_ticks)
+            value = item["start"] + item["step"] * ticks
+            if value == item["current"]:
                 continue
-            item["current"] += item["step"]
-            if not set_servo_pwm(item["channel"], item["current"]):
+            if not set_servo_pwm(item["channel"], value):
                 raise RuntimeError(f"Servo write failed on channel {item['channel']}")
-            item["steps_taken"] += 1
+            item["current"] = value
+            item["steps_taken"] = ticks
 
-        progress = (
-            min(item["steps_taken"] for item in servo_data) / max_distance
-            if max_distance > 0 else 1.0
-        )
-        if effective_easing > 0:
-            if progress < 0.5:
-                eased = 2 * progress * progress
-            else:
-                eased = 1 - 2 * (1 - progress) * (1 - progress)
-            delay_multiplier = 1.0 + effective_easing * (1.0 - 4 * (eased - 0.5) ** 2)
-        else:
-            delay_multiplier = 1.0
-
-        delay = base_delay * delay_multiplier
-        if delay > 0 and _movement_stop_event.wait(delay):
+        remaining = started_at + frame * frame_period - time.monotonic()
+        if remaining > 0 and _movement_stop_event.wait(remaining):
             raise MovementCancelled()
 
     for item in servo_data:

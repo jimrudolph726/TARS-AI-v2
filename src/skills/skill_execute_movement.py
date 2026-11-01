@@ -158,9 +158,17 @@ def _execute_movement(movements):
                     )
                     first_action_finished.set()
                 if result is False:
+                    status = servoctl.get_movement_status()
+                    detail = (
+                        status.get("last_error")
+                        or status.get("watchdog_last_reason")
+                        or "unknown servo-control failure"
+                    )
                     report_failure(
-                        f"Movement '{movement_name}' did not start or complete; check the "
-                        "PCA9685 status and movement lock"
+                        f"Movement '{movement_name}' did not start or complete: {detail}. "
+                        f"controller_connected={status.get('controller_connected')}, "
+                        f"emergency_stop={status.get('emergency_stop')}, "
+                        f"emergency_source={status.get('emergency_source')}"
                     )
                     break
         except Exception as error:

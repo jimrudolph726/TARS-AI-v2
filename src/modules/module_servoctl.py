@@ -80,8 +80,12 @@ _movement_consecutive_failures = 0
 _controlled_stop_reason = None
 _emergency_stop_reason = None
 _emergency_stop_at = None
+_emergency_stop_source = None
 _active_watchdog = None
 _watchdog_trip_count = 0
+_watchdog_last_reason = None
+_watchdog_last_at = None
+_watchdog_recovery_count = 0
 
 
 class MovementCancelled(RuntimeError):
@@ -127,19 +131,23 @@ def emergency_power_off(reason="Emergency power-off requested", source="manual")
     rear power switch remains the final authority if I2C itself is unavailable.
     """
     global _channels_initialized, _emergency_stop_reason, _emergency_stop_at
+    global _emergency_stop_source
 
     reason = str(reason or "Emergency power-off requested")
+    source = str(source or "manual")
     with _emergency_state_lock:
         first_trip = not _emergency_stop_event.is_set()
+        previous_source = _emergency_stop_source
         _emergency_stop_reason = reason
         _emergency_stop_at = time.time()
+        _emergency_stop_source = source
         _emergency_stop_event.set()
         _movement_stop_event.set()
 
     controller = pca
     failed_channels = _disable_controller_outputs(controller)
     _channels_initialized.intersection_update(failed_channels)
-    if first_trip:
+    if first_trip or previous_source != source:
         queue_message(
             f"EMERGENCY: Servo PWM power-off latched by {source}: {reason}"
         )
@@ -152,9 +160,20 @@ def emergency_power_off(reason="Emergency power-off requested", source="manual")
     return not failed_channels
 
 
-def reset_emergency_stop():
+def reset_emergency_stop(expected_source=None):
     """Clear the emergency latch without energizing or moving a servo."""
-    global _emergency_stop_reason, _emergency_stop_at, _controlled_stop_reason
+    global _emergency_stop_reason, _emergency_stop_at, _emergency_stop_source
+    global _controlled_stop_reason
+
+    with _emergency_state_lock:
+        if (
+            expected_source is not None
+            and _emergency_stop_source != str(expected_source)
+        ):
+            queue_message(
+                "WARNING: Emergency reset refused because the latch source changed"
+            )
+            return False
 
     if MOVING:
         queue_message("ERROR: Emergency stop cannot be reset while movement is active")
@@ -168,10 +187,19 @@ def reset_emergency_stop():
             return False
 
     with _emergency_state_lock:
+        if (
+            expected_source is not None
+            and _emergency_stop_source != str(expected_source)
+        ):
+            queue_message(
+                "WARNING: Emergency reset cancelled because the latch source changed"
+            )
+            return False
         _emergency_stop_event.clear()
         _movement_stop_event.clear()
         _emergency_stop_reason = None
         _emergency_stop_at = None
+        _emergency_stop_source = None
         _controlled_stop_reason = None
     queue_message("SERVO: Emergency power-off latch reset; outputs remain disabled")
     return True
@@ -185,7 +213,7 @@ def _mark_movement_progress():
 
 
 def _movement_watchdog_worker(state):
-    global _watchdog_trip_count
+    global _watchdog_trip_count, _watchdog_last_reason, _watchdog_last_at
 
     while not state["done"].wait(WATCHDOG_CHECK_INTERVAL):
         with _watchdog_state_lock:
@@ -222,6 +250,8 @@ def _movement_watchdog_worker(state):
             state["tripped"] = True
             state["reason"] = reason
             _watchdog_trip_count += 1
+            _watchdog_last_reason = reason
+            _watchdog_last_at = time.time()
         emergency_power_off(reason, source="movement watchdog")
         return
 
@@ -263,6 +293,49 @@ def _finish_movement_watchdog(state):
             _active_watchdog = None
 
 
+def _recover_after_watchdog_stop(state):
+    """Recover a healthy controller after a watchdog-triggered PWM release.
+
+    A watchdog must cut PWM immediately, but its internally generated latch
+    must not permanently disable all later voice commands.  Recovery happens
+    only after the movement function has unwound, all PWM outputs are released,
+    and the controller answers a health probe.  A manual/WebUI emergency latch
+    is never cleared here.
+    """
+    if not state or not state.get("tripped"):
+        return False
+    return _recover_watchdog_latch()
+
+
+def _recover_watchdog_latch():
+    """Retry a watchdog-only latch without weakening manual emergency-off."""
+    global _watchdog_recovery_count
+
+    with _emergency_state_lock:
+        if _emergency_stop_source != "movement watchdog":
+            return False
+
+    if pca is None and not initialize_pca9685(retries=1):
+        queue_message(
+            "CRITICAL: Watchdog released PWM but controller recovery failed; "
+            "movement remains latched offline"
+        )
+        return False
+    if not reset_emergency_stop(expected_source="movement watchdog"):
+        queue_message(
+            "CRITICAL: Watchdog released PWM but its safety latch could not "
+            "be reset; movement remains offline"
+        )
+        return False
+
+    _watchdog_recovery_count += 1
+    queue_message(
+        "SERVO: Watchdog stop completed; controller health verified and "
+        "future movement commands are enabled"
+    )
+    return True
+
+
 def set_movement_confirmation_event(event):
     """Register a per-thread event set after the first successful PWM write."""
     _movement_thread_state.confirmation_event = event
@@ -294,6 +367,12 @@ def movement_command(function):
 
         watchdog_state = None
 
+        if (
+            _emergency_stop_event.is_set()
+            and _emergency_stop_source == "movement watchdog"
+            and not MOVING
+        ):
+            _recover_watchdog_latch()
         if _emergency_stop_event.is_set():
             message = _emergency_stop_reason or "Emergency power-off is latched"
             _record_movement_failure(function.__name__, message)
@@ -410,6 +489,7 @@ def movement_command(function):
             return False
         finally:
             _finish_movement_watchdog(watchdog_state)
+            _recover_after_watchdog_stop(watchdog_state)
             _movement_finished_at = time.monotonic()
             _movement_command_lock.release()
     return wrapped
@@ -475,7 +555,11 @@ def get_movement_status(probe=False):
             "emergency_stop": _emergency_stop_event.is_set(),
             "emergency_reason": _emergency_stop_reason,
             "emergency_at": _emergency_stop_at,
+            "emergency_source": _emergency_stop_source,
             "watchdog": watchdog_status,
+            "watchdog_last_reason": _watchdog_last_reason,
+            "watchdog_last_at": _watchdog_last_at,
+            "watchdog_recovery_count": _watchdog_recovery_count,
             "energized_channels": sorted(_channels_initialized),
             "last_movement": _movement_last_name,
             "last_error": _movement_last_error,
@@ -1349,6 +1433,12 @@ def begin_direct_servo_session(name):
     """Begin a manually scoped direct-servo command on the current thread."""
     global MOVING
 
+    if (
+        _emergency_stop_event.is_set()
+        and _emergency_stop_source == "movement watchdog"
+        and not MOVING
+    ):
+        _recover_watchdog_latch()
     if _emergency_stop_event.is_set():
         _record_movement_failure(
             name, _emergency_stop_reason or "Emergency power-off is latched"
@@ -1424,9 +1514,9 @@ def end_direct_servo_session(name, success=True, error=None):
                 initialize_pca9685(retries=1)
         return bool(success and not _emergency_stop_event.is_set())
     finally:
-        _finish_movement_watchdog(
-            getattr(_movement_thread_state, "direct_watchdog", None)
-        )
+        watchdog_state = getattr(_movement_thread_state, "direct_watchdog", None)
+        _finish_movement_watchdog(watchdog_state)
+        _recover_after_watchdog_stop(watchdog_state)
         if hasattr(_movement_thread_state, "direct_watchdog"):
             del _movement_thread_state.direct_watchdog
         del _movement_thread_state.direct_session_name

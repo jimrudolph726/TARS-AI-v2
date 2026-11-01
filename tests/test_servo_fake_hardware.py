@@ -68,8 +68,12 @@ class ServoFakeHardwareTests(unittest.TestCase):
         servoctl._controlled_stop_reason = None
         servoctl._emergency_stop_reason = None
         servoctl._emergency_stop_at = None
+        servoctl._emergency_stop_source = None
         servoctl._active_watchdog = None
         servoctl._watchdog_trip_count = 0
+        servoctl._watchdog_last_reason = None
+        servoctl._watchdog_last_at = None
+        servoctl._watchdog_recovery_count = 0
         servoctl.MOVING = False
         servoctl.battery_module = None
         servoctl._on_movement_start = None
@@ -574,11 +578,19 @@ class ServoFakeHardwareTests(unittest.TestCase):
 
         self.assertFalse(worker.is_alive())
         self.assertEqual(result, [False])
-        self.assertTrue(servoctl.emergency_stop_active())
+        self.assertFalse(servoctl.emergency_stop_active())
         self.assertTrue(self.backend.all_outputs_disabled(controller))
         status = servoctl.get_movement_status()
         self.assertEqual(status["watchdog"]["trip_count"], 1)
-        self.assertIn("no PWM progress", status["emergency_reason"])
+        self.assertEqual(status["watchdog_recovery_count"], 1)
+        self.assertIn("no PWM progress", status["watchdog_last_reason"])
+
+        @servoctl.movement_command
+        def next_pose():
+            self.assertTrue(servoctl.set_servo_pwm(7, servoctl.rightMainMin))
+            servoctl.disable_all_servos()
+
+        self.assertTrue(next_pose())
 
     def test_watchdog_enforces_total_runtime_even_with_pwm_progress(self):
         controller = self._initialize()
@@ -605,9 +617,126 @@ class ServoFakeHardwareTests(unittest.TestCase):
 
         self.assertFalse(worker.is_alive())
         self.assertEqual(result, [False])
-        self.assertTrue(servoctl.emergency_stop_active())
+        self.assertFalse(servoctl.emergency_stop_active())
         self.assertTrue(self.backend.all_outputs_disabled(controller))
-        self.assertIn("exceeded", servoctl.get_movement_status()["emergency_reason"])
+        status = servoctl.get_movement_status()
+        self.assertIn("exceeded", status["watchdog_last_reason"])
+        self.assertEqual(status["watchdog_recovery_count"], 1)
+
+    def test_direct_session_watchdog_releases_lock_and_recovers(self):
+        controller = self._initialize()
+        servoctl._movement_stop_event = threading.Event()
+        servoctl.MOVEMENT_WATCHDOG_TIMEOUT = 1.0
+        servoctl.MOVEMENT_STALL_TIMEOUT = 0.03
+
+        self.assertTrue(servoctl.begin_direct_servo_session("stalled_direct"))
+        self.assertTrue(servoctl.set_servo_pwm(7, servoctl.rightMainMax))
+
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline and not servoctl.emergency_stop_active():
+            time.sleep(0.005)
+        self.assertTrue(servoctl.emergency_stop_active())
+
+        self.assertFalse(
+            servoctl.end_direct_servo_session("stalled_direct", success=True)
+        )
+        self.assertFalse(servoctl.emergency_stop_active())
+        self.assertFalse(servoctl.MOVING)
+        self.assertTrue(self.backend.all_outputs_disabled(controller))
+        self.assertTrue(servoctl._movement_command_lock.acquire(blocking=False))
+        servoctl._movement_command_lock.release()
+
+    def test_manual_emergency_is_never_cleared_by_watchdog_recovery(self):
+        controller = self._initialize()
+        servoctl._movement_stop_event = threading.Event()
+        servoctl.MOVEMENT_WATCHDOG_TIMEOUT = 1.0
+        servoctl.MOVEMENT_STALL_TIMEOUT = 0.03
+        energized = threading.Event()
+
+        @servoctl.movement_command
+        def stalled_pose():
+            self.assertTrue(servoctl.set_servo_pwm(7, servoctl.rightMainMax))
+            energized.set()
+            threading.Event().wait(0.18)
+
+        worker = threading.Thread(target=stalled_pose, daemon=True)
+        worker.start()
+        self.assertTrue(energized.wait(timeout=0.5))
+
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            status = servoctl.get_movement_status()
+            if status["emergency_source"] == "movement watchdog":
+                break
+            time.sleep(0.005)
+        self.assertEqual(
+            "movement watchdog",
+            servoctl.get_movement_status()["emergency_source"],
+        )
+
+        self.assertTrue(
+            servoctl.emergency_power_off("manual override", source="manual test")
+        )
+        worker.join(timeout=0.5)
+
+        self.assertFalse(worker.is_alive())
+        status = servoctl.get_movement_status()
+        self.assertTrue(status["emergency_stop"])
+        self.assertEqual("manual test", status["emergency_source"])
+        self.assertEqual(0, status["watchdog_recovery_count"])
+        self.assertTrue(self.backend.all_outputs_disabled(controller))
+
+    def test_watchdog_keeps_latch_when_controller_health_check_fails(self):
+        controller = self._initialize()
+        servoctl._movement_stop_event = threading.Event()
+        servoctl.MOVEMENT_WATCHDOG_TIMEOUT = 1.0
+        servoctl.MOVEMENT_STALL_TIMEOUT = 0.05
+        energized = threading.Event()
+        result = []
+
+        @servoctl.movement_command
+        def stalled_pose():
+            self.assertTrue(servoctl.set_servo_pwm(7, servoctl.rightMainMax))
+            energized.set()
+            threading.Event().wait(0.15)
+
+        original_probe = servoctl._probe_controller
+
+        def fail_recovery_probe(controller_to_probe):
+            if energized.is_set():
+                return False
+            return original_probe(controller_to_probe)
+
+        with patch.object(
+            servoctl, "_probe_controller", side_effect=fail_recovery_probe
+        ):
+            worker = threading.Thread(
+                target=lambda: result.append(stalled_pose()), daemon=True
+            )
+            worker.start()
+            self.assertTrue(energized.wait(timeout=0.5))
+            worker.join(timeout=0.5)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual([False], result)
+        status = servoctl.get_movement_status()
+        self.assertTrue(status["emergency_stop"])
+        self.assertEqual("movement watchdog", status["emergency_source"])
+        self.assertEqual(0, status["watchdog_recovery_count"])
+        self.assertTrue(self.backend.all_outputs_disabled(controller))
+
+        # The injected health-check failure is transient. The next movement
+        # safely retries the watchdog-only recovery before it writes PWM.
+        @servoctl.movement_command
+        def next_pose():
+            self.assertTrue(servoctl.set_servo_pwm(7, servoctl.rightMainMin))
+            servoctl.disable_all_servos()
+
+        self.assertTrue(next_pose())
+        self.assertFalse(servoctl.emergency_stop_active())
+        self.assertEqual(
+            1, servoctl.get_movement_status()["watchdog_recovery_count"]
+        )
 
     def test_legacy_pose_wait_is_cancellable_and_releases_pwm(self):
         controller = self._initialize()

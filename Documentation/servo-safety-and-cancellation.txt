@@ -82,7 +82,7 @@ the latched emergency action; /enable_servos resets it safely.
 MOVEMENT WATCHDOG
 -----------------
 Every named movement and manually scoped WebUI servo session has an independent
-watchdog. It triggers emergency power-off when either:
+watchdog. It immediately cuts PWM when either:
 
 - The complete command exceeds movement_watchdog_timeout (45 seconds by
   default).
@@ -105,10 +105,25 @@ standard hobby servos provide no position feedback, it cannot prove that a
 shaft physically reached its target. Mechanical stall detection would require
 position feedback or a separately calibrated current-limit design.
 
+A watchdog stop is intentionally different from a manual EMERGENCY OFF. After
+the interrupted movement has unwound and released its movement lock, the
+runtime probes the PCA9685 and confirms all outputs are disabled. If both checks
+pass, it clears only the watchdog-created latch so a later command can run. If
+the immediate check fails, the next movement request retries that same safe,
+torque-free recovery before refusing. A controller that still fails its probe
+remains latched offline.
+
+The automatic recovery is source-restricted. A servo-tester, WebUI, or other
+manual emergency can replace a watchdog latch at any time and is never cleared
+automatically. That latch still requires an explicit reset_emergency_stop or
+RESET EMERGENCY LATCH action.
+
 EXPANDED FAKE-HARDWARE TESTS
 ----------------------------
 The fake PCA9685 now supports persistent per-channel I2C failures. Tests cover
 controlled cancellation followed by another successful command, emergency
 latching and reset, refusal of writes while latched, best-effort release past a
 permanently failing channel, watchdog progress stalls, watchdog total-runtime
-limits, and typed watchdog configuration bounds.
+limits, automatic recovery after a healthy watchdog stop, retry after a
+transient failed health check, preservation of manual emergency overrides,
+direct-session lock release, and typed watchdog configuration bounds.

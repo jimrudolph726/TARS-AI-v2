@@ -99,6 +99,26 @@ Hardware diagnostics report the state already known by the running TARS
 services rather than probing I2C devices a second time and competing with the
 servo or power-monitor drivers.
 
+Native application views
+------------------------
+
+Audio Timeline subscribes to the controller's existing shared microphone
+samples. It displays RMS, peak, the observed ambient floor, a diagnostic
+speech threshold, voice activity, TTS activity, TARS state, and wake/barge-in
+markers. These values are visual diagnostics only: the app does not open a
+second audio stream and does not change STT gain, VAD, or wake-word behavior.
+
+Eyes renders every shared expression mood natively in QML and adds automatic
+blinks, idle gaze, pointer/touch gaze, state-driven speaking animation, and
+touch reactions. Short spoken reactions use the router's serialized on-device
+TTS queue, so they cannot start a competing audio playback path.
+
+Avatar reports missing or partial sprite sets instead of silently displaying
+a blank panel. It retains neutral-expression and static-frame fallbacks and
+shows whether the active frame is native or a fallback. Clock uses an adaptive
+portrait/landscape layout, smooth hands, numbered dial, and scalable digital
+readout.
+
 Press Esc in a windowed session, or use Menu > Exit Application, to stop the
 application cleanly while leaving the Raspberry Pi on. Menu > Restart TARS
 restarts only the application. Menu > Shut Down Pi and the header PWR control

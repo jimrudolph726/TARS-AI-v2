@@ -153,6 +153,7 @@ class MainInterfaceController(QObject):
     audioChanged = Signal()
     cameraChanged = Signal()
     avatarChanged = Signal()
+    eyeMoodChanged = Signal()
     remoteChanged = Signal()
     dashboardChanged = Signal()
 
@@ -175,6 +176,12 @@ class MainInterfaceController(QObject):
         self._telemetry_phase = 0.0
         self._audio_phase = 0.0
         self._audio_levels = [0.0] * 35
+        self._audio_rms = 0.0
+        self._audio_peak = 0.0
+        self._audio_noise_floor = 0.055
+        self._audio_speech_threshold = 0.16
+        self._wake_event_revision = 0
+        self._barge_in_event_revision = 0
         self._camera_active = False
         self._camera_error = ""
         self._remote_state = "ready"
@@ -417,6 +424,34 @@ class MainInterfaceController(QObject):
     def audioLevel(self) -> float:
         return max(self._audio_levels, default=0.0)
 
+    @Property(float, notify=audioChanged)
+    def audioRms(self) -> float:
+        return self._audio_rms
+
+    @Property(float, notify=audioChanged)
+    def audioPeak(self) -> float:
+        return self._audio_peak
+
+    @Property(float, notify=audioChanged)
+    def audioNoiseFloor(self) -> float:
+        return self._audio_noise_floor
+
+    @Property(float, notify=audioChanged)
+    def audioSpeechThreshold(self) -> float:
+        return self._audio_speech_threshold
+
+    @Property(bool, notify=audioChanged)
+    def audioSpeechActive(self) -> bool:
+        return self._audio_rms >= self._audio_speech_threshold
+
+    @Property(int, notify=audioChanged)
+    def wakeEventRevision(self) -> int:
+        return self._wake_event_revision
+
+    @Property(int, notify=audioChanged)
+    def bargeInEventRevision(self) -> int:
+        return self._barge_in_event_revision
+
     @Property(bool, notify=cameraChanged)
     def cameraActive(self) -> bool:
         return self._camera_active
@@ -445,6 +480,18 @@ class MainInterfaceController(QObject):
     @Property(str, constant=True)
     def avatarEmotion(self) -> str:
         return "NEUTRAL"
+
+    @Property(str, constant=True)
+    def avatarStatus(self) -> str:
+        return "ready" if self.avatarFrameSource else "error"
+
+    @Property(str, constant=True)
+    def avatarError(self) -> str:
+        return "" if self.avatarFrameSource else "Prototype avatar sprites were not found."
+
+    @Property(bool, constant=True)
+    def avatarUsingFallback(self) -> bool:
+        return False
 
     @Property(str, constant=True)
     def eyeMood(self) -> str:
@@ -501,6 +548,9 @@ class MainInterfaceController(QObject):
         for index, (name, _) in enumerate(self.STATES):
             if name == requested and index != self._state_index:
                 self._state_index = index
+                if name == "LISTENING":
+                    self._wake_event_revision += 1
+                    self.audioChanged.emit()
                 self.stateChanged.emit()
                 self._set_notice(f"Mock TARS state: {name.title()}")
                 return
@@ -529,6 +579,10 @@ class MainInterfaceController(QObject):
     @Slot(str)
     def launchApp(self, app_name: str) -> None:
         self._set_notice(f"Mock app selected: {app_name}")
+
+    @Slot(str)
+    def speakEyeReaction(self, reaction: str) -> None:
+        self._set_notice("Eye reaction: " + reaction.replace("_", " "))
 
     @Slot()
     def launchServoCalibration(self) -> None:
@@ -634,6 +688,8 @@ class MainInterfaceController(QObject):
             max(0.03, abs(math.sin(self._audio_phase + index * 0.57)) * (0.3 + 0.7 * math.sin(index / 34 * math.pi)))
             for index in range(35)
         ]
+        self._audio_rms = 0.06 + abs(math.sin(self._audio_phase * 0.63)) * 0.18
+        self._audio_peak = min(1.0, self._audio_rms * 1.65)
         self.audioChanged.emit()
 
 

@@ -31,6 +31,8 @@ from modules.module_ui_qml_models import CameraImageProvider, ConversationModel
 from modules.module_ui_remote import RemoteAccessService
 from modules.module_ui_telemetry import build_system_diagnostics, collect_resource_metrics
 
+__all__ = ["CameraImageProvider", "TarsUIController"]
+
 
 class TarsUIController(QObject):
     """Live, thread-safe state surface consumed by ``TarsMain.qml``."""
@@ -114,6 +116,13 @@ class TarsUIController(QObject):
         self._audio_levels = [0.0] * 35
         self._pending_audio_levels = [0.0] * 35
         self._audio_peak = 0.025
+        self._audio_rms = 0.0
+        self._audio_frame_peak = 0.0
+        self._audio_noise_floor = 0.006
+        self._audio_speech_threshold = 0.017
+        self._audio_speech_active = False
+        self._wake_event_revision = 0
+        self._barge_in_event_revision = 0
         self._audio_lock = threading.Lock()
         self._audio_stream = None
 
@@ -129,7 +138,12 @@ class TarsUIController(QObject):
         self._avatar_character = "TARS"
         self._avatar_emotion = "neutral"
         self._avatar_frame_source = ""
+        self._avatar_status = "loading"
+        self._avatar_error = ""
+        self._avatar_using_fallback = False
+        self._avatar_health_cache: dict[tuple[str, str, str], tuple[str, ...]] = {}
         self._eye_mood = "NEUTRAL"
+        self._last_eye_reaction_at = 0.0
 
         self._remote_state = "idle"
         self._remote_status = "Remote access is ready"
@@ -407,6 +421,34 @@ class TarsUIController(QObject):
     def audioLevel(self) -> float:
         return max(self._audio_levels, default=0.0)
 
+    @Property(float, notify=audioChanged)
+    def audioRms(self) -> float:
+        return self._audio_rms
+
+    @Property(float, notify=audioChanged)
+    def audioPeak(self) -> float:
+        return self._audio_frame_peak
+
+    @Property(float, notify=audioChanged)
+    def audioNoiseFloor(self) -> float:
+        return self._audio_noise_floor
+
+    @Property(float, notify=audioChanged)
+    def audioSpeechThreshold(self) -> float:
+        return self._audio_speech_threshold
+
+    @Property(bool, notify=audioChanged)
+    def audioSpeechActive(self) -> bool:
+        return self._audio_speech_active
+
+    @Property(int, notify=audioChanged)
+    def wakeEventRevision(self) -> int:
+        return self._wake_event_revision
+
+    @Property(int, notify=audioChanged)
+    def bargeInEventRevision(self) -> int:
+        return self._barge_in_event_revision
+
     @Property(bool, notify=cameraChanged)
     def cameraActive(self) -> bool:
         return self._camera_active
@@ -434,6 +476,18 @@ class TarsUIController(QObject):
     @Property(str, notify=avatarChanged)
     def avatarEmotion(self) -> str:
         return self._avatar_emotion.upper()
+
+    @Property(str, notify=avatarChanged)
+    def avatarStatus(self) -> str:
+        return self._avatar_status
+
+    @Property(str, notify=avatarChanged)
+    def avatarError(self) -> str:
+        return self._avatar_error
+
+    @Property(bool, notify=avatarChanged)
+    def avatarUsingFallback(self) -> bool:
+        return self._avatar_using_fallback
 
     @Property(str, notify=eyeMoodChanged)
     def eyeMood(self) -> str:
@@ -509,18 +563,40 @@ class TarsUIController(QObject):
         """Reduce a live mic chunk to the 35 samples drawn by QML."""
         if self._muted:
             levels = np.zeros(35, dtype=np.float32)
+            rms = 0.0
+            frame_peak = 0.0
+            noise_floor = self._audio_noise_floor
+            threshold = self._audio_speech_threshold
+            speech_active = False
         else:
             audio = np.asarray(indata[:, 0], dtype=np.float32)
             if audio.size == 0:
                 return
             absolute = np.abs(audio)
             frame_peak = float(np.percentile(absolute, 97))
+            rms = float(np.sqrt(np.mean(np.square(audio), dtype=np.float64)))
             self._audio_peak = max(0.015, self._audio_peak * 0.965, frame_peak)
             indices = np.linspace(0, audio.size - 1, 35, dtype=np.int32)
             levels = np.clip(absolute[indices] / self._audio_peak, 0.0, 1.0) ** 0.68
 
+            # Follow the ambient floor slowly and only while TARS is not
+            # speaking.  This is diagnostic telemetry, not a second VAD, so
+            # it cannot alter STT behavior or microphone gain.
+            noise_floor = self._audio_noise_floor
+            if self._state not in ("TALKING", "SPEAKING") and rms < max(0.04, noise_floor * 3.0):
+                rate = 0.025 if rms > noise_floor else 0.08
+                noise_floor += (rms - noise_floor) * rate
+            noise_floor = max(0.0005, min(0.25, noise_floor))
+            threshold = max(0.008, min(0.35, noise_floor * 2.8))
+            speech_active = rms >= threshold
+
         with self._audio_lock:
             self._pending_audio_levels = levels.tolist()
+            self._audio_rms = rms
+            self._audio_frame_peak = frame_peak
+            self._audio_noise_floor = noise_floor
+            self._audio_speech_threshold = threshold
+            self._audio_speech_active = speech_active
 
     @Slot()
     def _publish_audio_levels(self) -> None:
@@ -565,7 +641,7 @@ class TarsUIController(QObject):
         requested_emotion = "".join(
             char for char in requested_emotion if char.isalnum() or char in "-_"
         ) or "neutral"
-        animation_dir = (
+        requested_dir = (
             self._base_dir
             / "character"
             / self._avatar_character
@@ -573,7 +649,10 @@ class TarsUIController(QObject):
             / requested_emotion
             / "animation"
         )
+        animation_dir = requested_dir
+        emotion_fallback = False
         if not animation_dir.is_dir():
+            emotion_fallback = requested_emotion != "neutral"
             requested_emotion = "neutral"
             animation_dir = (
                 self._base_dir
@@ -583,6 +662,26 @@ class TarsUIController(QObject):
                 / requested_emotion
                 / "animation"
             )
+
+        expected_suffixes = (
+            "nottalking_eyes_open",
+            "nottalking_eyes_closed",
+            "talking_eyes_open",
+            "talking_eyes_closed",
+        )
+        health_key = (str(animation_dir), self._avatar_character, requested_emotion)
+        missing_frames = self._avatar_health_cache.get(health_key)
+        if missing_frames is None:
+            missing_frames = tuple(
+                suffix
+                for suffix in expected_suffixes
+                if not (
+                    animation_dir
+                    / f"{self._avatar_character}_{requested_emotion}_{suffix}.png"
+                ).is_file()
+            )
+            self._avatar_health_cache[health_key] = missing_frames
+        using_fallback = emotion_fallback or bool(missing_frames)
 
         now = time.monotonic()
         talking = self._state in ("TALKING", "SPEAKING")
@@ -601,10 +700,54 @@ class TarsUIController(QObject):
             )
             frame = fallback if fallback.is_file() else frame
         source = QUrl.fromLocalFile(str(frame)).toString() if frame.is_file() else ""
-        if source != self._avatar_frame_source or requested_emotion != self._avatar_emotion:
+        if source:
+            status = "fallback" if using_fallback else "ready"
+            if emotion_fallback:
+                error = f"Requested expression unavailable; showing {requested_emotion}."
+            elif missing_frames:
+                error = f"Animation set is missing {len(missing_frames)} optional frame(s)."
+            else:
+                error = ""
+        else:
+            status = "error"
+            error = f"No avatar frames found in {animation_dir}"
+        if (
+            source != self._avatar_frame_source
+            or requested_emotion != self._avatar_emotion
+            or status != self._avatar_status
+            or error != self._avatar_error
+        ):
             self._avatar_frame_source = source
             self._avatar_emotion = requested_emotion
+            self._avatar_status = status
+            self._avatar_error = error
+            self._avatar_using_fallback = using_fallback
             self.avatarChanged.emit()
+
+    @Slot(str)
+    def speakEyeReaction(self, reaction: str) -> None:
+        """Speak a short touch reaction through the serialized device TTS."""
+        lines = {
+            "poke_left": "Left optical sensor acknowledged.",
+            "poke_right": "Right optical sensor acknowledged.",
+            "boop_nose": "That is not a control surface.",
+            "forehead_tap": "Cranial tap registered.",
+            "chin_tap": "Diagnostic input received.",
+            "poke_face": "Personal space remains a useful concept.",
+            "dizzy": "My orientation sensors object to that.",
+        }
+        key = reaction.strip().lower()
+        line = lines.get(key)
+        now = time.monotonic()
+        if not line or now - self._last_eye_reaction_at < 0.8:
+            return
+        self._last_eye_reaction_at = now
+        try:
+            from modules.module_router import speak_local
+
+            speak_local(line)
+        except Exception as exc:
+            print(f"WARNING: Eye reaction speech unavailable: {exc}")
 
     @property
     def camera_module(self):
@@ -1104,7 +1247,14 @@ class TarsUIController(QObject):
     def _apply_state(self, status: str) -> None:
         normalized = status.strip().upper()
         if normalized and normalized != self._state:
+            previous = self._state
             self._state = normalized
+            if normalized == "LISTENING":
+                if previous in ("TALKING", "SPEAKING"):
+                    self._barge_in_event_revision += 1
+                elif previous in ("STANDBY", "IDLE"):
+                    self._wake_event_revision += 1
+                self.audioChanged.emit()
             self.stateChanged.emit()
 
     @Slot(str, int)

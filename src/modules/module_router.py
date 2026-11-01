@@ -105,6 +105,18 @@ def send(text: str):
     _deliver(text, route)
 
 
+def speak_local(text: str) -> None:
+    """Queue speech on TARS itself, independent of the active chat route.
+
+    Interactive on-device views (for example the Eyes app) use this entry
+    point so their short reactions share the same serialized TTS worker as
+    normal voice replies.  Keeping this public avoids UI code reaching into
+    the router's private delivery helpers.
+    """
+    if text and text.strip():
+        _send_voice(text.strip())
+
+
 def send_image(image, caption: str = ""):
     """Send an image to wherever the user currently is.
 

@@ -8,7 +8,6 @@ on the Pi to explore the interface without moving hardware.
 from __future__ import annotations
 
 import argparse
-import configparser
 import os
 import sys
 import threading
@@ -18,6 +17,15 @@ from pathlib import Path
 
 from modules.module_gait import body_swing_diagnostic_phases
 from modules.module_config_store import atomic_write_text, validate_typed_config_file
+from modules.module_servo_tester_model import (
+    BODY_MOVEMENTS,
+    LOCOMOTION_MOVEMENTS,
+    MOVEMENT_CATEGORIES,
+    SERVO_DEFINITIONS,
+    ServoCalibrationModel,
+    read_servo_config,
+)
+from modules.module_servo_tester_hardware import ServoTesterHardwareSession
 
 
 def _parse_args() -> argparse.Namespace:
@@ -48,65 +56,6 @@ from PySide6.QtQuick import QQuickWindow
 ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent
 
-SERVO_DEFINITIONS = {
-    "left_height": {
-        "label": "LEFT HEIGHT", "config": "perfectLeftHeightOffset", "channel": 0,
-        "preview_base": 350, "preview_sign": 1,
-        "limits": ("leftUpHeight", "leftDownHeight"),
-    },
-    "left_leg": {
-        "label": "LEFT LEG  (FORWARD / BACK)", "config": "perfectLeftLegOffset", "channel": 2,
-        "preview_base": 300, "preview_sign": 1,
-        "limits": ("forwardLeftLeg", "backLeftLeg"),
-    },
-    "left_main": {
-        "label": "LEFT MAIN ARM", "config": "leftMainOffset", "channel": 4,
-        "preview_key": "leftMainMin", "limits": ("leftMainMin", "leftMainMax"),
-    },
-    "left_forearm": {
-        "label": "LEFT FOREARM", "config": "leftForearmOffset", "channel": 5,
-        "preview_key": "leftForarmMin", "limits": ("leftForarmMin", "leftForarmMax"),
-    },
-    "left_hand": {
-        "label": "LEFT HAND", "config": "leftHandOffset", "channel": 6,
-        "preview_key": "leftHandMin", "limits": ("leftHandMin", "leftHandMax"),
-    },
-    "right_height": {
-        "label": "RIGHT HEIGHT", "config": "perfectRightHeightOffset", "channel": 1,
-        "preview_base": 350, "preview_sign": -1, "limit_sign": -1,
-        "limits": ("rightUpHeight", "rightDownHeight"),
-    },
-    "right_leg": {
-        "label": "RIGHT LEG  (FORWARD / BACK)", "config": "perfectRightLegOffset", "channel": 3,
-        "preview_base": 300, "preview_sign": 1,
-        "limits": ("forwardRightLeg", "backRightLeg"),
-    },
-    "right_main": {
-        "label": "RIGHT MAIN ARM", "config": "rightMainOffset", "channel": 7,
-        "preview_key": "rightMainMin", "limits": ("rightMainMin", "rightMainMax"),
-    },
-    "right_forearm": {
-        "label": "RIGHT FOREARM", "config": "rightForearmOffset", "channel": 8,
-        "preview_key": "rightForarmMin", "limits": ("rightForarmMin", "rightForarmMax"),
-    },
-    "right_hand": {
-        "label": "RIGHT HAND", "config": "rightHandOffset", "channel": 9,
-        "preview_key": "rightHandMin", "limits": ("rightHandMin", "rightHandMax"),
-    },
-}
-
-MOVEMENT_CATEGORIES = ("Locomotion", "Body", "Arms", "All")
-LOCOMOTION_MOVEMENTS = {
-    "step_forward", "walk_forward", "step_backward", "walk_backward",
-    "turn_left", "turn_left_slow", "turn_right", "turn_right_slow",
-    "neutral_legs",
-}
-BODY_MOVEMENTS = {
-    "pose", "bow", "tilt_right", "tilt_left", "side_side",
-    "wave_right", "wave_left", "excited", "laugh", "swing_legs",
-}
-
-
 def _is_raspberry_pi() -> bool:
     try:
         return "raspberry pi" in Path("/proc/device-tree/model").read_text().lower()
@@ -119,27 +68,6 @@ def _find_config_path() -> Path | None:
         if path.is_file():
             return path
     return None
-
-
-def _read_servo_config(path: Path | None) -> dict[str, str]:
-    if path is None:
-        return {}
-    parser = configparser.RawConfigParser()
-    parser.optionxform = str
-    parser.read(path, encoding="utf-8")
-    return dict(parser.items("SERVO")) if parser.has_section("SERVO") else {}
-
-
-def _servo(servo_id: str, value: int, minimum: int, maximum: int) -> dict:
-    definition = SERVO_DEFINITIONS[servo_id]
-    return {
-        "id": servo_id,
-        "label": definition["label"],
-        "value": value,
-        "minimum": minimum,
-        "maximum": maximum,
-        "unit": "ticks",
-    }
 
 
 class ServoCalibrationController(QObject):
@@ -156,8 +84,10 @@ class ServoCalibrationController(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._config_path = _find_config_path()
-        self._servo_config = _read_servo_config(self._config_path)
+        self._servo_config = read_servo_config(self._config_path)
+        self._calibration = ServoCalibrationModel(self._servo_config)
         self._servoctl = None
+        self._hardware_session = ServoTesterHardwareSession()
         self._io_lock = threading.RLock()
         self._preview_condition = threading.Condition()
         self._preview_request: dict | None = None
@@ -184,18 +114,8 @@ class ServoCalibrationController(QObject):
         self._range_busy = False
         self._power_transition = False
 
-        self._servos = {}
-        for servo_id, definition in SERVO_DEFINITIONS.items():
-            raw = self._servo_config.get(definition["config"], "0")
-            try:
-                value = int(raw)
-            except (TypeError, ValueError):
-                value = 0
-            minimum, maximum = self._offset_bounds(servo_id)
-            value = max(minimum, min(maximum, value))
-            self._servos[servo_id] = _servo(servo_id, value, minimum, maximum)
-
-        self._saved_servos = deepcopy(self._servos)
+        self._servos = self._calibration.servos
+        self._saved_servos = self._calibration.saved_servos
         self._dirty = False
         self._servo_power = True
         self._profile = "Default"
@@ -226,51 +146,16 @@ class ServoCalibrationController(QObject):
 
     def _connect_hardware(self) -> None:
         with self._io_lock:
-            candidate_i2c = None
-            candidate_pca = None
-            try:
-                import board
-                import busio
-                from adafruit_pca9685 import PCA9685
-
-                import modules.module_servoctl as servoctl
-
-                # The standalone tester owns both objects. Mirroring both into
-                # module_servoctl lets its recovery and cleanup paths close the
-                # complete hardware session rather than only the PCA object.
-                candidate_i2c = busio.I2C(board.SCL, board.SDA)
-                candidate_pca = PCA9685(candidate_i2c, address=0x40)
-                candidate_pca.frequency = 50
-                candidate_pca.channels[15].duty_cycle = 0
-
-                self._i2c = candidate_i2c
-                self._pca = candidate_pca
-                servoctl._i2c = candidate_i2c
-                servoctl.pca = candidate_pca
-                servoctl._channels_initialized.clear()
-                self._servoctl = servoctl
-                self._hardware_connected = True
-                self._hardware_error = ""
-
-                # Begin from a known, torque-free state. ENABLE PWM issues
-                # fresh writes only after the user has supported the robot.
-                servoctl.disable_all_servos()
-            except Exception as exc:
-                if candidate_pca is not None:
-                    try:
-                        candidate_pca.deinit()
-                    except Exception:
-                        pass
-                if candidate_i2c is not None:
-                    try:
-                        candidate_i2c.deinit()
-                    except Exception:
-                        pass
-                self._hardware_error = str(exc)
-                self._hardware_connected = False
-                self._pca = None
-                self._i2c = None
-                print(f"[SERVO TESTER] Hardware mode unavailable: {exc}", file=sys.stderr)
+            self._hardware_connected = self._hardware_session.connect()
+            self._servoctl = self._hardware_session.servoctl
+            self._i2c = self._hardware_session.i2c
+            self._pca = self._hardware_session.pca
+            self._hardware_error = self._hardware_session.error
+            if not self._hardware_connected:
+                print(
+                    f"[SERVO TESTER] Hardware mode unavailable: {self._hardware_error}",
+                    file=sys.stderr,
+                )
         self.stateChanged.emit()
 
     def _reconnect_hardware(self) -> bool:
@@ -411,9 +296,7 @@ class ServoCalibrationController(QObject):
     def movementPresets(self) -> list[dict]:
         from modules.module_movement_registry import HAS_ARMS, MOVEMENTS
 
-        arms_present = str(self._servo_config.get("arms_present", "false")).lower() in (
-            "1", "true", "yes", "on"
-        )
+        arms_present = self._calibration.arms_present()
         presets = []
         for key, metadata in MOVEMENTS.items():
             if key in LOCOMOTION_MOVEMENTS:
@@ -482,48 +365,19 @@ class ServoCalibrationController(QObject):
             self.stateChanged.emit()
 
     def _config_int(self, key: str, default: int) -> int:
-        try:
-            return int(self._servo_config.get(key, default))
-        except (TypeError, ValueError):
-            return default
+        return self._calibration.config_int(key, default)
 
     def _offset_bounds(self, servo_id: str) -> tuple[int, int]:
-        """Return only offsets that keep every configured endpoint valid."""
-        definition = SERVO_DEFINITIONS[servo_id]
-        is_arm = "_height" not in servo_id and "_leg" not in servo_id
-        lower, upper = (-90, 90) if is_arm else (-50, 50)
-        sign = int(definition.get("limit_sign", 1))
-        for key in definition["limits"]:
-            base = self._config_int(key, 300)
-            if sign > 0:
-                lower = max(lower, 10 - base)
-                upper = min(upper, 600 - base)
-            else:
-                lower = max(lower, base - 600)
-                upper = min(upper, base - 10)
-        if lower > upper:
-            return 0, 0
-        return int(lower), int(upper)
+        return self._calibration.offset_bounds(servo_id)
 
     def _effective_endpoints(self, servo_id: str) -> tuple[int, int]:
-        definition = SERVO_DEFINITIONS[servo_id]
-        offset = int(self._servos.get(servo_id, {}).get("value", 0))
-        sign = int(definition.get("limit_sign", 1))
-        first, second = definition["limits"]
-        return (
-            self._config_int(first, 300) + sign * offset,
-            self._config_int(second, 300) + sign * offset,
-        )
+        return self._calibration.effective_endpoints(servo_id)
 
     def _range_target_pulse(self, servo_id: str, percent: int) -> int:
-        start, end = self._effective_endpoints(servo_id)
-        normalized = max(0, min(100, int(percent))) / 100.0
-        return round(start + (end - start) * normalized)
+        return self._calibration.range_target_pulse(servo_id, percent)
 
     def _arms_present(self) -> bool:
-        return str(self._servo_config.get("arms_present", "false")).lower() in (
-            "1", "true", "yes", "on"
-        )
+        return self._calibration.arms_present()
 
     def _queue_preview_targets(self, targets: list[dict], source: str) -> bool:
         if not self._hardware_connected:
@@ -650,15 +504,10 @@ class ServoCalibrationController(QObject):
                     self._set_status("Servo preview failed · controller is busy")
 
     def _target_pulse(self, servo_id: str, offset: int) -> int:
-        definition = SERVO_DEFINITIONS[servo_id]
-        base = definition.get("preview_base")
-        if base is None:
-            base = self._config_int(definition["preview_key"], 300)
-        return int(base) + int(definition.get("preview_sign", 1)) * offset
+        return self._calibration.target_pulse(servo_id, offset)
 
     def _offset_is_safe(self, servo_id: str, offset: int) -> bool:
-        minimum, maximum = self._offset_bounds(servo_id)
-        return minimum <= offset <= maximum
+        return self._calibration.offset_is_safe(servo_id, offset)
 
     def _preview_servo(self, servo_id: str) -> bool:
         definition = SERVO_DEFINITIONS[servo_id]
@@ -1114,38 +963,13 @@ class ServoCalibrationController(QObject):
     def _write_offsets(self) -> None:
         if self._config_path is None:
             raise FileNotFoundError("config.ini was not found in the project or src directory")
-        lines = self._config_path.read_text(encoding="utf-8").splitlines(keepends=True)
-        values = {
-            SERVO_DEFINITIONS[servo_id]["config"]: int(servo["value"])
-            for servo_id, servo in self._servos.items()
-        }
-        in_servo = False
-        updated: set[str] = set()
-        for index, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.lower() == "[servo]":
-                in_servo = True
-                continue
-            if in_servo and stripped.startswith("["):
-                in_servo = False
-            if not in_servo or "=" not in line:
-                continue
-            key = line.split("=", 1)[0].strip()
-            if key not in values:
-                continue
-            newline = "\r\n" if line.endswith("\r\n") else "\n"
-            comment = ""
-            if "#" in line:
-                comment = "  #" + line.split("#", 1)[1].rstrip("\r\n")
-            lines[index] = f"{key} = {values[key]}{comment}{newline}"
-            updated.add(key)
-        missing = [key for key in values if key not in updated]
-        if missing:
-            raise KeyError("Missing [SERVO] settings: " + ", ".join(missing))
+        updated_text = self._calibration.update_config_text(
+            self._config_path.read_text(encoding="utf-8")
+        )
         backup = self._config_path.with_name("config.calibration-backup.ini")
         atomic_write_text(
             self._config_path,
-            "".join(lines),
+            updated_text,
             validator=validate_typed_config_file,
             backup_path=backup,
             keep_history=True,
@@ -1155,12 +979,14 @@ class ServoCalibrationController(QObject):
     def saveCalibration(self) -> None:
         try:
             self._write_offsets()
-            self._servo_config = _read_servo_config(self._config_path)
+            self._servo_config = read_servo_config(self._config_path)
+            self._calibration.reload_config(self._servo_config)
             if self._hardware_connected:
                 from modules import module_config
                 module_config._config_cache = None
                 self._servoctl.refresh_config()
-            self._saved_servos = deepcopy(self._servos)
+            self._calibration.accept_saved()
+            self._saved_servos = self._calibration.saved_servos
             self._set_dirty(False)
             self._set_status(f"Calibration saved to {self._config_path.name}")
         except Exception as exc:
@@ -1169,7 +995,8 @@ class ServoCalibrationController(QObject):
     @Slot()
     def revertCalibration(self) -> None:
         self._preview_cancel.set()
-        self._servos = deepcopy(self._saved_servos)
+        self._calibration.revert()
+        self._servos = self._calibration.servos
         self.servosChanged.emit()
         self.rangeTestChanged.emit()
         self._set_dirty(False)
@@ -1193,13 +1020,11 @@ class ServoCalibrationController(QObject):
         if self._preview_thread is not None and self._preview_thread.is_alive():
             self._preview_thread.join(timeout=2.0)
 
-        if self._servoctl is not None:
-            try:
-                # cleanup waits for the movement lock before disabling and
-                # deinitializing hardware, so close cannot race a final write.
-                self._servoctl.cleanup(timeout=6.0)
-            except Exception as exc:
-                print(f"[SERVO TESTER] Shutdown warning: {exc}", file=sys.stderr)
+        try:
+            self._hardware_session.cleanup(timeout=6.0)
+        except Exception as exc:
+            print(f"[SERVO TESTER] Shutdown warning: {exc}", file=sys.stderr)
+        self._servoctl = None
         self._pca = None
         self._i2c = None
         self._hardware_connected = False

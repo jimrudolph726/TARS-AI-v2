@@ -67,8 +67,13 @@ Safety and controls
 Architecture
 ------------
 
-- src/app-servotester-qml.py owns configuration, state, safe hardware calls,
-  mock fallback behavior, and the Qt-facing properties/signals/slots.
+- src/app-servotester-qml.py owns Qt-facing properties/signals/slots, preview
+  workers, movement coordination, diagnostics, and mock behavior.
+- src/modules/module_servo_tester_model.py owns servo metadata, bounded offset
+  and endpoint calculations, range targets, config updates, and saved/revert
+  calibration state without importing Qt or hardware drivers.
+- src/modules/module_servo_tester_hardware.py owns the standalone tester's
+  exclusive I2C/PCA9685 connection and cleanup lifecycle.
 - src/qml/ServoCalibration.qml composes and responsively scales the dashboard.
 - src/qml/CalibrationSide.qml creates the mirrored physical-side panels.
 - src/qml/ServoControl.qml, Panel.qml, and TacticalButton.qml are reusable

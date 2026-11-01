@@ -1,0 +1,81 @@
+TARS V2 CONTROLLER AND SERVO MODULE BOUNDARIES
+===============================================
+
+This refactor keeps the public controllers and their existing callers intact,
+but moves reusable rules and external-service operations into smaller modules.
+The goal is to make each subsystem understandable and testable without
+starting Qt, opening an audio device, or connecting to the PCA9685.
+
+STT
+---
+
+modules/module_stt.py remains the STTManager orchestration facade. It owns the
+recording lifecycle, backend selection, wake/listen state machine, callbacks,
+and coordination with TTS.
+
+- module_stt_audio.py owns RMS/gain calculations, sample conversion, WAV
+  creation, noise-floor calculation, and non-speech filtering.
+- module_stt_wake.py owns fuzzy wake-word matching and non-blocking WebUI
+  notifications.
+- module_stt_bargein.py owns normalization and novel-word filtering used to
+  distinguish real interruption speech from TARS's own speaker bleed.
+- module_openai_live_stt.py continues to own the OpenAI live-transcription
+  transport.
+
+QML
+---
+
+modules/module_ui_qml.py remains the QObject facade exposed to QML. It owns Qt
+signals, slots, properties, and thread-to-GUI dispatch.
+
+- module_ui_qml_models.py owns the conversation list model and camera image
+  provider.
+- module_ui_remote.py owns Wi-Fi, hotspot, and remote-tunnel operations. It
+  reports results through a callback and has no Qt dependency.
+- module_ui_telemetry.py owns resource collection and System Health diagnostic
+  assembly. It reads existing runtime state but does not probe hardware.
+
+SERVO RUNTIME
+-------------
+
+modules/module_servoctl.py remains the compatibility facade used by movements,
+the runtime, WebUI, and existing skills. It still owns command serialization,
+cancellation, emergency latching, watchdog state, calibrated position state,
+and public servo APIs.
+
+- module_servo_math.py owns pulse conversion, calibrated-envelope validation,
+  percentage mapping, easing, and synchronized-duration calculations.
+- module_servo_hardware.py owns small PCA9685 primitives: health probing,
+  best-effort output release, error descriptions, and quiet device cleanup.
+
+SERVO TESTER
+------------
+
+app-servotester-qml.py remains the Qt-facing controller and coordinates
+preview workers, movement commands, diagnostics, and UI state.
+
+- module_servo_tester_model.py owns servo metadata, offset limits, endpoint
+  arithmetic, range-test targets, saved/revert state, and config text updates.
+- module_servo_tester_hardware.py owns the standalone tester's exclusive I2C
+  and PCA9685 session, including connect and cleanup.
+
+TESTING
+-------
+
+tests/test_controller_module_splits.py tests the extracted pure services and
+enforces their import boundaries. tests/test_servo_fake_hardware.py remains the
+integration safety net for movement ownership, cancellation, emergency stop,
+watchdog recovery, calibrated envelopes, hardware failure recovery, and all
+registered movements.
+
+Run all tests from the repository root:
+
+    PYTHONPATH=src:tests python -m unittest discover -s tests -v
+
+On PowerShell:
+
+    $env:PYTHONPATH = "src;tests"
+    python -m unittest discover -s tests -v
+
+The fake-hardware suite must pass after any future extraction from
+module_servoctl.py or app-servotester-qml.py.

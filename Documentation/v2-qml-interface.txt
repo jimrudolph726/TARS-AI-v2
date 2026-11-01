@@ -18,10 +18,12 @@ Architecture
 - Reusable QML primitives in components/ provide setting rows, sliders,
   status cards, confirmation prompts, buttons, and standardized application
   loading/error/empty/disabled states.
-- src/modules/module_ui_qml.py is the thread-safe UI state controller and
-  conversation model. It also bridges the shared microphone feed and the Pi
-  camera into QML without opening competing audio devices or writing frames
-  to disk.
+- src/modules/module_ui_qml.py is the thread-safe Qt property, signal, and slot
+  facade. src/modules/module_ui_qml_models.py owns the conversation model and
+  camera image provider; module_ui_remote.py owns remote-access operations;
+  and module_ui_telemetry.py assembles System Health data. The controller also
+  bridges the shared microphone feed and Pi camera into QML without opening
+  competing audio devices or writing frames to disk.
 - src/modules/module_camera.py owns toolkit-neutral RGB camera capture shared
   by QML, voice vision, identity services, and the browser camera stream.
 - src/modules/module_display.py lets skills request an on-device image overlay

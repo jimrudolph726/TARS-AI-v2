@@ -23,13 +23,26 @@ import os
 import math
 import threading
 from functools import wraps
-from numbers import Integral, Real
 import board
 import busio
 from adafruit_pca9685 import PCA9685
 
 from modules.module_messageQue import queue_message
 from modules.module_config import load_config
+from modules.module_servo_math import (
+    channel_bounds,
+    eased_progress,
+    percentage_to_value,
+    pulse_to_duty_cycle as _pulse_to_duty_cycle,
+    synchronized_duration,
+    validate_write,
+)
+from modules.module_servo_hardware import (
+    close_quietly,
+    describe_hardware_error,
+    disable_controller_outputs as _hardware_disable_outputs,
+    probe_controller,
+)
 
 config = load_config()
 
@@ -577,7 +590,7 @@ def wait_for_movement(seconds):
 SERVO_POSITIONS_FILE = os.path.expanduser("~/.servo_positions.json")
 
 def _load_servo_positions():
-    
+
     import json
     try:
         with open(SERVO_POSITIONS_FILE, 'r') as f:
@@ -588,7 +601,7 @@ def _load_servo_positions():
         return {}
 
 def _save_servo_positions():
-    
+
     import json
     try:
         with open(SERVO_POSITIONS_FILE, 'w') as f:
@@ -611,24 +624,15 @@ battery_module = None
 
 
 def _describe_hardware_error(exc):
-    if isinstance(exc, OSError) and getattr(exc, "errno", None) == 121:
-        return "I2C remote I/O error; check PCA9685 power, ground, SDA, and SCL wiring"
-    return str(exc)
+    return describe_hardware_error(exc)
 
 
 def _probe_controller(controller):
     """Verify that the cached PCA9685 still answers without moving a servo."""
-    if controller is None:
-        return False
-    try:
-        # Channel 15 is not assigned to a TARS servo. Writing zero verifies
-        # the I2C path without energizing any mechanism.
-        with _pwm_io_lock:
-            controller.channels[PCA_PROBE_CHANNEL].duty_cycle = 0
-        return True
-    except Exception as exc:
+    healthy, exc = probe_controller(controller, _pwm_io_lock, PCA_PROBE_CHANNEL)
+    if not healthy and exc is not None:
         queue_message(f"WARNING: PCA9685 health probe failed: {_describe_hardware_error(exc)}")
-        return False
+    return healthy
 
 
 def _discard_controller(reason=None):
@@ -642,16 +646,8 @@ def _discard_controller(reason=None):
         _i2c = None
         _channels_initialized.clear()
 
-        if controller is not None:
-            try:
-                controller.deinit()
-            except Exception:
-                pass
-        if i2c_bus is not None:
-            try:
-                i2c_bus.deinit()
-            except Exception:
-                pass
+        close_quietly(controller)
+        close_quietly(i2c_bus)
 
     if reason:
         queue_message(f"SERVO: Controller connection was reset: {reason}")
@@ -966,11 +962,7 @@ def _notify_movement_end():
             queue_message(f"ERROR: Failed to resume UI/STT: {e}")
 
 def pulse_to_duty_cycle(pulse_value):
-    
-    MAX_PULSE = 600
-    pulse_us = 500 + (pulse_value / MAX_PULSE) * 2000
-    duty_cycle = int((pulse_us / 20000.0) * 65535)
-    return duty_cycle
+    return _pulse_to_duty_cycle(pulse_value, SERVO_MAX_PULSE)
 
 
 def get_servo_channel_bounds(channel):
@@ -987,72 +979,25 @@ def get_servo_channel_bounds(channel):
         8: (rightForarmMin, rightForarmMax),
         9: (rightHandMin, rightHandMax),
     }
-    values = ranges.get(channel)
-    if values is None:
-        return None
-    return max(SERVO_MIN_PULSE, min(values)), min(SERVO_MAX_PULSE, max(values))
+    return channel_bounds(channel, ranges, SERVO_MIN_PULSE, SERVO_MAX_PULSE)
 
 
 def _validate_servo_write(channel, pwm_value, enforce_calibrated_bounds=True):
     """Validate the final hardware command at the last boundary before I2C."""
-    if isinstance(channel, bool) or not isinstance(channel, Integral):
-        queue_message(f"ERROR: Refused servo write with invalid channel {channel!r}")
-        return None
-    channel = int(channel)
-    bounds = get_servo_channel_bounds(channel)
-    if bounds is None:
-        queue_message(
-            f"ERROR: Refused servo write to unassigned channel {channel}; "
-            "TARS servo channels are 0-9"
-        )
-        return None
-
-    if isinstance(pwm_value, bool) or not isinstance(pwm_value, Real):
-        queue_message(
-            f"ERROR: Refused non-numeric PWM value {pwm_value!r} on channel {channel}"
-        )
-        return None
-    numeric_value = float(pwm_value)
-    if not math.isfinite(numeric_value) or not numeric_value.is_integer():
-        queue_message(
-            f"ERROR: Refused non-integer PWM value {pwm_value!r} on channel {channel}"
-        )
-        return None
-    pwm_value = int(numeric_value)
-    if not SERVO_MIN_PULSE <= pwm_value <= SERVO_MAX_PULSE:
-        queue_message(
-            f"ERROR: Refused unsafe PWM value {pwm_value} on channel {channel}; "
-            f"controller range is {SERVO_MIN_PULSE}-{SERVO_MAX_PULSE}"
-        )
-        return None
-
-    if enforce_calibrated_bounds:
-        minimum, maximum = bounds
-        if not minimum <= pwm_value <= maximum:
-            # A saved position can legitimately predate the current offsets.
-            # Refusing every out-of-envelope intermediate value would strand
-            # that joint at the stale position: it could not travel back into
-            # the newly calibrated range. Permit only monotonic recovery toward
-            # the nearest boundary. A joint already inside its envelope can
-            # never use this exception to travel outside it.
-            current = servo_positions.get(channel)
-            recovering_low = (
-                isinstance(current, Real)
-                and current < minimum
-                and current < pwm_value < minimum
-            )
-            recovering_high = (
-                isinstance(current, Real)
-                and current > maximum
-                and maximum < pwm_value < current
-            )
-            if not (recovering_low or recovering_high):
-                queue_message(
-                    f"ERROR: Refused PWM value {pwm_value} on channel {channel}; "
-                    f"calibrated range is {minimum}-{maximum}"
-                )
-                return None
-    return channel, pwm_value
+    normalized_channel = int(channel) if isinstance(channel, int) and not isinstance(channel, bool) else channel
+    bounds = get_servo_channel_bounds(normalized_channel) if isinstance(normalized_channel, int) else None
+    result, error = validate_write(
+        channel,
+        pwm_value,
+        bounds,
+        servo_positions.get(normalized_channel),
+        controller_minimum=SERVO_MIN_PULSE,
+        controller_maximum=SERVO_MAX_PULSE,
+        enforce_calibrated_bounds=enforce_calibrated_bounds,
+    )
+    if error:
+        queue_message(f"ERROR: Refused servo write with {error}")
+    return result
 
 
 def _write_servo_pwm_unlocked(channel, pwm_value):
@@ -1230,37 +1175,18 @@ def _disable_controller_outputs(controller, attempts=3):
     Retry only the channels that failed while continuing to release every
     other output. Return the channels that could not be confirmed off.
     """
-    if controller is None:
-        return []
-
-    pending = list(range(16))
-    last_errors = {}
-    # Emergency release bypasses the movement command lock, but it must not
-    # interleave register writes with the one I2C transaction already in
-    # flight. Once this short bus lock is acquired, the emergency latch blocks
-    # the movement thread from issuing another non-zero write.
-    with _pwm_io_lock:
-        for attempt in range(max(1, int(attempts))):
-            failed = []
-            for channel in pending:
-                try:
-                    controller.channels[channel].duty_cycle = 0
-                    last_errors.pop(channel, None)
-                except Exception as exc:
-                    failed.append(channel)
-                    last_errors[channel] = exc
-            pending = failed
-            if not pending:
-                return []
-            if attempt < attempts - 1:
-                time.sleep(0.03 * (attempt + 1))
-
-    for channel in pending:
+    def report(channel, exc):
         queue_message(
             f"ERROR: Could not disable servo channel {channel}: "
-            f"{_describe_hardware_error(last_errors[channel])}"
+            f"{_describe_hardware_error(exc)}"
         )
-    return pending
+
+    return _hardware_disable_outputs(
+        controller,
+        io_lock=_pwm_io_lock,
+        attempts=attempts,
+        on_error=report,
+    )
 
 
 def disable_all_servos():
@@ -1526,7 +1452,7 @@ def end_direct_servo_session(name, success=True, error=None):
 def move_servos_timed(movements, duration, easing_strength=None):
     """
     Move multiple servos to their targets over a fixed duration at 50 Hz.
-    
+
     Parameters:
     - movements: List of (channel, target_value) tuples
     - duration: Total move duration in seconds
@@ -1614,11 +1540,7 @@ def move_servos_timed(movements, duration, easing_strength=None):
             raise MovementCancelled()
 
         linear_progress = frame / frame_count
-        smooth_progress = linear_progress * linear_progress * (3.0 - 2.0 * linear_progress)
-        progress = (
-            linear_progress * (1.0 - effective_easing)
-            + smooth_progress * effective_easing
-        )
+        progress = eased_progress(linear_progress, effective_easing)
 
         for servo in servo_data:
             value = int(round(servo['start'] + (servo['target'] - servo['start']) * progress))
@@ -1650,9 +1572,7 @@ def move_servos_synchronized(movements, speed_factor, easing_strength=None):
             active.append(abs(int(round(target_value)) - int(start)))
 
     max_distance = max(active, default=0)
-    speed = max(0.05, min(1.0, float(speed_factor)))
-    ticks_per_second = 70.0 + 230.0 * speed
-    duration = max(0.10, max_distance / ticks_per_second)
+    duration = synchronized_duration(max_distance, speed_factor)
     move_servos_timed(movements, duration, easing_strength=easing_strength)
 
 
@@ -1777,12 +1697,6 @@ def move_legs_original(left_height_percent=None, right_height_percent=None,
                        left_leg_percent=None, right_leg_percent=None,
                        speed_factor=1.0):
     """Map leg percentages through calibration, then use the original mover."""
-    def percentage_to_value(percent, min_val, max_val):
-        if percent is None or percent == 0:
-            return None
-        normalized = (percent - 1) / 99.0
-        return int(round(min_val + (max_val - min_val) * normalized))
-
     movements = [
         (0, percentage_to_value(left_height_percent, leftUpHeight, leftDownHeight)),
         (1, percentage_to_value(right_height_percent, rightUpHeight, rightDownHeight)),
@@ -1794,7 +1708,7 @@ def move_legs_original(left_height_percent=None, right_height_percent=None,
 def move_legs(left_height_percent=None, right_height_percent=None, left_leg_percent=None, right_leg_percent=None, speed_factor=1.0):
     """
     Move leg servos to specified positions.
-    
+
     Parameters:
     - left_height_percent: Left leg height (1-100, None to skip)
     - right_height_percent: Right leg height (1-100, None to skip)
@@ -1802,28 +1716,21 @@ def move_legs(left_height_percent=None, right_height_percent=None, left_leg_perc
     - right_leg_percent: Right leg forward/back (1-100, None to skip)
     - speed_factor: Speed multiplier (0.0-1.0, higher is faster)
     """
-    
-    def percentage_to_value(percent, min_val, max_val):
-        if percent == 0:
-            return None
-        normalized = (percent - 1) / 99.0
-        value = min_val + (max_val - min_val) * normalized
-        return int(round(value))
 
     movements = []
-    
+
     if left_height_percent is not None and left_height_percent != 0:
         target_value = percentage_to_value(left_height_percent, leftUpHeight, leftDownHeight)
         movements.append((0, target_value))
-    
+
     if right_height_percent is not None and right_height_percent != 0:
         target_value = percentage_to_value(right_height_percent, rightUpHeight, rightDownHeight)
         movements.append((1, target_value))
-    
+
     if left_leg_percent is not None and left_leg_percent != 0:
         target_value = percentage_to_value(left_leg_percent, forwardLeftLeg, backLeftLeg)
         movements.append((2, target_value))
-    
+
     if right_leg_percent is not None and right_leg_percent != 0:
         target_value = percentage_to_value(right_leg_percent, forwardRightLeg, backRightLeg)
         movements.append((3, target_value))
@@ -1835,12 +1742,6 @@ def move_legs_timed(left_height_percent=None, right_height_percent=None,
                     left_leg_percent=None, right_leg_percent=None,
                     duration=0.3, easing_strength=None):
     """Move the four leg servos as one coordinated, duration-based pose."""
-    def percentage_to_value(percent, min_val, max_val):
-        if percent is None or percent == 0:
-            return None
-        normalized = (percent - 1) / 99.0
-        return int(round(min_val + (max_val - min_val) * normalized))
-
     movements = [
         (0, percentage_to_value(left_height_percent, leftUpHeight, leftDownHeight)),
         (1, percentage_to_value(right_height_percent, rightUpHeight, rightDownHeight)),
@@ -1853,7 +1754,7 @@ def move_arm(left_main=None, left_forearm=None, left_hand=None,
              right_main=None, right_forearm=None, right_hand=None, speed_factor=1.0):
     """
     Move arm servos to specified positions.
-    
+
     Parameters:
     - left_main: Left main arm position (1-100, None to skip, -1 to hold)
     - left_forearm: Left forearm position (1-100, None to skip, -1 to hold)
@@ -1863,11 +1764,11 @@ def move_arm(left_main=None, left_forearm=None, left_hand=None,
     - right_hand: Right hand position (1-100, None to skip, -1 to hold)
     - speed_factor: Speed multiplier (0.0-1.0, higher is faster)
     """
-    
+
     arm_speed_curve = 0.2
     adjusted_speed = speed_factor ** arm_speed_curve
     arm_easing_strength = 0.85
-    
+
     def percentage_to_value(percent, min_val, max_val):
         if percent == 0:
             return None

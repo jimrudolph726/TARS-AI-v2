@@ -20,8 +20,6 @@ import json
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, Future
-from difflib import SequenceMatcher
-from io import BytesIO
 from typing import Callable, Optional
 
 import numpy as np
@@ -39,6 +37,9 @@ from modules.module_messageQue import queue_message
 from modules.module_config import load_config, get_capabilities
 from modules.module_tts import is_tts_playing
 from modules.module_state import set_tars_state, get_tars_state, TarsState
+from modules.module_stt_audio import STTAudioProcessor
+from modules.module_stt_wake import fire_and_forget_get, fuzzy_wake_word_match
+from modules.module_stt_bargein import find_novel_words, normalize_words
 
 CONFIG = load_config()
 CAPABILITIES = get_capabilities()
@@ -103,24 +104,6 @@ _NON_ALNUM_SPACE_RE = re.compile(r'[^a-zA-Z0-9\s]')
 # Suppress parallelism warnings
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# Noise artifacts commonly produced by STT models for non-speech audio
-_NOISE_ARTIFACTS = frozenset({
-    'uh', 'um', 'hm', 'hmm', 'mm', 'mhm', 'ah', 'oh', 'eh',
-    'huh', 'ha', 'sh', 'shh', 'ss', 'tt', 'ts',
-})
-
-# Common filler/noise words for barge-in filtering
-_BARGEIN_NOISE_WORDS = frozenset({
-    '', 'a', 'i', 'uh', 'um', 'ah', 'oh', 'hm', 'hmm', 'mm',
-    'the', 'is', 'it', 'to', 'and', 'of', 'in', 'that', 'thats',
-    'an', 'or', 'so', 'do', 'no', 'my', 'me', 'we', 'he', 'she',
-    'be', 'at', 'by', 'if', 'up', 'as', 'on', 'you', 'not', 'but',
-    'can', 'got', 'has', 'had', 'was', 'are', 'for', 'too', 'its',
-    'all', 'his', 'her', 'him', 'our', 'who', 'how', 'did', 'get',
-    'let', 'may', 'new', 'now', 'old', 'one', 'out', 'own', 'say',
-    'set', 'try', 'two', 'way', 'yet', 'any', 'few', 'per', 'put',
-})
-
 # Global STT manager instance
 _stt_manager_instance = None
 
@@ -176,6 +159,7 @@ class STTManager:
             queue_message(f"INFO: Mic native rate {self.DEVICE_SAMPLE_RATE} Hz — will resample to {self.MODEL_RATE} Hz")
 
         self.amp_gain = CONFIG['STT'].get('mic_amp_gain', 10.0)
+        self.audio_processor = STTAudioProcessor(self.amp_gain)
         self.silence_margin = CONFIG['STT'].get('silence_margin', 3.0)
         self.wake_silence_threshold = None
         self.silence_threshold = None  # Updated after measuring background noise
@@ -538,24 +522,14 @@ class STTManager:
     @staticmethod
     def _compute_rms(data):
         """Fast RMS computation for int16 audio data. Returns float or None."""
-        if data.size == 0:
-            return None
-        flat = data.reshape(-1).astype(np.float64)
-        if np.all(flat == 0):
-            return None
-        return np.sqrt(np.mean(np.square(flat)))
+        return STTAudioProcessor.compute_rms(data)
 
     def amplify_audio(self, data: np.ndarray) -> np.ndarray:
-        return np.clip(data * self.amp_gain, -32768, 32767).astype(np.int16)
+        return self.audio_processor.amplify(data)
 
     def _compute_rms_fast(self, data):
         """Compute RMS with amplification in one pass — no int16 round-trip."""
-        if data.size == 0:
-            return None
-        flat = data.reshape(-1).astype(np.float64) * self.amp_gain
-        if np.all(flat == 0):
-            return None
-        return np.sqrt(np.mean(np.square(flat)))
+        return self.audio_processor.compute_amplified_rms(data)
 
     def play_wav(self, filename):
         try:
@@ -681,19 +655,11 @@ class STTManager:
 
     def _chunks_to_wav_buffer(self, chunks, sample_rate):
         """Convert list of int16 numpy chunks to a WAV BytesIO buffer."""
-        buf = BytesIO()
-        with wave.open(buf, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            for chunk in chunks:
-                wf.writeframes(chunk.tobytes())
-        buf.seek(0)
-        return buf
+        return self.audio_processor.chunks_to_wav_buffer(chunks, sample_rate)
 
     def _chunks_to_float32(self, chunks):
         """Convert list of int16 numpy chunks to a single float32 array."""
-        return np.concatenate(chunks).astype(np.float32).flatten() / 32768.0
+        return self.audio_processor.chunks_to_float32(chunks)
 
     # === Result Emission ===
 
@@ -730,17 +696,7 @@ class STTManager:
     @staticmethod
     def _is_meaningful_text(text: str) -> bool:
         """Check if transcribed text contains actual words, not just noise artifacts."""
-        if not text:
-            return False
-        # Strip punctuation/symbols to get only alphanumeric characters
-        cleaned = _NON_ALNUM_RE.sub('', text)
-        # Require at least 2 meaningful characters
-        if len(cleaned) < 2:
-            return False
-        # Check against known noise transcription artifacts
-        if cleaned.lower() in _NOISE_ARTIFACTS:
-            return False
-        return True
+        return STTAudioProcessor.meaningful_text(text)
 
     # === Main Processing Loop ===
 
@@ -1724,19 +1680,11 @@ class STTManager:
 
     @staticmethod
     def _fuzzy_wake_word_match(transcript: str, wake_word: str, threshold: float = 0.6) -> bool:
-        wake_words = wake_word.split()
-        transcript_words = transcript.split()
-        if len(transcript_words) < len(wake_words):
-            return False
-        for i in range(len(transcript_words) - len(wake_words) + 1):
-            window = transcript_words[i:i + len(wake_words)]
-            if all(SequenceMatcher(None, tw, ww).ratio() >= threshold for tw, ww in zip(window, wake_words)):
-                return True
-        return False
+        return fuzzy_wake_word_match(transcript, wake_word, threshold)
 
     @staticmethod
     def _fire_and_forget_get(url):
-        threading.Thread(target=lambda: requests.get(url, timeout=1), daemon=True).start()
+        fire_and_forget_get(url)
 
     # === Progress Bar ===
 
@@ -1970,12 +1918,7 @@ class STTManager:
                 time.sleep(0.1)
 
         if rms_values:
-            bg_rms = np.array(rms_values)
-            # Remove outliers using IQR
-            q1, q3 = np.percentile(bg_rms, [25, 75])
-            iqr = q3 - q1
-            filtered = bg_rms[(bg_rms >= q1 - 1.5 * iqr) & (bg_rms <= q3 + 1.5 * iqr)]
-            self.wake_silence_threshold = np.max(filtered) if filtered.size > 0 else np.median(bg_rms)
+            self.wake_silence_threshold = self.audio_processor.noise_floor(rms_values)
             self.silence_threshold = self.wake_silence_threshold * self.silence_margin
             self.silence_threshold_margin = self.silence_threshold
             db = 20 * np.log10(self.silence_threshold) if self.silence_threshold > 0 else -999
@@ -2268,46 +2211,13 @@ class STTManager:
         common mis-transcriptions (e.g. "under" from "on your", "worries" from "warriors").
 
         Returns list of novel words, or empty list if all words match TTS."""
-        cleaned = _NON_ALNUM_SPACE_RE.sub('', transcript.lower())
-        heard_words = cleaned.split()
-        if not heard_words:
-            return []
-
-        if window_words is None:
-            window_words = set()
-
-        novel = []
-        for w in heard_words:
-            # Filter out common filler/noise transcription artifacts and short words
-            if w in _BARGEIN_NOISE_WORDS or len(w) <= 2:
-                continue
-
-            # Exact match against all TTS words
-            if w in tts_words_all:
-                continue
-
-            # Check if word is in the sliding window (currently being spoken — likely bleed)
-            if w in window_words:
-                continue
-
-            matched = False
-
-            # Fuzzy match: only for 4+ char words with similar length, high threshold
-            # Catches bleed misspellings like "yard"/"yarn", "satelite"/"satellite"
-            if len(w) >= 4:
-                compare_set = window_words | tts_words_all
-                for tts_w in compare_set:
-                    if len(tts_w) >= 4 and abs(len(w) - len(tts_w)) <= 2:
-                        ratio = SequenceMatcher(None, w, tts_w).ratio()
-                        if ratio >= self._bargein_broad_threshold:
-                            matched = True
-                            break
-
-            if not matched:
-                novel.append(w)
-
-        # Require minimum novel words — fewer = more sensitive to interrupts
-        return novel if len(novel) >= self._bargein_min_novel else []
+        return find_novel_words(
+            transcript,
+            tts_words_all,
+            window_words,
+            broad_threshold=self._bargein_broad_threshold,
+            minimum_novel=self._bargein_min_novel,
+        )
 
     def update_bargein_tts_text(self, tts_text):
         """Update the TTS text used by the fuzzy barge-in monitor.
@@ -2316,8 +2226,7 @@ class STTManager:
         monitor can distinguish speaker bleed from real user speech."""
         if not self._bargein_active:
             return
-        cleaned = _NON_ALNUM_SPACE_RE.sub('', tts_text.lower())
-        word_list = cleaned.split()
+        word_list = normalize_words(tts_text)
         self._bargein_tts_data['word_list'] = word_list
         self._bargein_tts_data['words_all'] = set(word_list)
 

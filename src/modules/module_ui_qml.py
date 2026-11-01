@@ -8,7 +8,6 @@ GUI thread.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 import threading
@@ -20,115 +19,17 @@ from typing import Callable, Optional
 import numpy as np
 
 from PySide6.QtCore import (
-    QAbstractListModel,
-    QModelIndex,
     QObject,
     Property,
-    Qt,
     QTimer,
     QUrl,
     Signal,
     Slot,
 )
 from PySide6.QtGui import QImage
-from PySide6.QtQuick import QQuickImageProvider
-
-
-class ConversationModel(QAbstractListModel):
-    """Conversation history exposed directly to the QML ``ListView``."""
-
-    SpeakerRole = Qt.UserRole + 1
-    MessageRole = Qt.UserRole + 2
-    TimeRole = Qt.UserRole + 3
-    IsTarsRole = Qt.UserRole + 4
-
-    def __init__(self, maximum_rows: int = 40, parent: Optional[QObject] = None):
-        super().__init__(parent)
-        self._items: list[dict[str, object]] = []
-        self._maximum_rows = maximum_rows
-
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: N802
-        return 0 if parent.isValid() else len(self._items)
-
-    def data(self, index: QModelIndex, role: int = Qt.DisplayRole):  # noqa: ANN001
-        if not index.isValid() or not 0 <= index.row() < len(self._items):
-            return None
-        item = self._items[index.row()]
-        role_map = {
-            self.SpeakerRole: "speaker",
-            self.MessageRole: "message",
-            self.TimeRole: "time",
-            self.IsTarsRole: "isTars",
-        }
-        key = role_map.get(role)
-        return item.get(key) if key else None
-
-    def roleNames(self) -> dict[int, bytes]:  # noqa: N802
-        return {
-            self.SpeakerRole: b"speaker",
-            self.MessageRole: b"message",
-            self.TimeRole: b"messageTime",
-            self.IsTarsRole: b"isTars",
-        }
-
-    def add_message(self, speaker: str, message: str, is_tars: bool) -> None:
-        if len(self._items) >= self._maximum_rows:
-            self.beginRemoveRows(QModelIndex(), 0, 0)
-            self._items.pop(0)
-            self.endRemoveRows()
-
-        row = len(self._items)
-        self.beginInsertRows(QModelIndex(), row, row)
-        self._items.append(
-            {
-                "speaker": speaker,
-                "message": message,
-                "time": datetime.now().strftime("%I:%M %p").lstrip("0"),
-                "isTars": is_tars,
-            }
-        )
-        self.endInsertRows()
-
-    def update_last_message(self, message: str) -> None:
-        if not self._items:
-            self.add_message("TARS", message, True)
-            return
-        row = len(self._items) - 1
-        self._items[row]["message"] = message
-        index = self.index(row, 0)
-        self.dataChanged.emit(index, index, [self.MessageRole])
-
-    def update_speaker(self, old_speaker: str, text: str, new_speaker: str) -> None:
-        for row in range(len(self._items) - 1, -1, -1):
-            item = self._items[row]
-            if item["speaker"] == old_speaker and item["message"] == text:
-                item["speaker"] = new_speaker
-                index = self.index(row, 0)
-                self.dataChanged.emit(index, index, [self.SpeakerRole])
-                return
-
-
-class CameraImageProvider(QQuickImageProvider):
-    """Serve the controller's latest camera frame to QML without disk I/O."""
-
-    def __init__(self, controller: "TarsUIController") -> None:
-        super().__init__(QQuickImageProvider.Image)
-        self._controller = controller
-
-    def requestImage(self, _image_id, size, requested_size):  # noqa: N802, ANN001
-        image = self._controller.camera_image()
-        if image.isNull():
-            image = QImage(640, 480, QImage.Format_RGB888)
-            image.fill(Qt.black)
-        if requested_size.isValid():
-            image = image.scaled(
-                requested_size,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
-        size.setWidth(image.width())
-        size.setHeight(image.height())
-        return image
+from modules.module_ui_qml_models import CameraImageProvider, ConversationModel
+from modules.module_ui_remote import RemoteAccessService
+from modules.module_ui_telemetry import build_system_diagnostics, collect_resource_metrics
 
 
 class TarsUIController(QObject):
@@ -234,6 +135,7 @@ class TarsUIController(QObject):
         self._remote_status = "Remote access is ready"
         self._remote_url = ""
         self._remote_error = ""
+        self._remote_service = RemoteAccessService(self._queue_remote_update)
         self._wifi_networks: list[dict[str, object]] = []
         self._calibration_active = False
         self._calibration_launching = False
@@ -961,49 +863,10 @@ class TarsUIController(QObject):
 
     @staticmethod
     def _remote_local_url() -> str:
-        try:
-            from modules.module_config import load_config
-            from modules.module_wifi import WiFiManager
-
-            port = int(load_config().get("ACCESS", {}).get("webui_port", 80))
-            host = WiFiManager.HOTSPOT_IP
-            return f"http://{host}:{port}" if port != 80 else f"http://{host}"
-        except Exception:
-            return "http://10.42.0.1"
+        return RemoteAccessService.local_url()
 
     def _refresh_remote_worker(self) -> None:
-        try:
-            from modules.module_wifi import _get_manager
-
-            status = _get_manager().get_status()
-            mode = str(status.get("mode", "disconnected"))
-            if mode == "hotspot":
-                self._queue_remote_update(
-                    "hotspot",
-                    "TARS setup hotspot is active",
-                    self._remote_local_url(),
-                )
-                return
-            if mode == "client":
-                try:
-                    from modules.module_chatui import _get_tunnel_status
-
-                    tunnel = _get_tunnel_status()
-                    if tunnel.get("state") == "active" and tunnel.get("url"):
-                        self._queue_remote_update(
-                            "active", "Remote tunnel is online", str(tunnel["url"])
-                        )
-                        return
-                except Exception:
-                    pass
-                ssid = str(status.get("ssid") or "Wi-Fi")
-                self._queue_remote_update("ready", f"Connected to {ssid}")
-                return
-            self._queue_remote_update("offline", "No Wi-Fi connection")
-        except Exception as exc:
-            self._queue_remote_update(
-                "error", "Unable to read remote-access status", "", {"error": str(exc)}
-            )
+        self._remote_service.refresh()
 
     @Slot()
     def refreshRemoteAccess(self) -> None:
@@ -1015,20 +878,7 @@ class TarsUIController(QObject):
         ).start()
 
     def _scan_wifi_worker(self) -> None:
-        try:
-            from modules.module_wifi import _get_manager
-
-            networks = _get_manager().scan_networks(rescan=True)
-            self._queue_remote_update(
-                "networks",
-                f"{len(networks)} network{'s' if len(networks) != 1 else ''} found",
-                "",
-                {"networks": networks},
-            )
-        except Exception as exc:
-            self._queue_remote_update(
-                "error", "Wi-Fi scan failed", "", {"error": str(exc)}
-            )
+        self._remote_service.scan_wifi()
 
     @Slot()
     def scanWifiNetworks(self) -> None:
@@ -1040,25 +890,7 @@ class TarsUIController(QObject):
         ).start()
 
     def _connect_wifi_worker(self, ssid: str, password: str) -> None:
-        try:
-            from modules.module_wifi import _get_manager
-
-            manager = _get_manager()
-            if manager.get_status().get("mode") == "hotspot":
-                manager.stop_hotspot()
-            if manager.connect(ssid, password):
-                self._queue_remote_update("ready", f"Connected to {ssid}")
-            else:
-                self._queue_remote_update(
-                    "error",
-                    f"Could not connect to {ssid}",
-                    "",
-                    {"error": "Check the password and try again."},
-                )
-        except Exception as exc:
-            self._queue_remote_update(
-                "error", f"Could not connect to {ssid}", "", {"error": str(exc)}
-            )
+        self._remote_service.connect_wifi(ssid, password)
 
     @Slot(str, str)
     def connectWifiNetwork(self, ssid: str, password: str) -> None:
@@ -1075,49 +907,7 @@ class TarsUIController(QObject):
         ).start()
 
     def _start_remote_worker(self) -> None:
-        try:
-            from modules.module_wifi import _get_manager
-
-            manager = _get_manager()
-            wifi_status = manager.get_status()
-            if wifi_status.get("mode") != "client":
-                self._queue_remote_update("starting", "Starting TARS setup hotspot")
-                if not manager.start_hotspot():
-                    raise RuntimeError("NetworkManager could not start the hotspot")
-                self._queue_remote_update(
-                    "hotspot",
-                    "TARS setup hotspot is active",
-                    self._remote_local_url(),
-                )
-                return
-
-            from modules.module_chatui import (
-                _cloudflared_bin,
-                _get_tunnel_status,
-                _install_cloudflared,
-                _start_tunnel,
-            )
-
-            tunnel = _get_tunnel_status()
-            if tunnel.get("state") == "active" and tunnel.get("url"):
-                self._queue_remote_update(
-                    "active", "Remote tunnel is online", str(tunnel["url"])
-                )
-                return
-            if not _cloudflared_bin():
-                self._queue_remote_update("starting", "Installing remote-access service")
-                ok, error = _install_cloudflared()
-                if not ok:
-                    raise RuntimeError(str(error))
-            self._queue_remote_update("starting", "Starting encrypted remote tunnel")
-            ok, result = _start_tunnel()
-            if not ok:
-                raise RuntimeError(str(result))
-            self._queue_remote_update("active", "Remote tunnel is online", str(result))
-        except Exception as exc:
-            self._queue_remote_update(
-                "error", "Remote access failed", "", {"error": str(exc)}
-            )
+        self._remote_service.start()
 
     @Slot()
     def startRemoteAccess(self) -> None:
@@ -1129,20 +919,7 @@ class TarsUIController(QObject):
         ).start()
 
     def _stop_remote_worker(self, stop_hotspot: bool) -> None:
-        try:
-            if stop_hotspot:
-                from modules.module_wifi import _get_manager
-
-                _get_manager().stop_hotspot()
-            else:
-                from modules.module_chatui import _stop_tunnel
-
-                _stop_tunnel()
-            self._queue_remote_update("idle", "Remote access stopped")
-        except Exception as exc:
-            self._queue_remote_update(
-                "error", "Unable to stop remote access", "", {"error": str(exc)}
-            )
+        self._remote_service.stop(stop_hotspot)
 
     @Slot()
     def stopRemoteAccess(self) -> None:
@@ -1399,144 +1176,25 @@ class TarsUIController(QObject):
         self._build_system_diagnostics(battery, stt)
         self.telemetryChanged.emit()
 
-    @staticmethod
-    def _format_uptime(seconds: float) -> str:
-        total_minutes = max(0, int(seconds // 60))
-        days, remaining = divmod(total_minutes, 1440)
-        hours, minutes = divmod(remaining, 60)
-        if days:
-            return f"{days}d {hours}h"
-        if hours:
-            return f"{hours}h {minutes}m"
-        return f"{minutes}m"
-
     def _collect_resource_metrics(self) -> None:
-        try:
-            import psutil
-
-            self._memory_percent = round(float(psutil.virtual_memory().percent))
-            self._disk_percent = round(float(psutil.disk_usage(str(self._base_dir)).percent))
-            uptime_seconds = time.time() - float(psutil.boot_time())
-        except Exception:
-            try:
-                disk = shutil.disk_usage(self._base_dir)
-                self._disk_percent = round((disk.used / disk.total) * 100) if disk.total else 0
-            except Exception:
-                self._disk_percent = 0
-            try:
-                meminfo = {}
-                with open("/proc/meminfo", "r", encoding="utf-8") as handle:
-                    for line in handle:
-                        key, value = line.split(":", 1)
-                        meminfo[key] = int(value.strip().split()[0])
-                total = meminfo.get("MemTotal", 0)
-                available = meminfo.get("MemAvailable", 0)
-                self._memory_percent = round(((total - available) / total) * 100) if total else 0
-            except Exception:
-                self._memory_percent = 0
-            try:
-                uptime_seconds = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
-            except Exception:
-                uptime_seconds = time.monotonic() - self._process_started_at
-
-        self._uptime_text = self._format_uptime(uptime_seconds)
-        self._process_threads = threading.active_count()
+        metrics = collect_resource_metrics(self._base_dir, self._process_started_at)
+        self._memory_percent = int(metrics["memory_percent"])
+        self._disk_percent = int(metrics["disk_percent"])
+        self._uptime_text = str(metrics["uptime_text"])
+        self._process_threads = int(metrics["process_threads"])
 
     def _build_system_diagnostics(self, battery, stt) -> None:  # noqa: ANN001
-        controls = self._config.get("CONTROLS", {})
-        movement_enabled = bool(controls.get("enabled") or controls.get("voicemovement"))
-        servo_module = sys.modules.get("modules.module_servoctl")
-        servo_online = bool(servo_module is not None and getattr(servo_module, "pca", None) is not None)
-        if self._calibration_active:
-            servo_value, servo_state = "RESERVED", "warning"
-            servo_detail = "Exclusive control transferred to calibration"
-        elif not movement_enabled:
-            servo_value, servo_state = "DISABLED", "disabled"
-            servo_detail = "Movement is disabled in config.ini"
-        elif servo_online:
-            servo_value, servo_state = "ONLINE", "ok"
-            servo_detail = "PCA9685 servo controller detected"
-        else:
-            servo_value, servo_state = "OFFLINE", "error"
-            servo_detail = "PCA9685 is not available"
-
-        battery_enabled = bool(self._config.get("BATTERY", {}).get("battery_enabled", False))
-        battery_online = bool(
-            battery is not None and getattr(battery, "sensor_initialized", self._battery_available)
+        self._hardware_diagnostics, self._software_diagnostics = build_system_diagnostics(
+            self._config,
+            runtime_ready=self._runtime_ready,
+            runtime_status=self._runtime_status,
+            calibration_active=self._calibration_active,
+            camera_error=self._camera_error,
+            camera_initialized=self._camera_module is not None,
+            battery=battery,
+            battery_available=self._battery_available,
+            stt=stt,
         )
-        if not battery_enabled:
-            ina_value, ina_state = "DISABLED", "disabled"
-            ina_detail = "Battery monitoring is disabled"
-        elif battery_online:
-            ina_value, ina_state = "ONLINE", "ok"
-            ina_detail = "INA260 voltage and current sensor detected"
-        else:
-            ina_value, ina_state = "OFFLINE", "error"
-            ina_detail = "INA260 is not responding"
-
-        vision_enabled = bool(self._config.get("VISION", {}).get("enabled", False))
-        if not vision_enabled:
-            camera_value, camera_state = "DISABLED", "disabled"
-            camera_detail = "Vision is disabled in config.ini"
-        elif self._camera_error:
-            camera_value, camera_state = "ERROR", "error"
-            camera_detail = self._camera_error
-        elif self._camera_module is not None:
-            camera_value, camera_state = "ONLINE", "ok"
-            camera_detail = "Camera initialized and available"
-        else:
-            camera_value, camera_state = "CONFIGURED", "info"
-            camera_detail = "Camera will initialize on first use"
-
-        self._hardware_diagnostics = [
-            {"label": "SERVO CONTROLLER", "value": servo_value, "state": servo_state, "detail": servo_detail},
-            {"label": "BATTERY SENSOR", "value": ina_value, "state": ina_state, "detail": ina_detail},
-            {"label": "CAMERA", "value": camera_value, "state": camera_state, "detail": camera_detail},
-            {
-                "label": "MICROPHONE",
-                "value": "ONLINE" if stt is not None else "STARTING",
-                "state": "ok" if stt is not None else "warning",
-                "detail": "Shared audio input and wake-word stream",
-            },
-        ]
-
-        stt_config = self._config.get("STT", {})
-        llm_config = self._config.get("LLM", {})
-        tts_config = self._config.get("TTS")
-        stt_name = str(stt_config.get("stt_processor", "unknown")).upper()
-        llm_backend = str(llm_config.get("llm_backend", "unknown")).upper()
-        llm_model = str(
-            llm_config.get("openai_model")
-            or llm_config.get("other_model")
-            or "configured model"
-        )
-        tts_name = str(getattr(tts_config, "ttsoption", "unknown")).upper()
-        self._software_diagnostics = [
-            {
-                "label": "RUNTIME",
-                "value": "READY" if self._runtime_ready else "STARTING",
-                "state": "ok" if self._runtime_ready else "warning",
-                "detail": self._runtime_status,
-            },
-            {
-                "label": "SPEECH INPUT",
-                "value": stt_name,
-                "state": "ok" if stt is not None else "warning",
-                "detail": "Active transcription backend",
-            },
-            {
-                "label": "VOICE OUTPUT",
-                "value": tts_name,
-                "state": "ok",
-                "detail": "Configured text-to-speech backend",
-            },
-            {
-                "label": "LANGUAGE MODEL",
-                "value": llm_backend,
-                "state": "info",
-                "detail": llm_model,
-            },
-        ]
 
     def _wifi_poll_loop(self) -> None:
         while not self._wifi_stop.wait(8):

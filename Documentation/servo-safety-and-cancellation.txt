@@ -12,6 +12,12 @@ before the I2C write. A command is rejected when:
 - Another thread owns the movement lock.
 - The PCA9685 is unavailable or reserved for calibration.
 
+The public compatibility API remains in module_servoctl.py. Pure pulse,
+envelope, mapping, easing, and duration rules now live in module_servo_math.py;
+PCA9685 probing, best-effort release, and cleanup primitives live in
+module_servo_hardware.py. This keeps the safety rules testable without I2C and
+keeps low-level hardware ownership out of the calculation layer.
+
 If a saved joint position predates a calibration change and is already just
 outside the new envelope, the runtime permits only successive values that move
 that joint back toward the nearest calibrated boundary. It still rejects any

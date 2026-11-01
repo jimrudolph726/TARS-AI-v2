@@ -446,6 +446,10 @@ class MainInterfaceController(QObject):
     def avatarEmotion(self) -> str:
         return "NEUTRAL"
 
+    @Property(str, constant=True)
+    def eyeMood(self) -> str:
+        return "NEUTRAL"
+
     @Property(str, notify=remoteChanged)
     def remoteState(self) -> str:
         return self._remote_state
@@ -639,12 +643,12 @@ def main() -> int:
     app.setOrganizationName("TARS-AI")
 
     def load_font(filename: str, fallback: str) -> str:
-        font_id = QFontDatabase.addApplicationFont(str(ROOT / "modules" / "UI" / filename))
+        font_id = QFontDatabase.addApplicationFont(str(ROOT / "qml" / "fonts" / filename))
         families = QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else []
         return families[0] if families else fallback
 
-    # Bundle the same fonts used by the existing Pygame interface so rendering
-    # does not depend on desktop-only font packages on either Windows or Pi OS.
+    # Bundle the interface fonts so rendering does not depend on desktop-only
+    # font packages on either Windows or Pi OS.
     display_font = load_font("pixelmix.ttf", "Sans Serif")
     mono_font = load_font("mono.ttf", "Monospace")
 

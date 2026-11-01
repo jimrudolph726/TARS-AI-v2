@@ -4,12 +4,12 @@
 
 [ "$EUID" -eq 0 ] && exit 1
 
-TARS_DIR="$HOME/TARS-AI"
+TARS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARS_WAS_RUNNING=false
 
 echo "=== RetroPie launch ==="
 
-TARS_PID=$(pgrep -f "python.*App-Start.py" | head -1)
+TARS_PID=$(pgrep -f "python.*src/app.py" | head -1)
 if [ -n "$TARS_PID" ]; then
     TARS_WAS_RUNNING=true
     TARS_PGID=$(ps -o pgid= -p "$TARS_PID" | tr -d ' ')
@@ -26,7 +26,7 @@ if [ -n "$TARS_PID" ]; then
         sleep 1
     fi
 
-    pkill -9 -f "App-Start.py" 2>/dev/null
+    pkill -9 -f "src/app.py" 2>/dev/null
     pkill -9 -f "module_btcontroller" 2>/dev/null
     echo "TARS stopped."
 fi
@@ -46,5 +46,5 @@ if [ "$TARS_WAS_RUNNING" = true ]; then
     export WAYLAND_DISPLAY=wayland-0
     cd "$TARS_DIR"
     source src/.venv/bin/activate
-    exec python App-Start.py
+    exec ./tars-launcher.sh
 fi

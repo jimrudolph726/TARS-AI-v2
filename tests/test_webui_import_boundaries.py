@@ -47,20 +47,52 @@ class WebUIImportBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(before, after)
 
-    def test_active_interfaces_do_not_import_pygame(self):
-        active_files = [
-            SRC / "app.py",
-            SRC / "modules" / "module_runtime.py",
-            SRC / "modules" / "module_ui_qml.py",
-            SRC / "modules" / "module_chatui.py",
-            *WEBUI.rglob("*.py"),
-        ]
+    def test_active_source_does_not_import_pygame(self):
+        active_files = list(SRC.rglob("*.py"))
         offenders = []
         for path in active_files:
             imports = _import_names(_tree(path))
             if any(name == "pygame" or name.startswith("pygame.") for name in imports):
                 offenders.append(str(path.relative_to(ROOT)))
         self.assertEqual([], offenders)
+
+    def test_active_source_does_not_import_archived_ui(self):
+        forbidden = ("UI", "modules.UI")
+        offenders = []
+        for path in SRC.rglob("*.py"):
+            imports = _import_names(_tree(path))
+            if any(
+                name == prefix or name.startswith(f"{prefix}.")
+                for name in imports
+                for prefix in forbidden
+            ):
+                offenders.append(str(path.relative_to(ROOT)))
+        self.assertEqual([], offenders)
+
+    def test_pygame_is_not_installed_or_launched(self):
+        install_text = (ROOT / "Install.sh").read_text(encoding="utf-8").lower()
+        self.assertNotIn("pygame", install_text)
+
+        launchers = [
+            ROOT / "tars-launcher.sh",
+            ROOT / "lp.sh",
+            ROOT / "toggle-autostart.sh",
+            ROOT / "launch_retropie.sh",
+        ]
+        offenders = []
+        for path in launchers:
+            text = path.read_text(encoding="utf-8").lower()
+            if "app-start.py" in text or "pygame" in text:
+                offenders.append(str(path.relative_to(ROOT)))
+        self.assertEqual([], offenders)
+
+    def test_legacy_pygame_interface_is_outside_active_source(self):
+        archive = ROOT / "legacy" / "pygame"
+        self.assertTrue((archive / "README.md").is_file())
+        self.assertTrue((archive / "App-Start.py").is_file())
+        self.assertTrue((archive / "src" / "app-servotester.py").is_file())
+        self.assertFalse((SRC / "app-servotester.py").exists())
+        self.assertFalse((SRC / "modules" / "module_ui.py").exists())
 
     def test_webui_does_not_import_servo_hardware_at_module_scope(self):
         offenders = []

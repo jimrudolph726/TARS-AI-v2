@@ -1,0 +1,39 @@
+TARS-AI V2 PYGAME RETIREMENT
+============================
+
+SUPPORTED INTERFACES
+--------------------
+
+- On-device main interface: src/app.py with PySide6/QML
+- Servo calibration: src/app-servotester-qml.py with PySide6/QML
+- Remote control: Flask/Socket.IO browser WebUI
+- Terminal diagnostics: ./tars-launcher.sh --terminal
+
+ACTIVE RUNTIME BOUNDARY
+-----------------------
+
+Pygame is not installed by Install.sh and no Python source beneath src/ may
+import it. Camera capture, expression state, and generated-image presentation
+are toolkit-neutral services in modules/module_camera.py,
+modules/module_expression_state.py, and modules/module_display.py.
+
+tests/test_webui_import_boundaries.py enforces this rule across all active
+Python sources and verifies launchers do not reference the retired entry point.
+
+ARCHIVE
+-------
+
+The original Pygame launcher, main UI, servo tester, apps, and screensavers are
+stored beneath legacy/pygame/. They are retained only to preserve implementation
+history and are not maintained, installed, imported, or covered by current
+hardware-safety guarantees. Do not add legacy/pygame to PYTHONPATH.
+
+LAUNCH COMMANDS
+---------------
+
+    ./tars-launcher.sh
+    ./tars-launcher.sh --terminal
+    python src/app-servotester-qml.py --fullscreen --hardware
+
+The desktop shortcut and autostart helper both call tars-launcher.sh. RetroPie
+returns to the same launcher after EmulationStation exits.

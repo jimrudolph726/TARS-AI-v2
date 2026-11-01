@@ -1,0 +1,17 @@
+* text=auto
+
+# Raspberry Pi launch and install scripts must retain Unix line endings.
+*.sh text eol=lf
+
+# Keep source and documentation consistent across Windows development and Pi.
+*.py text eol=lf
+*.qml text eol=lf
+*.js text eol=lf
+*.txt text eol=lf
+*.md text eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.mp4 binary
+*.ttf binary

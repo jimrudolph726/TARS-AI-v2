@@ -579,29 +579,17 @@ def update_emotion(detected_emotion):
     base = f"/character_sprite/{detected_emotion}/animation/"
     socketio.emit('emotion_change', {k: base + v for k, v in sprites.items()})
 
-    # Trigger RoboEyes mood to match the detected emotion
+    # Keep the toolkit-neutral QML/WebUI eye state aligned with emotion.
     try:
-        import modules.UI.apps.module_app_eyes as _eyes_mod
-        from modules.module_eyes import Mood
-        _eyes_mod.set_mood_request(Mood[mood_name])
-    except Exception:
-        pass
-
-    # Notify avatar app of emotion change
-    try:
-        import modules.UI.apps.module_app_avatar as _avatar_mod
-        _avatar_mod.set_emotion_request(detected_emotion)
+        from modules.module_expression_state import set_mood
+        set_mood(mood_name)
     except Exception:
         pass
 
 
 def _notify_avatar_talking(is_talking: bool) -> None:
-    """Notify the avatar app of a talking state change (best-effort)."""
-    try:
-        import modules.UI.apps.module_app_avatar as _avatar_mod
-        _avatar_mod.set_talking_state(is_talking)
-    except Exception:
-        pass
+    """Compatibility hook; browser and QML animate from their own live state."""
+    return None
 
 
 def begin_bot_stream():
@@ -932,7 +920,7 @@ def upload():
 def camera_feed():
     """MJPEG stream from the camera for the web UI."""
     try:
-        from UI.module_ui_camera import CameraModule
+        from modules.module_camera import CameraModule
     except ImportError:
         from flask import abort
         abort(503, "Camera module not available")
@@ -1630,15 +1618,13 @@ def tunnel_qr():
 
 @flask_app.route('/api/eyes/mood', methods=['POST'])
 def eyes_set_mood():
-    import modules.UI.apps.module_app_eyes as _eyes_mod
     data = request.get_json(silent=True) or {}
     mood_name = data.get('mood', '').upper()
     try:
-        from modules.module_eyes import Mood
-        mood = Mood[mood_name]
-        _eyes_mod.set_mood_request(mood)
-        return jsonify({'success': True, 'mood': mood_name})
-    except KeyError:
+        from modules.module_expression_state import set_mood
+        mood = set_mood(mood_name)
+        return jsonify({'success': True, 'mood': mood.value})
+    except (KeyError, ValueError):
         return jsonify({'success': False, 'error': f'Unknown mood: {mood_name}'}), 400
 
 

@@ -5,7 +5,6 @@ import os
 import random
 import tempfile
 import time
-import pygame
 import threading
 
 from modules.module_config import load_config
@@ -300,58 +299,13 @@ def get_image_from_comfyui(prompt, sd, on_image_ready=None):
         return f"ComfyUI error: {e}"
 
 def display_image_fullscreen(image_path):
-    """Display an image for 8 seconds — uses the existing UI overlay if running, otherwise opens a standalone pygame window."""
+    """Request presentation through the active UI without owning a display."""
     try:
-        # Try the existing UI manager first (avoids X11 display conflict)
-        import sys
-        app_module = sys.modules.get('app') or sys.modules.get('__main__')
-        ui_mgr = getattr(app_module, 'ui_manager', None) if app_module else None
-        if ui_mgr and hasattr(ui_mgr, 'show_overlay_image') and getattr(ui_mgr, 'running', False):
-            ui_mgr.show_overlay_image(image_path, duration=8)
-            queue_message("[SD] Image displayed via UI overlay")
-            return
-        else:
-            queue_message(f"[SD] UI overlay not available (ui_mgr={ui_mgr}, running={getattr(ui_mgr, 'running', None)})")
+        from modules.module_display import present_image
+        if present_image(image_path, duration=8):
+            queue_message("[SD] Image displayed via active UI")
+            return True
     except Exception as e:
-        queue_message(f"[SD] UI overlay lookup failed: {e}")
-
-    # Fallback: standalone pygame window (only if no existing display)
-    if not pygame.display.get_init() or pygame.display.get_surface() is None:
-        try:
-            _display_image_fullscreen_inner(image_path)
-        except Exception as e:
-            queue_message(f"Display error (non-fatal): {e}")
-    else:
-        queue_message("[SD] Cannot display image: pygame display already active but UI overlay unavailable")
-
-
-def _display_image_fullscreen_inner(image_path):
-    pygame.init()
-    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-    time.sleep(0.1)
-
-    screen_width, screen_height = screen.get_size()
-    pygame_img = pygame.image.load(image_path)
-    img_width, img_height = pygame_img.get_width(), pygame_img.get_height()
-    scale_factor = min(screen_width / img_width, screen_height / img_height)
-    new_width = int(img_width * scale_factor)
-    new_height = int(img_height * scale_factor)
-    scaled_img = pygame.transform.smoothscale(pygame_img, (new_width, new_height))
-    x_pos = (screen_width - new_width) // 2
-    y_pos = (screen_height - new_height) // 2
-
-    screen.fill((0, 0, 0))
-    screen.blit(scaled_img, (x_pos, y_pos))
-    pygame.display.update()
-
-    start_ticks = pygame.time.get_ticks()
-    running = True
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-        if pygame.time.get_ticks() - start_ticks > 8000:
-            running = False
-        pygame.display.update()
-
-    pygame.quit()
+        queue_message(f"[SD] UI image presentation failed: {e}")
+    queue_message(f"[SD] No active on-device image presenter; image retained at {image_path}")
+    return False

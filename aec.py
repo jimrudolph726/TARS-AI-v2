@@ -29,8 +29,8 @@ import tempfile
 import time
 
 # Add the project venv's site-packages so we can import piper, soundfile, numpy
-# (same packages the real app uses).  This is needed because App-Start.py calls
-# check_aec_setup() from the system Python, outside the venv.
+# (same packages the real app uses). This also keeps the standalone setup tool
+# usable when invoked outside the project virtual environment.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _venv_sp = glob_mod.glob(os.path.join(SCRIPT_DIR, "src", ".venv", "lib", "python*", "site-packages"))
 for sp in _venv_sp:
@@ -48,7 +48,7 @@ AEC_DISABLED_MARKER = os.path.join(SCRIPT_DIR, ".aec_disabled")
 TTS_GAIN = 1.5
 MARKER_COMMENT = "# TARS-AI AEC Config (auto-tuned)"
 
-# ── ANSI color codes (matching App-Start.py cyan/orange theme) ─────
+# ── ANSI color codes (matching the TARS cyan/orange theme) ─────────
 _USE_COLOR = sys.stdout.isatty()
 
 def _c(code, text):

@@ -11,7 +11,7 @@ Import rules
 
 1. Importing modules.webui must not create Flask state, start threads, probe
    Wi-Fi, open cameras, initialize audio, or import servo hardware.
-2. The active Qt/QML and WebUI modules must not import Pygame.
+2. No active Python source beneath src/ may import Pygame or the archived UI.
 3. Servo hardware is loaded only when a motion endpoint is invoked.
 4. Wi-Fi discovery is initialized on demand by a Wi-Fi endpoint, never as a
    side effect of importing the WebUI.
@@ -38,8 +38,8 @@ compatibility facade.
 Camera streaming
 ----------------
 
-The WebUI now reads the camera's RGB array directly and encodes it with OpenCV.
-It no longer converts camera frames through pygame.Surface.
+The WebUI reads RGB arrays from modules/module_camera.py and encodes them with
+OpenCV. Camera capture has no presentation-toolkit dependency.
 
 Wi-Fi initialization
 --------------------

@@ -11,17 +11,11 @@ _AudioHub singleton manages that single stream and dispatches audio to
 all registered consumers (callback-based and read-based).
 """
 
-import os
 import time
 import threading
 import collections
 import numpy as np
 from math import gcd
-
-# Prevent pygame/SDL from grabbing ALSA devices exclusively.
-# TARS uses sounddevice (PortAudio) for all mic input — SDL audio is unused.
-# This must be set before pygame.init() or sounddevice import triggers PA init.
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import sounddevice as sd
 

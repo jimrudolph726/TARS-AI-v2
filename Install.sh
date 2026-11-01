@@ -615,9 +615,6 @@ discord.py                      # Discord bot API
 # Wake Word (Atomik)
 scipy                           # Signal processing for wake word detection
 
-# Multimedia
-pygame                          # Game development & multimedia support
-
 COMMON
 
     if [[ "$PI_VERSION" == "pi5" ]]; then
@@ -1322,11 +1319,12 @@ EOF
     esac
     
     echo ""
-    echo "*** Run the program in Terminal mode the first times in the App-Start Menu ***"
+    echo "*** Run TARS in terminal mode first to verify configuration and hardware ***"
     echo "IMPORTANT: Run your application as user '$ACTUAL_USER' (without sudo)"    
-    echo "Start the program: python App-Start.py"
+    echo "Start the QML interface: ./tars-launcher.sh"
+    echo "Start in terminal mode: ./tars-launcher.sh --terminal"
     echo ""
-    echo "Enable the virtual environment: source .venv/bin/activate if not using App-Start.py"
+    echo "The launcher activates src/.venv automatically."
     echo ""
     
     create_desktop_shortcut

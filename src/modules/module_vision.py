@@ -43,11 +43,11 @@ except ImportError:
     pass
 
 try:
-    from modules.UI.module_ui_camera import CameraModule as _CameraModule
+    from modules.module_camera import CameraModule as _CameraModule
     CameraModule = _CameraModule
 except ImportError:
     try:
-        from UI.module_ui_camera import CameraModule as _CameraModule
+        from modules.module_camera import CameraModule as _CameraModule
         CameraModule = _CameraModule
     except ImportError:
         pass

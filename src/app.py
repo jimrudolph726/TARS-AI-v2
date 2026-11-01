@@ -123,7 +123,7 @@ def _configure_logging(config: dict, debug_mode: bool) -> None:
 def _load_font(filename: str, fallback: str) -> str:
     from PySide6.QtGui import QFontDatabase
 
-    font_path = BASE_DIR / "modules" / "UI" / filename
+    font_path = BASE_DIR / "qml" / "fonts" / filename
     font_id = QFontDatabase.addApplicationFont(str(font_path))
     families = QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else []
     return families[0] if families else fallback

@@ -2,7 +2,16 @@ import QtQuick
 
 Item {
     id: root
-    property color accent: controller.tarsState === "THINKING" ? "#ffc857" : "#ff3852"
+    property string mood: controller.eyeMood
+    property color accent: mood === "ANGRY" ? "#ff3852"
+                           : mood === "SAD" ? "#4682c8"
+                           : mood === "EXCITED" ? "#ffdc32"
+                           : mood === "AFRAID" ? "#b478ff"
+                           : mood === "LOVE" ? "#ff508c"
+                           : mood === "DISGUSTED" ? "#50b450"
+                           : mood === "SLEEPY" ? "#00646e"
+                           : mood === "CURIOUS" ? "#50c8ff"
+                           : controller.tarsState === "THINKING" ? "#ffc857" : "#ff3852"
     property real uiScale: 1.0
     property real gaze: 0
     property bool blinking: false
@@ -53,7 +62,7 @@ Item {
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 10 * root.uiScale
-        text: "OPTICAL EXPRESSION  ·  " + controller.tarsState
+        text: "OPTICAL EXPRESSION  ·  " + root.mood + "  ·  " + controller.tarsState
         color: "#81949d"
         font.family: monoFontFamily
         font.pixelSize: 7 * root.uiScale

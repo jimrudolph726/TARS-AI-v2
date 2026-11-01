@@ -22,14 +22,38 @@
 
 ## 🚀 Getting Started
 
-- See the documentation:  
+- See the documentation:
   👉 https://github.com/TARS-AI-Community/TARS-AI/wiki/Home
+
+### TARS-AI V2 interface
+
+The supported on-device interface is PySide6/QML. From the repository root on
+the Raspberry Pi:
+
+```bash
+./tars-launcher.sh
+```
+
+For a terminal-only diagnostic run:
+
+```bash
+./tars-launcher.sh --terminal
+```
+
+Run the QML servo calibration tool with:
+
+```bash
+python src/app-servotester-qml.py --fullscreen --hardware
+```
+
+The retired Pygame interface is preserved under `legacy/pygame/` for source
+history only. It is not installed or loaded by TARS-AI V2.
 
 ---
 
 ## 🤝 Contributing
 
-- Join the community on Discord:  
+- Join the community on Discord:
   👉 https://discord.gg/AmE2Gv9EUt
 
 ---
@@ -46,13 +70,13 @@ You may:
 You may **not** use this project for commercial purposes without explicit permission from the authors.
 Commercial use includes, but is not limited to:
 
-- Selling 3D printed parts, kits, or complete robots  
-- Selling or distributing STL / CAD files for money  
-- Offering paid assembly, customization, or installation services  
-- Monetized YouTube, Social Media, Patreon, or subscription content that distributes project files or derivatives  
-- Using this project in paid products, commercial research, or corporate projects  
-- Integrating this project into commercial software or hardware products  
-- Selling derivatives or modified versions of the hardware or software  
+- Selling 3D printed parts, kits, or complete robots
+- Selling or distributing STL / CAD files for money
+- Offering paid assembly, customization, or installation services
+- Monetized YouTube, Social Media, Patreon, or subscription content that distributes project files or derivatives
+- Using this project in paid products, commercial research, or corporate projects
+- Integrating this project into commercial software or hardware products
+- Selling derivatives or modified versions of the hardware or software
 
 If you are unsure whether your use case is commercial, assume it is and request permission from the authors.
 

@@ -146,6 +146,7 @@ class TarsUIController(QObject):
     audioChanged = Signal()
     cameraChanged = Signal()
     avatarChanged = Signal()
+    eyeMoodChanged = Signal()
     remoteChanged = Signal()
     calibrationChanged = Signal()
     dashboardChanged = Signal()
@@ -182,6 +183,8 @@ class TarsUIController(QObject):
     def __init__(self, base_dir: Path, parent: Optional[QObject] = None):
         super().__init__(parent)
         self._base_dir = Path(base_dir)
+        from modules.module_display import register_image_presenter
+        register_image_presenter(self.show_overlay_image)
         from modules.module_config import load_config
 
         self._config = load_config()
@@ -225,6 +228,7 @@ class TarsUIController(QObject):
         self._avatar_character = "TARS"
         self._avatar_emotion = "neutral"
         self._avatar_frame_source = ""
+        self._eye_mood = "NEUTRAL"
 
         self._remote_state = "idle"
         self._remote_status = "Remote access is ready"
@@ -529,6 +533,10 @@ class TarsUIController(QObject):
     def avatarEmotion(self) -> str:
         return self._avatar_emotion.upper()
 
+    @Property(str, notify=eyeMoodChanged)
+    def eyeMood(self) -> str:
+        return self._eye_mood
+
     @Property(str, notify=remoteChanged)
     def remoteState(self) -> str:
         return self._remote_state
@@ -641,6 +649,15 @@ class TarsUIController(QObject):
 
     @Slot()
     def _refresh_avatar_frame(self) -> None:
+        try:
+            from modules.module_expression_state import get_mood
+            eye_mood = get_mood().value
+        except Exception:
+            eye_mood = "NEUTRAL"
+        if eye_mood != self._eye_mood:
+            self._eye_mood = eye_mood
+            self.eyeMoodChanged.emit()
+
         module = sys.modules.get("modules.module_chatui")
         requested_emotion = str(getattr(module, "emotion", "neutral") or "neutral")
         requested_emotion = "".join(
@@ -694,7 +711,7 @@ class TarsUIController(QObject):
 
     def _camera_start_worker(self) -> None:
         try:
-            from modules.UI.module_ui_camera import CameraModule
+            from modules.module_camera import CameraModule
 
             camera = self._camera_module or CameraModule(640, 480, use_camera_module=True)
             if camera.picam2 is None:
@@ -826,6 +843,11 @@ class TarsUIController(QObject):
             return
         self._stopped = True
         self._running = False
+        try:
+            from modules.module_display import unregister_image_presenter
+            unregister_image_presenter(self.show_overlay_image)
+        except Exception:
+            pass
         with self._servo_process_lock:
             servo_process = self._servo_tester_process
         if servo_process is not None and servo_process.poll() is None:

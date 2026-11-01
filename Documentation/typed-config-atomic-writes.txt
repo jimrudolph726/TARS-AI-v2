@@ -33,7 +33,6 @@ WRITERS USING THIS PATH
 -----------------------
 - WebUI and TARS Configuration Manager
 - PySide6/QML servo tester
-- Legacy Pygame servo tester
 - Skill enable/disable and skill setting persistence
 - Personality trait updates from the main application and WebUI
 

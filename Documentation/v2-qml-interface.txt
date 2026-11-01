@@ -2,7 +2,8 @@ TARS-AI V2 Qt/QML interface
 ============================
 
 TARS-AI V2 uses PySide6 and QML as its native on-device interface. Pygame is
-not loaded by src/app.py.
+not an active dependency and no Python file under src/ imports it. The retired
+implementation is preserved under legacy/pygame/ for source history only.
 
 Architecture
 ------------
@@ -10,6 +11,8 @@ Architecture
 - src/app.py owns the Qt application and QML engine.
 - src/qml/main/TarsMain.qml and its components/ directory own layout,
   animation, touch input, and visual state.
+- src/qml/fonts/ contains the two bundled display fonts used by production and
+  prototype QML entry points.
 - src/qml/main/AppRegistry.js is the single launcher registry for app ids,
   titles, icons, source files, availability, and badge categories.
 - Reusable QML primitives in components/ provide setting rows, sliders,
@@ -19,6 +22,12 @@ Architecture
   conversation model. It also bridges the shared microphone feed and the Pi
   camera into QML without opening competing audio devices or writing frames
   to disk.
+- src/modules/module_camera.py owns toolkit-neutral RGB camera capture shared
+  by QML, voice vision, identity services, and the browser camera stream.
+- src/modules/module_display.py lets skills request an on-device image overlay
+  without importing or discovering a particular UI implementation.
+- src/modules/module_expression_state.py shares eye moods between the WebUI
+  and QML without reaching into an archived application module.
 - src/modules/module_runtime.py starts speech, memory, models, skills,
   hardware, web UI, Bluetooth, and vision on a background runtime thread.
 
@@ -43,9 +52,12 @@ Run
 
 Run the live TARS application:
 
-    cd ~/TARS-AI-v2/src
-    source .venv/bin/activate
-    python app.py show_ui=true
+    cd ~/TARS-AI-v2
+    ./tars-launcher.sh
+
+Run without the graphical interface for diagnostics:
+
+    ./tars-launcher.sh --terminal
 
 Run only the hardware-safe visual prototype:
 

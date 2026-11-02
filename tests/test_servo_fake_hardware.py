@@ -178,7 +178,7 @@ class ServoFakeHardwareTests(unittest.TestCase):
             )
         )
 
-    def test_legacy_fast_mover_restores_immediate_target_without_write_burst(self):
+    def test_legacy_fast_mover_restores_physical_cadence_without_write_burst(self):
         self._initialize()
         channel = 0
         start = servoctl.servo_positions[channel]
@@ -196,12 +196,20 @@ class ServoFakeHardwareTests(unittest.TestCase):
             pulse for written_channel, pulse in self.raw_pwm_writes
             if written_channel == channel
         ]
-        # Re-engage at the saved position, then issue the fast target once.
-        # This matches what the physical 50 Hz signal observed from the old
-        # zero-delay loop without flooding I2C with 100 obsolete values.
-        self.assertEqual(2, len(channel_writes))
+        # Re-engage at the saved position, then reproduce the time the old
+        # zero-sleep loop still spent on I2C. This must be neither an immediate
+        # endpoint jump nor the original 100-write flood.
+        self.assertGreater(len(channel_writes), 2)
+        self.assertLessEqual(len(channel_writes), 18)
         self.assertEqual(start, channel_writes[0])
         self.assertEqual(target, channel_writes[-1])
+        self.assertLessEqual(
+            max(
+                abs(second - first)
+                for first, second in zip(channel_writes, channel_writes[1:])
+            ),
+            6,
+        )
 
     def test_legacy_slower_mover_preserves_timed_progress_without_write_burst(self):
         self._initialize()

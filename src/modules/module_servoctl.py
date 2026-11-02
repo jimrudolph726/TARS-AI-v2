@@ -60,7 +60,6 @@ SERVO_UPDATE_HZ = 50.0
 SERVO_MIN_PULSE = 10
 SERVO_MAX_PULSE = 600
 SERVO_FREQUENCY_TOLERANCE_HZ = 2.0
-SERVO_MAX_SLEW_TICKS_PER_SECOND = 300.0
 SERVO_REENGAGE_STAGGER_SECONDS = 0.012
 SERVO_REENGAGE_SETTLE_SECONDS = 0.14
 
@@ -1656,12 +1655,20 @@ def move_servos_synchronized(movements, speed_factor, easing_strength=None):
 
 
 def move_servos_original(movements, speed_factor, easing_strength=None):
-    """Run the original tick-by-tick synchronized movement algorithm.
+    """Reproduce the field-proven legacy gait without flooding the PCA9685.
 
-    The proven original step gait depends on this transition behavior as well
-    as its target poses. Safety checks and cooperative cancellation are kept,
-    but the stepping, delay curve, and final settling delay match the original
-    servotester implementation.
+    The original forward step depends on its transition timing as well as its
+    target poses.  In particular, a speed factor of 1.0 intentionally has no
+    interpolation delay: the support-transfer pose is issued immediately.
+    Slowing that phase into an eased ramp leaves the chassis between support
+    states long enough to rock backward and forward.
+
+    The historical implementation achieved this by writing every intermediate
+    PWM tick as fast as Python could loop.  A PCA9685 only presents a new servo
+    pulse at 50 Hz, so those hundreds of I2C writes did not create useful
+    intermediate motion.  This implementation preserves the physical timing
+    while coalescing each 20 ms window to one value per channel.  Cancellation,
+    calibrated bounds, frequency checks, and safe re-engagement remain active.
     """
     effective_easing = easing_strength if easing_strength is not None else global_easing_strength
     effective_easing = max(0.0, min(1.0, float(effective_easing)))
@@ -1736,38 +1743,75 @@ def move_servos_original(movements, speed_factor, easing_strength=None):
     max_distance = max(item["distance"] for item in servo_data)
     effective_speed = float(speed_factor)
     effective_speed = max(0.0, min(1.0, effective_speed))
-    requested_delay = 0.02 * (1.0 - effective_speed)
-    minimum_tick_delay = 1.0 / SERVO_MAX_SLEW_TICKS_PER_SECOND
-    effective_tick_delay = max(requested_delay, minimum_tick_delay)
-    duration = max(1.0 / SERVO_UPDATE_HZ, max_distance * effective_tick_delay)
-    frame_count = max(1, int(math.ceil(duration * SERVO_UPDATE_HZ)))
-    frame_period = duration / frame_count
-    started_at = time.monotonic()
+    base_delay = 0.02 * (1.0 - effective_speed)
 
-    # The legacy algorithm used one I2C write for every PWM tick. At speed 1
-    # that loop had no delay at all, so a long leg phase could flood hundreds
-    # of target changes into a 50 Hz servo signal. Preserve its endpoints and
-    # "short joints arrive first" behavior, but batch tick progress into at
-    # most one command per servo per 50 Hz frame.
-    for frame in range(1, frame_count + 1):
-        if _movement_stop_event.is_set():
-            raise MovementCancelled()
-
-        progress = eased_progress(frame / frame_count, effective_easing)
-        global_ticks = min(max_distance, int(round(max_distance * progress)))
+    if base_delay <= 0:
+        # This is the critical fast support transfer in the proven forward
+        # gait. Sending each endpoint once is electrically equivalent to the
+        # old zero-delay tick loop at the servo's 50 Hz update boundary.
         for item in servo_data:
-            ticks = min(item["distance"], global_ticks)
-            value = item["start"] + item["step"] * ticks
-            if value == item["current"]:
-                continue
-            if not set_servo_pwm(item["channel"], value):
+            if _movement_stop_event.is_set():
+                raise MovementCancelled()
+            if not set_servo_pwm(item["channel"], item["target"]):
                 raise RuntimeError(f"Servo write failed on channel {item['channel']}")
-            item["current"] = value
-            item["steps_taken"] = ticks
+            item["current"] = item["target"]
+            item["steps_taken"] = item["distance"]
+    else:
+        # Reconstruct the original per-tick delay curve, then sample that
+        # trajectory at the only rate the servo signal can actually expose.
+        cumulative_tick_times = []
+        elapsed = 0.0
+        for tick in range(1, max_distance + 1):
+            minimum_steps = min(min(item["distance"], tick) for item in servo_data)
+            progress = minimum_steps / max_distance if max_distance else 1.0
+            if effective_easing > 0:
+                if progress < 0.5:
+                    eased = 2 * progress * progress
+                else:
+                    eased = 1 - 2 * (1 - progress) * (1 - progress)
+                delay_multiplier = (
+                    1.0
+                    + effective_easing * (1.0 - 4 * (eased - 0.5) ** 2)
+                )
+            else:
+                delay_multiplier = 1.0
+            elapsed += base_delay * delay_multiplier
+            cumulative_tick_times.append(elapsed)
 
-        remaining = started_at + frame * frame_period - time.monotonic()
-        if remaining > 0 and _movement_stop_event.wait(remaining):
-            raise MovementCancelled()
+        duration = max(1.0 / SERVO_UPDATE_HZ, elapsed)
+        frame_count = max(1, int(math.ceil(duration * SERVO_UPDATE_HZ)))
+        frame_period = duration / frame_count
+        started_at = time.monotonic()
+        global_ticks = 0
+
+        for frame in range(1, frame_count + 1):
+            if _movement_stop_event.is_set():
+                raise MovementCancelled()
+
+            frame_time = min(duration, frame * frame_period)
+            while (
+                global_ticks < max_distance
+                and cumulative_tick_times[global_ticks] <= frame_time
+            ):
+                global_ticks += 1
+            if frame == frame_count:
+                global_ticks = max_distance
+
+            for item in servo_data:
+                ticks = min(item["distance"], global_ticks)
+                value = item["start"] + item["step"] * ticks
+                if value == item["current"]:
+                    continue
+                if not set_servo_pwm(item["channel"], value):
+                    raise RuntimeError(
+                        f"Servo write failed on channel {item['channel']}"
+                    )
+                item["current"] = value
+                item["steps_taken"] = ticks
+
+            remaining = started_at + frame * frame_period - time.monotonic()
+            if remaining > 0 and _movement_stop_event.wait(remaining):
+                raise MovementCancelled()
 
     for item in servo_data:
         servo_positions[item["channel"]] = item["target"]

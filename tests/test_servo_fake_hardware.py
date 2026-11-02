@@ -178,7 +178,7 @@ class ServoFakeHardwareTests(unittest.TestCase):
             )
         )
 
-    def test_legacy_mover_batches_tick_progress_at_safe_command_rate(self):
+    def test_legacy_fast_mover_restores_immediate_target_without_write_burst(self):
         self._initialize()
         channel = 0
         start = servoctl.servo_positions[channel]
@@ -196,16 +196,37 @@ class ServoFakeHardwareTests(unittest.TestCase):
             pulse for written_channel, pulse in self.raw_pwm_writes
             if written_channel == channel
         ]
-        # The previous zero-delay loop emitted all 100 intermediate values.
-        # At 50 Hz with a 300 tick/s ceiling this transition needs 17 frames,
-        # plus its initial re-engagement write.
-        self.assertLessEqual(len(channel_writes), 18)
+        # Re-engage at the saved position, then issue the fast target once.
+        # This matches what the physical 50 Hz signal observed from the old
+        # zero-delay loop without flooding I2C with 100 obsolete values.
+        self.assertEqual(2, len(channel_writes))
         self.assertEqual(start, channel_writes[0])
         self.assertEqual(target, channel_writes[-1])
-        self.assertLessEqual(
-            max(abs(second - first) for first, second in zip(channel_writes, channel_writes[1:])),
-            6,
+
+    def test_legacy_slower_mover_preserves_timed_progress_without_write_burst(self):
+        self._initialize()
+        channel = 0
+        start = servoctl.servo_positions[channel]
+        target = start + 100
+        servoctl._channels_initialized.add(channel)
+        self.raw_pwm_writes.clear()
+
+        servoctl.move_servos_original(
+            [(channel, target)],
+            speed_factor=0.9,
+            easing_strength=0.0,
         )
+
+        channel_writes = [
+            pulse for written_channel, pulse in self.raw_pwm_writes
+            if written_channel == channel
+        ]
+        self.assertGreater(len(channel_writes), 2)
+        self.assertLess(len(channel_writes), 100)
+        self.assertEqual(target, channel_writes[-1])
+        self.assertTrue(all(
+            first < second for first, second in zip(channel_writes, channel_writes[1:])
+        ))
 
     def test_frequency_reset_is_detected_before_target_write_and_recovers(self):
         failed_controller = self._initialize()

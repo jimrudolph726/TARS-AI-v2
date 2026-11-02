@@ -139,9 +139,14 @@ RAPID-MOTION AND PCA9685 RESET PROTECTION
 The original forward-step interpolator previously issued one I2C command for
 every single PWM tick. At speed 1.0 that loop had no delay, so a long leg phase
 could send hundreds of target changes much faster than the 50 Hz servo signal
-could physically represent. The original gait poses and arrival order are
-preserved, but tick progress is now batched into one update per servo per 50 Hz
-frame with a maximum 300 PWM ticks per second.
+could physically represent. The original gait poses, arrival order, and timing
+semantics are preserved without restoring that write burst. A speed-1.0 phase
+is coalesced directly to one endpoint write per channel, which is what the
+physical 50 Hz output observed after the historical zero-delay loop. Slower
+phases reconstruct the original per-tick delay curve and coalesce each 20 ms
+window to at most one value per servo. This distinction is important to the
+field-proven forward gait: stretching its immediate support transfer into an
+eased ramp leaves the chassis between stable support poses and causes rocking.
 
 Because named movements finish torque-free, participating joints now
 re-engage at their last known safe positions with a short stagger and settle

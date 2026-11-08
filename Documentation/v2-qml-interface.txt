@@ -119,6 +119,30 @@ shows whether the active frame is native or a fallback. Clock uses an adaptive
 portrait/landscape layout, smooth hands, numbered dial, and scalable digital
 readout.
 
+Loading, error, empty, and disabled states
+------------------------------------------
+
+Native application panes use the shared AppStateView component whenever
+content is not ready. Loading means work is actively in progress, error means
+an operation failed, empty means a successful operation returned no content,
+and disabled means a required feature or configuration is unavailable. These
+states never replace valid content; for example, an active Remote Access link
+is shown as live content rather than as an empty-state placeholder.
+
+Recoverable failures provide an in-context action with a full touch target.
+The camera, QML application loader, Dashboard feeds, Remote Access, Avatar,
+and Audio Timeline can be retried without restarting the entire interface.
+Muted audio offers an Unmute action, startup failures offer Restart and Exit,
+and the conversation and diagnostic panels explain legitimate empty states
+instead of appearing blank. The controller now exposes microphone-visualizer
+status and errors so a failed UI telemetry stream cannot silently resemble a
+quiet microphone; this status does not change STT, gain, VAD, or wake-word
+behavior.
+
+The non-Qt regression checks for these contracts can be run with:
+
+    python -m unittest tests.test_qml_app_states
+
 Press Esc in a windowed session, or use Menu > Exit Application, to stop the
 application cleanly while leaving the Raspberry Pi on. Menu > Restart TARS
 restarts only the application. Menu > Shut Down Pi and the header PWR control

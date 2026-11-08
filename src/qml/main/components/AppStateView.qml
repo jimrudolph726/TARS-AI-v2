@@ -22,6 +22,11 @@ Item {
         : state === "loading" ? "#ffc857"
         : "#829199"
     property real uiScale: 1.0
+    property string actionText: ""
+    property string actionIcon: ""
+    property bool actionEnabled: true
+
+    signal actionTriggered()
 
     visible: state !== "content"
 
@@ -64,6 +69,19 @@ Item {
             font.pixelSize: Math.max(Ui.textCaption, 6.5 * root.uiScale)
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignHCenter
+        }
+        TarsButton {
+            visible: root.actionText.length > 0 && root.state !== "loading"
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: Math.min(parent.width, 164 * root.uiScale)
+            height: Math.max(Ui.touchMin, Ui.touchMin * root.uiScale)
+            text: root.actionText
+            iconText: root.actionIcon
+            accent: root.accent
+            uiScale: root.uiScale
+            dense: true
+            enabled: root.actionEnabled
+            onClicked: root.actionTriggered()
         }
     }
 }

@@ -1,4 +1,5 @@
 import QtQuick
+import "components"
 import "components/UiTokens.js" as Ui
 
 Item {
@@ -142,6 +143,29 @@ Item {
                     ctx.fillStyle = ctx.strokeStyle; ctx.fillText(sample.barge ? "B" : "W", x + 2, 8 * root.uiScale)
                 }
             }
+        }
+    }
+
+    AppStateView {
+        anchors.fill: timeline
+        visible: controller.muted || controller.audioStatus !== "ready"
+        state: controller.muted ? "disabled"
+            : controller.audioStatus === "error" ? "error" : "loading"
+        title: controller.muted ? "MICROPHONE MUTED"
+            : controller.audioStatus === "error" ? "AUDIO TIMELINE UNAVAILABLE"
+            : "CONNECTING AUDIO TIMELINE"
+        detail: controller.muted ? "Live microphone telemetry is paused."
+            : controller.audioStatus === "error" ? controller.audioError
+            : "Attaching to the shared TARS microphone stream."
+        actionText: controller.muted ? "UNMUTE"
+            : controller.audioStatus === "error" ? "RETRY INPUT" : ""
+        actionIcon: controller.muted ? "MIC" : "R"
+        uiScale: root.uiScale
+        onActionTriggered: {
+            if (controller.muted)
+                controller.toggleMute()
+            else
+                controller.retryAudioVisualizer()
         }
     }
 

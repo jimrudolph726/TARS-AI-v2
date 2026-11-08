@@ -143,23 +143,41 @@ Item {
             }
         }
 
-        ListView {
+        Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            clip: true
-            spacing: 4 * root.uiScale
-            model: root.diagnosticGroup === "hardware"
-                ? controller.hardwareDiagnostics
-                : controller.softwareDiagnostics
 
-            delegate: SettingsRow {
-                required property var modelData
-                width: ListView.view.width
-                height: Math.max(Ui.touchMin, Ui.touchMin * root.uiScale)
-                label: modelData.label
-                statusText: modelData.value
-                description: modelData.detail
-                accent: root.stateColor(modelData.state)
+            ListView {
+                id: diagnosticList
+                anchors.fill: parent
+                clip: true
+                spacing: 4 * root.uiScale
+                model: root.diagnosticGroup === "hardware"
+                    ? controller.hardwareDiagnostics
+                    : controller.softwareDiagnostics
+
+                delegate: SettingsRow {
+                    required property var modelData
+                    width: ListView.view.width
+                    height: Math.max(Ui.touchMin, Ui.touchMin * root.uiScale)
+                    label: modelData.label
+                    statusText: modelData.value
+                    description: modelData.detail
+                    accent: root.stateColor(modelData.state)
+                    uiScale: root.uiScale
+                }
+            }
+
+            AppStateView {
+                anchors.fill: parent
+                visible: diagnosticList.count === 0
+                state: controller.runtimeReady ? "empty" : "loading"
+                title: controller.runtimeReady
+                    ? "NO " + root.diagnosticGroup.toUpperCase() + " DIAGNOSTICS"
+                    : "INITIALIZING DIAGNOSTICS"
+                detail: controller.runtimeReady
+                    ? "No diagnostic records were reported for this group."
+                    : "Waiting for the TARS runtime and telemetry services."
                 uiScale: root.uiScale
             }
         }

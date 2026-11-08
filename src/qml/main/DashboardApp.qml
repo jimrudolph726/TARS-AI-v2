@@ -136,8 +136,10 @@ Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 visible: controller.dashboardForecast.length === 0
-                state: controller.dashboardLoading ? "loading" : "empty"
-                title: controller.dashboardLoading ? "LOADING FORECAST" : "NO FORECAST"
+                state: controller.dashboardLoading ? "loading"
+                    : controller.dashboardError.length ? "error" : "empty"
+                title: controller.dashboardLoading ? "LOADING FORECAST"
+                    : controller.dashboardError.length ? "FORECAST UNAVAILABLE" : "NO FORECAST"
                 uiScale: root.uiScale * 0.72
             }
         }
@@ -293,8 +295,12 @@ Item {
                 detail: controller.dashboardError.length ? controller.dashboardError
                     : root.activeFeed === "calendar" && !controller.dashboardCalendarConfigured
                         ? "Add an ICS URL to " + controller.dashboardConfigFile + "."
-                    : "Pull to refresh or check the network connection."
+                    : "Refresh to check for new items."
+                actionText: root.activeFeed === "calendar"
+                    && !controller.dashboardCalendarConfigured ? "" : "REFRESH"
+                actionIcon: "R"
                 uiScale: root.uiScale
+                onActionTriggered: controller.refreshDashboard()
             }
         }
 

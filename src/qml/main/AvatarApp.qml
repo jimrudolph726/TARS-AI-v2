@@ -31,13 +31,17 @@ Item {
 
         AppStateView {
             anchors.fill: parent
-            state: avatarImage.status === Image.Loading ? "loading" : "error"
-            visible: avatarImage.status !== Image.Ready
-            title: avatarImage.status === Image.Loading ? "LOADING AVATAR" : "AVATAR UNAVAILABLE"
+            state: controller.avatarStatus === "error" || avatarImage.status === Image.Error
+                ? "error" : "loading"
+            visible: controller.avatarStatus !== "ready" || avatarImage.status !== Image.Ready
+            title: state === "loading" ? "LOADING AVATAR" : "AVATAR UNAVAILABLE"
             detail: controller.avatarError.length ? controller.avatarError : "Install a complete character animation set to enable this view."
-            iconText: "T"
-            accent: "#ff3852"
+            iconText: state === "error" ? "T" : "..."
+            accent: state === "error" ? "#ff3852" : "#ffc857"
+            actionText: state === "error" ? "RETRY AVATAR" : ""
+            actionIcon: "R"
             uiScale: root.uiScale
+            onActionTriggered: controller.reloadAvatar()
         }
 
         Rectangle {

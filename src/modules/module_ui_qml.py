@@ -121,9 +121,13 @@ class TarsUIController(QObject):
         self._audio_noise_floor = 0.006
         self._audio_speech_threshold = 0.017
         self._audio_speech_active = False
+        self._audio_status = "loading"
+        self._audio_error = ""
         self._wake_event_revision = 0
         self._barge_in_event_revision = 0
         self._audio_lock = threading.Lock()
+        self._audio_start_lock = threading.Lock()
+        self._audio_starting = False
         self._audio_stream = None
 
         self._camera_module = None
@@ -251,11 +255,7 @@ class TarsUIController(QObject):
             name="QMLWiFiTelemetry",
             daemon=True,
         ).start()
-        threading.Thread(
-            target=self._start_audio_visualizer,
-            name="QMLAudioVisualizer",
-            daemon=True,
-        ).start()
+        self._begin_audio_visualizer()
 
     @Property(str, notify=clockChanged)
     def currentTime(self) -> str:
@@ -441,6 +441,14 @@ class TarsUIController(QObject):
     def audioSpeechActive(self) -> bool:
         return self._audio_speech_active
 
+    @Property(str, notify=audioChanged)
+    def audioStatus(self) -> str:
+        return self._audio_status
+
+    @Property(str, notify=audioChanged)
+    def audioError(self) -> str:
+        return self._audio_error
+
     @Property(int, notify=audioChanged)
     def wakeEventRevision(self) -> int:
         return self._wake_event_revision
@@ -548,16 +556,50 @@ class TarsUIController(QObject):
             if stt is not None:
                 self._stt_manager = stt
 
+    def _begin_audio_visualizer(self) -> None:
+        """Start one microphone-visualizer worker without duplicating streams."""
+        with self._audio_start_lock:
+            if self._audio_stream is not None or self._audio_starting:
+                return
+            self._audio_starting = True
+        self._audio_status = "loading"
+        self._audio_error = ""
+        self.audioChanged.emit()
+        threading.Thread(
+            target=self._start_audio_visualizer,
+            name="QMLAudioVisualizer",
+            daemon=True,
+        ).start()
+
     def _start_audio_visualizer(self) -> None:
         """Subscribe to the shared microphone hub used by STT."""
+        stream = None
         try:
             from modules.module_mic import open_native_stream
 
             stream = open_native_stream(callback=self._audio_callback)
             stream.start()
             self._audio_stream = stream
+            self._audio_status = "ready"
+            self._audio_error = ""
         except Exception as exc:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            self._audio_status = "error"
+            self._audio_error = str(exc)
             print(f"WARNING: QML microphone visualizer unavailable: {exc}")
+        finally:
+            with self._audio_start_lock:
+                self._audio_starting = False
+            self.audioChanged.emit()
+
+    @Slot()
+    def retryAudioVisualizer(self) -> None:
+        """Retry a failed UI microphone stream without affecting STT."""
+        self._begin_audio_visualizer()
 
     def _audio_callback(self, indata, _frames, _time_info, _status) -> None:
         """Reduce a live mic chunk to the 35 samples drawn by QML."""
@@ -624,6 +666,16 @@ class TarsUIController(QObject):
             )
         except Exception:
             self._avatar_character = "TARS"
+
+    @Slot()
+    def reloadAvatar(self) -> None:
+        """Clear cached sprite health and force the avatar source to reload."""
+        self._avatar_health_cache.clear()
+        self._avatar_frame_source = ""
+        self._avatar_status = "loading"
+        self._avatar_error = ""
+        self.avatarChanged.emit()
+        QTimer.singleShot(0, self._refresh_avatar_frame)
 
     @Slot()
     def _refresh_avatar_frame(self) -> None:

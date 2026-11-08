@@ -110,7 +110,10 @@ Item {
                     detail: controller.remoteState === "scanning"
                         ? "Searching for nearby wireless networks."
                         : "Refresh the scan or check that Wi-Fi is enabled."
+                    actionText: controller.remoteState === "scanning" ? "" : "SCAN AGAIN"
+                    actionIcon: "SCAN"
                     uiScale: root.uiScale
+                    onActionTriggered: controller.scanWifiNetworks()
                 }
                 TextField {
                     id: passwordField
@@ -140,45 +143,103 @@ Item {
                 }
             }
 
+            Rectangle {
+                anchors.fill: parent
+                visible: controller.remoteState === "active"
+                    || controller.remoteState === "hotspot"
+                    || controller.remoteState === "ready"
+                    || controller.remoteState === "idle"
+                radius: Ui.radiusMd * root.uiScale
+                color: "#071116"
+                border.width: 1
+                border.color: controller.remoteState === "active"
+                    || controller.remoteState === "hotspot" ? "#2a6f50" : "#30464f"
+
+                Column {
+                    anchors.centerIn: parent
+                    width: Math.max(0, parent.width - 2 * Ui.spaceXl * root.uiScale)
+                    spacing: Ui.spaceMd * root.uiScale
+
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: controller.remoteState === "active" ? "LINK"
+                            : controller.remoteState === "hotspot" ? "WIFI" : "READY"
+                        color: controller.remoteState === "active"
+                            || controller.remoteState === "hotspot" ? "#2aff8a" : "#829199"
+                        font.family: displayFontFamily
+                        font.pixelSize: 22 * root.uiScale
+                        font.bold: true
+                    }
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: controller.remoteState === "active" ? "REMOTE LINK ACTIVE"
+                            : controller.remoteState === "hotspot" ? "TARS SETUP NETWORK"
+                            : "REMOTE ACCESS READY"
+                        color: controller.remoteState === "active"
+                            || controller.remoteState === "hotspot" ? "#2aff8a" : "#829199"
+                        font.family: displayFontFamily
+                        font.pixelSize: Math.max(Ui.textBody, 11 * root.uiScale)
+                        font.bold: true
+                        font.letterSpacing: 1.1 * root.uiScale
+                    }
+                    Text {
+                        width: parent.width
+                        text: controller.remoteState === "hotspot"
+                            ? "Wi-Fi: TARS-Setup  ·  Password: tars1234"
+                            : controller.remoteState === "active" ? controller.remoteUrl
+                            : "Start remote access or scan for a Wi-Fi network."
+                        color: Ui.textSecondary
+                        font.family: monoFontFamily
+                        font.pixelSize: Math.max(Ui.textCaption, 6.5 * root.uiScale)
+                        wrapMode: Text.Wrap
+                        horizontalAlignment: Text.AlignHCenter
+                    }
+                }
+            }
+
             AppStateView {
                 anchors.fill: parent
-                visible: controller.remoteState !== "networks"
-                      && controller.remoteState !== "scanning"
+                visible: controller.remoteState === "error"
+                    || controller.remoteState === "offline"
+                    || controller.remoteState === "connecting"
+                    || controller.remoteState === "starting"
+                    || controller.remoteState === "stopping"
                 state: controller.remoteState === "error" ? "error"
                     : controller.remoteState === "offline" ? "disabled"
                     : controller.remoteState === "connecting"
                         || controller.remoteState === "starting"
                         || controller.remoteState === "stopping" ? "loading"
-                    : "empty"
-                iconText: controller.remoteState === "active" ? "LINK"
-                    : controller.remoteState === "hotspot" ? "WIFI"
-                    : controller.remoteState === "error" ? "!"
+                    : "content"
+                iconText: controller.remoteState === "error" ? "!"
                     : controller.remoteState === "offline" ? "OFF"
                     : controller.remoteState === "connecting"
                         || controller.remoteState === "starting"
                         || controller.remoteState === "stopping" ? "..."
                     : "--"
-                title: controller.remoteState === "active" ? "REMOTE LINK ACTIVE"
-                    : controller.remoteState === "hotspot" ? "TARS SETUP NETWORK"
-                    : controller.remoteState === "offline" ? "NETWORK REQUIRED"
+                title: controller.remoteState === "offline" ? "NETWORK REQUIRED"
                     : controller.remoteState === "error" ? "REMOTE LINK ERROR"
                     : controller.remoteState === "connecting" ? "CONNECTING WI-FI"
                     : controller.remoteState === "starting" ? "STARTING REMOTE ACCESS"
                     : controller.remoteState === "stopping" ? "STOPPING REMOTE ACCESS"
-                    : "REMOTE ACCESS READY"
-                detail: controller.remoteState === "hotspot"
-                    ? "Wi-Fi: TARS-Setup  ·  Password: tars1234"
-                    : controller.remoteState === "active" ? controller.remoteUrl
-                    : controller.remoteState === "error" ? controller.remoteError
+                    : ""
+                detail: controller.remoteState === "error" ? controller.remoteError
                     : controller.remoteState === "offline" ? "Connect TARS to a network before starting remote access."
-                    : "Start remote access or scan for a Wi-Fi network."
-                accent: controller.remoteState === "active" || controller.remoteState === "hotspot" ? "#2aff8a"
-                    : controller.remoteState === "error" ? "#ff3852"
+                    : "Please wait while the network state changes."
+                accent: controller.remoteState === "error" ? "#ff3852"
                     : controller.remoteState === "connecting"
                         || controller.remoteState === "starting"
                         || controller.remoteState === "stopping" ? "#ffc857"
                     : "#829199"
+                actionText: controller.remoteState === "error" ? "RETRY STATUS"
+                    : controller.remoteState === "offline" ? "SCAN WI-FI" : ""
+                actionIcon: controller.remoteState === "offline" ? "SCAN" : "R"
                 uiScale: root.uiScale
+                onActionTriggered: {
+                    if (controller.remoteState === "offline")
+                        controller.scanWifiNetworks()
+                    else
+                        controller.refreshRemoteAccess()
+                }
             }
         }
 
@@ -195,6 +256,10 @@ Item {
                 iconText: "SCAN"
                 iconPixelSize: 10 * root.uiScale
                 labelPixelSize: 6.5 * root.uiScale
+                enabled: controller.remoteState !== "scanning"
+                    && controller.remoteState !== "connecting"
+                    && controller.remoteState !== "starting"
+                    && controller.remoteState !== "stopping"
                 onClicked: controller.scanWifiNetworks()
             }
             TarsButton {
@@ -205,6 +270,10 @@ Item {
                 iconPixelSize: 10 * root.uiScale
                 labelPixelSize: 6.5 * root.uiScale
                 selected: controller.remoteState === "active" || controller.remoteState === "hotspot"
+                enabled: controller.remoteState !== "scanning"
+                    && controller.remoteState !== "connecting"
+                    && controller.remoteState !== "starting"
+                    && controller.remoteState !== "stopping"
                 onClicked: {
                     if (controller.remoteState === "active" || controller.remoteState === "hotspot")
                         controller.stopRemoteAccess()

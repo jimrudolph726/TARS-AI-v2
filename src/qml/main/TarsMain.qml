@@ -79,6 +79,12 @@ ApplicationWindow {
             appReturnMode = "apps"
         }
 
+        function retryActiveApp() {
+            var requestedApp = activeAppId
+            activeAppId = ""
+            Qt.callLater(function() { scene.activeAppId = requestedApp })
+        }
+
         function launcherBadge(app) {
             if (app.badgeKey === "health") {
                 if (!controller.runtimeReady)
@@ -159,6 +165,8 @@ ApplicationWindow {
         readonly property real comfortableTouchTarget: Math.max(Ui.touchComfortable,
                                                                   Ui.touchComfortable * controlScale)
         readonly property real modalMargin: Math.max(Ui.spaceLg, Ui.spaceXl * contentScale)
+        readonly property bool runtimeFailed: controller.runtimeStatus.toUpperCase().indexOf("FAILED") >= 0
+            || controller.runtimeStatus.toUpperCase().indexOf("ERROR") >= 0
         readonly property color stateColor: controller.tarsState === "STANDBY" ? "#829199"
                                             : controller.tarsState === "THINKING" ? window.amber
                                             : window.red
@@ -447,6 +455,18 @@ ApplicationWindow {
                     }
 
                     onCountChanged: Qt.callLater(positionViewAtEnd)
+                }
+
+                AppStateView {
+                    anchors.fill: parent
+                    anchors.margins: Ui.spaceMd * scene.uiScale
+                    visible: conversationList.count === 0 && controller.runtimeReady
+                    state: "empty"
+                    title: "NO CONVERSATION YET"
+                    detail: "Say “Hey TARS” to begin a conversation."
+                    iconText: "T"
+                    accent: "#829199"
+                    uiScale: scene.contentScale
                 }
             }
 
@@ -747,36 +767,23 @@ ApplicationWindow {
                                 }
                             }
 
-                            BusyIndicator {
-                                anchors.centerIn: parent
-                                running: controller.cameraActive && !controller.cameraReady
-                                visible: running && controller.cameraError.length === 0
-                                width: 42 * scene.uiScale
-                                height: width
-                            }
-
-                            Column {
-                                anchors.centerIn: parent
-                                visible: !controller.cameraReady && controller.cameraError.length > 0
-                                width: parent.width - 40 * scene.uiScale
-                                spacing: 8 * scene.uiScale
-                                Text {
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                    text: "CAMERA UNAVAILABLE"
-                                    color: window.red
-                                    font.family: displayFontFamily
-                                    font.pixelSize: 13 * scene.uiScale
-                                    font.bold: true
-                                }
-                                Text {
-                                    width: parent.width
-                                    text: controller.cameraError
-                                    color: "#aebbc1"
-                                    font.family: monoFontFamily
-                                    font.pixelSize: 7 * scene.uiScale
-                                    horizontalAlignment: Text.AlignHCenter
-                                    wrapMode: Text.Wrap
-                                }
+                            AppStateView {
+                                anchors.fill: parent
+                                visible: !controller.cameraReady
+                                state: controller.cameraError.length ? "error"
+                                    : controller.cameraActive ? "loading" : "empty"
+                                title: controller.cameraError.length ? "CAMERA UNAVAILABLE"
+                                    : controller.cameraActive ? "STARTING CAMERA" : "CAMERA INACTIVE"
+                                detail: controller.cameraError.length ? controller.cameraError
+                                    : controller.cameraActive
+                                        ? "Waiting for the first optical frame."
+                                        : "Start the camera to open the live optical feed."
+                                actionText: controller.cameraError.length ? "RETRY CAMERA"
+                                    : controller.cameraActive ? "" : "START CAMERA"
+                                actionIcon: "CAM"
+                                accent: controller.cameraError.length ? window.red : "#829199"
+                                uiScale: scene.contentScale
+                                onActionTriggered: controller.openCamera()
                             }
 
                             Rectangle {
@@ -851,7 +858,10 @@ ApplicationWindow {
                             detail: appLoader.status === Loader.Error
                                 ? "The selected QML pane could not be loaded. Check the terminal for details."
                                 : "Preparing " + AppRegistry.titleFor(scene.activeAppId) + "."
+                            actionText: appLoader.status === Loader.Error ? "RETRY APP" : ""
+                            actionIcon: "R"
                             uiScale: scene.contentScale
+                            onActionTriggered: scene.retryActiveApp()
                         }
 
                         GridLayout {
@@ -1003,8 +1013,8 @@ ApplicationWindow {
                 }
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: "INITIALIZING TARS"
-                    color: window.pale
+                    text: scene.runtimeFailed ? "STARTUP FAILED" : "INITIALIZING TARS"
+                    color: scene.runtimeFailed ? window.red : window.pale
                     font.family: displayFontFamily
                     font.pixelSize: 22 * scene.uiScale
                     font.bold: true
@@ -1020,15 +1030,29 @@ ApplicationWindow {
                     font.pixelSize: 8 * scene.uiScale
                     font.letterSpacing: 1.2 * scene.uiScale
                 }
-                TarsButton {
-                    uiScale: scene.contentScale
+                Row {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    width: 150 * scene.contentScale
-                    height: scene.comfortableTouchTarget
-                    text: "EXIT"
-                    iconText: "X"
-                    accent: window.red
-                    onClicked: controller.exitProgram()
+                    spacing: Ui.spaceMd * scene.contentScale
+
+                    TarsButton {
+                        visible: scene.runtimeFailed
+                        uiScale: scene.contentScale
+                        width: 150 * scene.contentScale
+                        height: scene.comfortableTouchTarget
+                        text: "RESTART"
+                        iconText: "R"
+                        accent: window.amber
+                        onClicked: controller.requestRestart()
+                    }
+                    TarsButton {
+                        uiScale: scene.contentScale
+                        width: 150 * scene.contentScale
+                        height: scene.comfortableTouchTarget
+                        text: "EXIT"
+                        iconText: "X"
+                        accent: window.red
+                        onClicked: controller.exitProgram()
+                    }
                 }
             }
         }

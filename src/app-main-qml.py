@@ -66,8 +66,6 @@ from PySide6.QtCore import (  # noqa: E402
 )
 from PySide6.QtGui import QFontDatabase, QGuiApplication  # noqa: E402
 from PySide6.QtQml import QQmlApplicationEngine  # noqa: E402
-from PySide6.QtQuick import QQuickWindow  # noqa: E402
-import shiboken6  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent
@@ -800,9 +798,7 @@ def main() -> int:
         screenshot_path.parent.mkdir(parents=True, exist_ok=True)
 
         def capture() -> None:
-            pointer = shiboken6.getCppPointer(window)[0]
-            quick_window = shiboken6.wrapInstance(pointer, QQuickWindow)
-            image = quick_window.grabWindow()
+            image = window.grabWindow()
             if not image.save(str(screenshot_path)):
                 print(f"Unable to save screenshot: {screenshot_path}", file=sys.stderr)
                 app.exit(2)

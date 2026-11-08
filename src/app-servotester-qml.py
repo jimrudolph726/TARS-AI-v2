@@ -46,11 +46,9 @@ if ARGS.screenshot and "QT_QPA_PLATFORM" not in os.environ:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     os.environ.setdefault("QT_QUICK_BACKEND", "software")
 
-import shiboken6
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
-from PySide6.QtQuick import QQuickWindow
 
 
 ROOT = Path(__file__).resolve().parent
@@ -1060,9 +1058,7 @@ def main() -> int:
         screenshot_path.parent.mkdir(parents=True, exist_ok=True)
 
         def capture() -> None:
-            pointer = shiboken6.getCppPointer(window)[0]
-            quick_window = shiboken6.wrapInstance(pointer, QQuickWindow)
-            image = quick_window.grabWindow()
+            image = window.grabWindow()
             if not image.save(str(screenshot_path)):
                 print(f"Unable to save screenshot: {screenshot_path}", file=sys.stderr)
                 app.exit(2)

@@ -1,4 +1,5 @@
 import QtQuick
+import "UiTokens.js" as Ui
 
 Item {
     id: root
@@ -16,7 +17,7 @@ Item {
         anchors.left: parent.left
         anchors.leftMargin: 8 * root.uiScale
         anchors.verticalCenter: parent.verticalCenter
-        radius: 5 * root.uiScale
+        radius: Ui.radiusSm * root.uiScale
         color: "#0b171d"
         border.color: "#36505d"
 
@@ -39,7 +40,7 @@ Item {
 
         Text {
             text: root.label
-            color: "#9cacb4"
+            color: Ui.textSecondary
             font.family: monoFontFamily
             font.pixelSize: 7.5 * root.uiScale
             font.letterSpacing: 1.2 * root.uiScale

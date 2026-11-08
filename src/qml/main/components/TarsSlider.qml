@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import "UiTokens.js" as Ui
 
 Slider {
     id: root
@@ -9,7 +10,7 @@ Slider {
     property string valueText: Math.round(value).toString()
 
     implicitWidth: 150 * uiScale
-    implicitHeight: 30 * uiScale
+    implicitHeight: Math.max(Ui.touchMin, Ui.touchMin * uiScale)
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
     live: true
@@ -18,7 +19,7 @@ Slider {
         x: root.leftPadding
         y: root.topPadding + root.availableHeight / 2 - height / 2
         width: root.availableWidth
-        height: 4 * root.uiScale
+        height: Ui.spaceXs * root.uiScale
         radius: height / 2
         color: root.enabled ? "#263940" : "#1b282d"
 
@@ -33,7 +34,7 @@ Slider {
     handle: Rectangle {
         x: root.leftPadding + root.visualPosition * (root.availableWidth - width)
         y: root.topPadding + root.availableHeight / 2 - height / 2
-        width: 17 * root.uiScale
+        width: 22 * root.uiScale
         height: width
         radius: width / 2
         color: root.enabled ? "#dfe8ec" : "#66747a"
@@ -48,7 +49,7 @@ Slider {
             text: root.valueText
             color: root.accent
             font.family: monoFontFamily
-            font.pixelSize: 6 * root.uiScale
+            font.pixelSize: Ui.textCaption * root.uiScale
             font.bold: true
         }
     }

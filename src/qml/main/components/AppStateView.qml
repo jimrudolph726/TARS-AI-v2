@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import "UiTokens.js" as Ui
 
 Item {
     id: root
@@ -26,14 +27,14 @@ Item {
 
     Column {
         anchors.centerIn: parent
-        width: parent.width - 30 * root.uiScale
-        spacing: 8 * root.uiScale
+        width: Math.max(0, parent.width - 2 * Ui.spaceXl * root.uiScale)
+        spacing: Ui.spaceMd * root.uiScale
 
         BusyIndicator {
             anchors.horizontalCenter: parent.horizontalCenter
             visible: root.state === "loading"
             running: visible
-            width: 30 * root.uiScale
+            width: 32 * root.uiScale
             height: width
         }
         Text {
@@ -50,7 +51,7 @@ Item {
             text: root.title
             color: root.accent
             font.family: displayFontFamily
-            font.pixelSize: 11 * root.uiScale
+            font.pixelSize: Math.max(Ui.textBody, 11 * root.uiScale)
             font.bold: true
             font.letterSpacing: 1.1 * root.uiScale
         }
@@ -58,9 +59,9 @@ Item {
             visible: root.detail.length > 0
             width: parent.width
             text: root.detail
-            color: "#82949c"
+            color: Ui.textSecondary
             font.family: monoFontFamily
-            font.pixelSize: 6.5 * root.uiScale
+            font.pixelSize: Math.max(Ui.textCaption, 6.5 * root.uiScale)
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignHCenter
         }

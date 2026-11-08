@@ -2,19 +2,21 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import "components"
+import "components/UiTokens.js" as Ui
 
 Item {
     id: root
     property real uiScale: 1.0
     property string selectedSsid: ""
     property string selectedSecurity: ""
+    readonly property real touchTarget: Math.max(Ui.touchMin, Ui.touchMin * uiScale)
 
     Component.onCompleted: controller.refreshRemoteAccess()
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 7 * root.uiScale
-        spacing: 7 * root.uiScale
+        anchors.margins: Ui.spaceSm * root.uiScale
+        spacing: Ui.spaceSm * root.uiScale
 
         StatusCard {
             Layout.fillWidth: true
@@ -64,7 +66,7 @@ Item {
                             Rectangle {
                                 required property var modelData
                                 width: parent.width
-                                height: 34 * root.uiScale
+                                height: root.touchTarget
                                 radius: 4 * root.uiScale
                                 color: root.selectedSsid === modelData.ssid ? "#24151b" : "#08141a"
                                 border.color: root.selectedSsid === modelData.ssid ? "#ff3852" : "#2b414a"
@@ -113,7 +115,7 @@ Item {
                 TextField {
                     id: passwordField
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 32 * root.uiScale
+                    Layout.preferredHeight: root.touchTarget
                     visible: root.selectedSsid.length > 0 && root.selectedSecurity !== "open"
                     placeholderText: "Password for " + root.selectedSsid
                     echoMode: TextInput.Password
@@ -124,9 +126,11 @@ Item {
                     background: Rectangle { color: "#08141a"; border.color: "#38505a"; radius: 4 * root.uiScale }
                 }
                 TarsButton {
+                    uiScale: root.uiScale
+                    dense: true
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 38 * root.uiScale
-                    Layout.maximumHeight: 38 * root.uiScale
+                    Layout.preferredHeight: root.touchTarget
+                    Layout.maximumHeight: root.touchTarget
                     text: root.selectedSsid.length ? "CONNECT TO " + root.selectedSsid : "SELECT A NETWORK"
                     iconText: "WIFI"
                     iconPixelSize: 10 * root.uiScale
@@ -180,11 +184,12 @@ Item {
 
         RowLayout {
             Layout.fillWidth: true
-            Layout.preferredHeight: 40 * root.uiScale
-            Layout.maximumHeight: 40 * root.uiScale
-            spacing: 6 * root.uiScale
+            Layout.preferredHeight: root.touchTarget
+            Layout.maximumHeight: root.touchTarget
+            spacing: Ui.spaceSm * root.uiScale
 
             TarsButton {
+                uiScale: root.uiScale; dense: true
                 Layout.fillWidth: true; Layout.fillHeight: true
                 text: "WI-FI"
                 iconText: "SCAN"
@@ -193,6 +198,7 @@ Item {
                 onClicked: controller.scanWifiNetworks()
             }
             TarsButton {
+                uiScale: root.uiScale; dense: true
                 Layout.fillWidth: true; Layout.fillHeight: true
                 text: controller.remoteState === "active" || controller.remoteState === "hotspot" ? "STOP" : "START REMOTE"
                 iconText: controller.remoteState === "active" || controller.remoteState === "hotspot" ? "X" : "LINK"
@@ -207,6 +213,7 @@ Item {
                 }
             }
             TarsButton {
+                uiScale: root.uiScale; dense: true
                 Layout.fillWidth: true; Layout.fillHeight: true
                 text: "REFRESH"
                 iconText: "R"

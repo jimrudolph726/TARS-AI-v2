@@ -1,4 +1,5 @@
 import QtQuick
+import "components/UiTokens.js" as Ui
 
 Item {
     id: root
@@ -33,7 +34,7 @@ Item {
         eyeCanvas.requestPaint()
     }
 
-    Rectangle { anchors.fill: parent; color: "#020709" }
+    Rectangle { anchors.fill: parent; color: Ui.background }
 
     Timer {
         id: blinkTimer
@@ -63,7 +64,7 @@ Item {
     Canvas {
         id: eyeCanvas
         anchors.fill: parent
-        anchors.margins: 9 * root.uiScale
+        anchors.margins: Ui.spaceMd * root.uiScale
         onWidthChanged: requestPaint()
         onHeightChanged: requestPaint()
         onPaint: {

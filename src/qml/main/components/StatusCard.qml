@@ -1,4 +1,5 @@
 import QtQuick
+import "UiTokens.js" as Ui
 
 Rectangle {
     id: root
@@ -13,10 +14,11 @@ Rectangle {
     property real labelPixelSize: 7 * uiScale
     property real valuePixelSize: 20 * uiScale
     property real detailPixelSize: 6 * uiScale
+    readonly property bool compact: height < 58 * uiScale
 
     implicitWidth: 150 * uiScale
     implicitHeight: 90 * uiScale
-    radius: 5 * uiScale
+    radius: Ui.radiusSm * uiScale
     color: enabled ? "#071116" : "#050b0e"
     border.color: enabled ? "#31444d" : "#202d33"
     opacity: enabled ? 1.0 : 0.64
@@ -25,7 +27,7 @@ Rectangle {
         visible: root.iconText.length > 0
         anchors.left: parent.left
         anchors.top: parent.top
-        anchors.margins: 8 * root.uiScale
+        anchors.margins: Ui.spaceMd * root.uiScale
         text: root.iconText
         color: root.accent
         font.family: displayFontFamily
@@ -37,7 +39,7 @@ Rectangle {
         visible: root.badgeText.length > 0
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.margins: 7 * root.uiScale
+        anchors.margins: Ui.spaceSm * root.uiScale
         width: badgeLabel.implicitWidth + 10 * root.uiScale
         height: 15 * root.uiScale
         radius: height / 2
@@ -58,12 +60,12 @@ Rectangle {
     Column {
         anchors.centerIn: parent
         width: parent.width - 16 * root.uiScale
-        spacing: 5 * root.uiScale
+        spacing: root.compact ? Ui.space2xs * root.uiScale : Ui.spaceXs * root.uiScale
 
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
             text: root.label
-            color: root.enabled ? "#8fa1aa" : "#59666c"
+            color: root.enabled ? "#8fa1aa" : Ui.disabled
             font.family: monoFontFamily
             font.pixelSize: root.labelPixelSize
             font.letterSpacing: 1.1 * root.uiScale
@@ -73,12 +75,12 @@ Rectangle {
             text: root.value
             color: root.enabled ? root.accent : "#617078"
             font.family: displayFontFamily
-            font.pixelSize: root.valuePixelSize
+            font.pixelSize: root.compact ? Math.min(root.valuePixelSize, 12 * root.uiScale) : root.valuePixelSize
             font.bold: true
         }
         Text {
             width: parent.width
-            visible: root.detail.length > 0
+            visible: root.detail.length > 0 && !root.compact
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideRight
             text: root.detail

@@ -1,4 +1,5 @@
 import QtQuick
+import "components/UiTokens.js" as Ui
 
 Item {
     id: root
@@ -13,15 +14,15 @@ Item {
         return Math.max(0, Math.min(1, value / Math.max(0.008, reference * 2.35)))
     }
 
-    Rectangle { anchors.fill: parent; color: "#040b0e" }
+    Rectangle { anchors.fill: parent; color: Ui.background }
 
     Row {
         id: metrics
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.margins: 8 * root.uiScale
-        spacing: 5 * root.uiScale
+        anchors.margins: Ui.spaceMd * root.uiScale
+        spacing: Ui.spaceSm * root.uiScale
 
         Repeater {
             model: [
@@ -34,7 +35,7 @@ Item {
                 required property var modelData
                 width: (metrics.width - metrics.spacing * 3) / 4
                 height: 31 * root.uiScale
-                radius: 3 * root.uiScale
+                radius: Ui.radiusSm * root.uiScale
                 color: "#091419"
                 border.width: 1
                 border.color: "#243841"
@@ -90,7 +91,7 @@ Item {
         anchors.right: parent.right
         anchors.top: metrics.bottom
         anchors.bottom: footer.top
-        anchors.margins: 8 * root.uiScale
+        anchors.margins: Ui.spaceMd * root.uiScale
         onWidthChanged: requestPaint()
         onHeightChanged: requestPaint()
 

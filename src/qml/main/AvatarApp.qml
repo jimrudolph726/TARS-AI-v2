@@ -1,16 +1,17 @@
 import QtQuick
 import "components"
+import "components/UiTokens.js" as Ui
 
 Item {
     id: root
     property real uiScale: 1.0
 
-    Rectangle { anchors.fill: parent; color: "#020608" }
+    Rectangle { anchors.fill: parent; color: Ui.background }
 
     Rectangle {
         id: frame
         anchors.fill: parent
-        anchors.margins: 7 * root.uiScale
+        anchors.margins: Ui.spaceSm * root.uiScale
         anchors.bottomMargin: 31 * root.uiScale
         color: "#061014"
         border.width: 1
@@ -19,7 +20,7 @@ Item {
         Image {
             id: avatarImage
             anchors.fill: parent
-            anchors.margins: 5 * root.uiScale
+            anchors.margins: Ui.spaceXs * root.uiScale
             source: controller.avatarFrameSource
             fillMode: Image.PreserveAspectFit
             asynchronous: true

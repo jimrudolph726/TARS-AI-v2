@@ -2,12 +2,15 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import "components"
+import "components/UiTokens.js" as Ui
 
 Item {
     id: root
 
     property real uiScale: 1.0
     property string diagnosticGroup: "hardware"
+    readonly property bool compactWidth: width < 360 * uiScale
+    readonly property real touchTarget: Math.max(Ui.touchMin, Ui.touchMin * uiScale)
 
     function stateColor(state) {
         if (state === "ok") return "#2aff8a"
@@ -19,15 +22,15 @@ Item {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 5 * root.uiScale
-        spacing: 5 * root.uiScale
+        anchors.margins: Ui.spaceSm * root.uiScale
+        spacing: Ui.spaceSm * root.uiScale
 
         GridLayout {
             Layout.fillWidth: true
             Layout.minimumHeight: 0
-            Layout.preferredHeight: 68 * root.uiScale
-            Layout.maximumHeight: 68 * root.uiScale
-            columns: 4
+            Layout.preferredHeight: (root.compactWidth ? 138 : 68) * root.uiScale
+            Layout.maximumHeight: (root.compactWidth ? 138 : 68) * root.uiScale
+            columns: root.compactWidth ? 2 : 4
             rowSpacing: 5 * root.uiScale
             columnSpacing: 5 * root.uiScale
 
@@ -73,9 +76,9 @@ Item {
         GridLayout {
             Layout.fillWidth: true
             Layout.minimumHeight: 0
-            Layout.preferredHeight: 43 * root.uiScale
-            Layout.maximumHeight: 43 * root.uiScale
-            columns: 4
+            Layout.preferredHeight: (root.compactWidth ? 92 : 43) * root.uiScale
+            Layout.maximumHeight: (root.compactWidth ? 92 : 43) * root.uiScale
+            columns: root.compactWidth ? 2 : 4
             rowSpacing: 5 * root.uiScale
             columnSpacing: 5 * root.uiScale
 
@@ -112,11 +115,12 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             Layout.minimumHeight: 0
-            Layout.preferredHeight: 25 * root.uiScale
-            Layout.maximumHeight: 25 * root.uiScale
+            Layout.preferredHeight: root.touchTarget
+            Layout.maximumHeight: root.touchTarget
             spacing: 5 * root.uiScale
 
             TarsButton {
+                uiScale: root.uiScale; dense: true
                 Layout.fillWidth: true; Layout.fillHeight: true
                 text: "HARDWARE"
                 iconText: "HW"
@@ -127,6 +131,7 @@ Item {
                 onClicked: root.diagnosticGroup = "hardware"
             }
             TarsButton {
+                uiScale: root.uiScale; dense: true
                 Layout.fillWidth: true; Layout.fillHeight: true
                 text: "SOFTWARE"
                 iconText: "SW"
@@ -150,7 +155,7 @@ Item {
             delegate: SettingsRow {
                 required property var modelData
                 width: ListView.view.width
-                height: 39 * root.uiScale
+                height: Math.max(Ui.touchMin, Ui.touchMin * root.uiScale)
                 label: modelData.label
                 statusText: modelData.value
                 description: modelData.detail

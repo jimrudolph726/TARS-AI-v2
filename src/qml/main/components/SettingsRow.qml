@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import "UiTokens.js" as Ui
 
 Rectangle {
     id: root
@@ -13,16 +14,16 @@ Rectangle {
     property real controlWidth: 0
 
     implicitWidth: 320 * uiScale
-    implicitHeight: 50 * uiScale
-    radius: 5 * uiScale
+    implicitHeight: Math.max(Ui.touchMin, Ui.touchMin * uiScale)
+    radius: Ui.radiusSm * uiScale
     color: enabled ? "#071116" : "#050b0e"
     border.color: enabled ? "#2d424b" : "#202d33"
     opacity: enabled ? 1.0 : 0.66
 
     RowLayout {
         anchors.fill: parent
-        anchors.margins: 8 * root.uiScale
-        spacing: 9 * root.uiScale
+        anchors.margins: Ui.spaceMd * root.uiScale
+        spacing: Ui.spaceMd * root.uiScale
 
         Column {
             Layout.fillWidth: true
@@ -35,7 +36,7 @@ Rectangle {
                     text: root.label
                     color: root.enabled ? "#edf3f5" : "#68777e"
                     font.family: displayFontFamily
-                    font.pixelSize: 8 * root.uiScale
+                    font.pixelSize: Ui.textBody * root.uiScale
                     font.bold: true
                     font.letterSpacing: 0.8 * root.uiScale
                 }
@@ -44,7 +45,7 @@ Rectangle {
                     text: root.statusText
                     color: root.enabled ? root.accent : "#58656b"
                     font.family: monoFontFamily
-                    font.pixelSize: 6 * root.uiScale
+                    font.pixelSize: Ui.textCaption * root.uiScale
                     font.bold: true
                 }
             }
@@ -54,7 +55,7 @@ Rectangle {
                 text: root.description
                 color: root.enabled ? "#7f929b" : "#536168"
                 font.family: monoFontFamily
-                font.pixelSize: 6 * root.uiScale
+                font.pixelSize: Ui.textCaption * root.uiScale
                 elide: Text.ElideRight
             }
         }

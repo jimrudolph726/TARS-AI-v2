@@ -1,4 +1,5 @@
 import QtQuick
+import "components/UiTokens.js" as Ui
 
 Item {
     id: root
@@ -6,7 +7,7 @@ Item {
     property real uiScale: 1.0
     property bool wide: width > height * 1.22
 
-    Rectangle { anchors.fill: parent; color: "#03090c" }
+    Rectangle { anchors.fill: parent; color: Ui.background }
 
     Canvas {
         id: face
@@ -67,7 +68,7 @@ Item {
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: controller.currentTimeSeconds
-                color: "#edf3f5"
+            color: Ui.textPrimary
                 font.family: displayFontFamily
                 font.pixelSize: Math.min(root.wide ? digital.width * 0.15 : root.width * 0.075, 25 * root.uiScale)
                 font.bold: true

@@ -141,6 +141,22 @@ automatic pose change.
 Display configuration
 ---------------------
 
+The native interface uses a 480x720 portrait design canvas. Shared visual
+tokens live in src/qml/main/components/UiTokens.js and define colors, spacing,
+corner radii, type sizes, touch targets, and scale limits. The complete scene
+continues to expand to the available display, but typography and control
+artwork stop growing at a controlled maximum on high-resolution fullscreen or
+VNC surfaces. Flexible panels use the remaining space instead.
+
+Interactive controls use a 44-pixel minimum touch baseline at native scale.
+System Health changes its telemetry grid from four columns to two on compact
+surfaces, and application modals are bounded in both dimensions so controls do
+not become oversized on a desktop monitor.
+
+The non-Qt regression checks for these contracts can be run with:
+
+    python -m unittest tests.test_qml_visual_system
+
 The [UI] section of src/config.ini controls the native interface:
 
     [UI]

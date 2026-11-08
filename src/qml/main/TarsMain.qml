@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import "components"
+import "components/UiTokens.js" as Ui
 import "AppRegistry.js" as AppRegistry
 
 ApplicationWindow {
@@ -13,15 +14,15 @@ ApplicationWindow {
     minimumWidth: displayRotation % 180 === 0 ? 320 : 480
     minimumHeight: displayRotation % 180 === 0 ? 480 : 320
     title: "TARS-AI"
-    color: "#03080a"
+    color: Ui.background
 
-    readonly property color red: "#ff3852"
-    readonly property color green: "#2aff8a"
-    readonly property color amber: "#ffc857"
-    readonly property color pale: "#edf3f5"
+    readonly property color red: Ui.red
+    readonly property color green: Ui.green
+    readonly property color amber: Ui.amber
+    readonly property color pale: Ui.textPrimary
 
     background: Rectangle {
-        color: "#03080a"
+        color: Ui.background
 
         Rectangle {
             anchors.fill: parent
@@ -149,10 +150,15 @@ ApplicationWindow {
             }
         }
         readonly property bool rotated: displayRotation === 90 || displayRotation === 270
-        readonly property real uiScale: Math.min(width / 480, height / 720)
-        // Controls should remain comfortably touchable without growing into
-        // oversized tiles on high-resolution fullscreen/VNC displays.
-        readonly property real controlScale: Math.min(uiScale, 1.35)
+        // Scale from the 480x720 portrait design canvas, but cap growth so a
+        // fullscreen/VNC surface gains breathing room instead of giant type.
+        readonly property real uiScale: Ui.clampedScale(width, height)
+        readonly property real contentScale: Ui.contentScale(uiScale)
+        readonly property real controlScale: Math.max(0.82, contentScale)
+        readonly property real touchTarget: Math.max(Ui.touchMin, Ui.touchMin * controlScale)
+        readonly property real comfortableTouchTarget: Math.max(Ui.touchComfortable,
+                                                                  Ui.touchComfortable * controlScale)
+        readonly property real modalMargin: Math.max(Ui.spaceLg, Ui.spaceXl * contentScale)
         readonly property color stateColor: controller.tarsState === "STANDBY" ? "#829199"
                                             : controller.tarsState === "THINKING" ? window.amber
                                             : window.red
@@ -193,13 +199,15 @@ ApplicationWindow {
         ColumnLayout {
             id: page
             anchors.fill: parent
-            anchors.margins: 9 * scene.uiScale
-            spacing: 7 * scene.uiScale
+            anchors.margins: Ui.spaceMd * scene.uiScale
+            spacing: Ui.spaceSm * scene.uiScale
 
             TarsPanel {
                 id: header
+                uiScale: scene.uiScale
                 Layout.fillWidth: true
-                Layout.preferredHeight: 61 * scene.uiScale
+                Layout.preferredHeight: Math.max(61 * scene.uiScale,
+                                                 scene.touchTarget + 2 * Ui.spaceSm * scene.uiScale)
                 strongBorder: true
                 accent: window.red
 
@@ -278,11 +286,14 @@ ApplicationWindow {
                     }
 
                     Row {
-                        Layout.preferredWidth: 100 * scene.uiScale
+                        Layout.preferredWidth: scene.width < 400
+                            ? scene.touchTarget
+                            : 100 * scene.uiScale
                         Layout.alignment: Qt.AlignVCenter
                         spacing: 7 * scene.uiScale
 
                         Column {
+                            visible: scene.width >= 400
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: 1
                             Text {
@@ -303,7 +314,7 @@ ApplicationWindow {
 
                         Button {
                             id: powerButton
-                            width: 38 * scene.uiScale
+                            width: scene.touchTarget
                             height: width
                             anchors.verticalCenter: parent.verticalCenter
                             hoverEnabled: true
@@ -329,6 +340,7 @@ ApplicationWindow {
 
             TarsPanel {
                 id: hero
+                uiScale: scene.uiScale
                 Layout.fillWidth: true
                 Layout.preferredHeight: 224 * scene.uiScale
                 accent: scene.stateColor
@@ -399,6 +411,7 @@ ApplicationWindow {
 
             TarsPanel {
                 id: conversationPanel
+                uiScale: scene.uiScale
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.preferredHeight: 207 * scene.uiScale
@@ -439,6 +452,7 @@ ApplicationWindow {
 
             TarsPanel {
                 id: telemetryPanel
+                uiScale: scene.uiScale
                 Layout.fillWidth: true
                 Layout.preferredHeight: 69 * scene.uiScale
 
@@ -481,12 +495,13 @@ ApplicationWindow {
             RowLayout {
                 id: nav
                 Layout.fillWidth: true
-                Layout.minimumHeight: 52 * scene.controlScale
-                Layout.preferredHeight: 52 * scene.controlScale
-                Layout.maximumHeight: 52 * scene.controlScale
-                spacing: 6 * scene.controlScale
+                Layout.minimumHeight: scene.touchTarget
+                Layout.preferredHeight: scene.touchTarget
+                Layout.maximumHeight: scene.touchTarget
+                spacing: Ui.spaceSm * scene.controlScale
 
                 TarsButton {
+                    uiScale: scene.contentScale
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.minimumWidth: 0
@@ -502,6 +517,7 @@ ApplicationWindow {
                     }
                 }
                 TarsButton {
+                    uiScale: scene.contentScale
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.minimumWidth: 0
@@ -514,6 +530,7 @@ ApplicationWindow {
                     onClicked: scene.overlayMode = "apps"
                 }
                 TarsButton {
+                    uiScale: scene.contentScale
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.minimumWidth: 0
@@ -527,6 +544,7 @@ ApplicationWindow {
                     onClicked: controller.toggleMute()
                 }
                 TarsButton {
+                    uiScale: scene.contentScale
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.minimumWidth: 0
@@ -578,12 +596,17 @@ ApplicationWindow {
 
             TarsPanel {
                 id: modal
-                width: parent.width - 42 * scene.uiScale
-                height: scene.overlayMode === "app" ? parent.height * 0.94
-                    : scene.overlayMode === "apps" ? Math.min(parent.height * 0.68, 280 * scene.controlScale)
-                    : scene.overlayMode === "menu" ? Math.min(parent.height * 0.68, 310 * scene.controlScale)
-                    : scene.overlayMode === "confirm" ? Math.min(parent.height * 0.62, 280 * scene.controlScale)
-                    : parent.height * 0.68
+                uiScale: scene.contentScale
+                width: Math.min(parent.width - 2 * scene.modalMargin, 680 * scene.uiScale)
+                height: scene.overlayMode === "app"
+                    ? Math.min(parent.height - 2 * scene.modalMargin, 760 * scene.uiScale)
+                    : scene.overlayMode === "apps"
+                        ? Math.min(parent.height - 2 * scene.modalMargin, 330 * scene.controlScale)
+                    : scene.overlayMode === "menu"
+                        ? Math.min(parent.height - 2 * scene.modalMargin, 360 * scene.controlScale)
+                    : scene.overlayMode === "confirm"
+                        ? Math.min(parent.height - 2 * scene.modalMargin, 330 * scene.controlScale)
+                    : Math.min(parent.height - 2 * scene.modalMargin, 760 * scene.uiScale)
                 anchors.centerIn: parent
                 strongBorder: true
                 accent: window.red
@@ -591,12 +614,12 @@ ApplicationWindow {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 15 * scene.controlScale
-                    spacing: 10 * scene.controlScale
+                    anchors.margins: Ui.spaceLg * scene.controlScale
+                    spacing: Ui.spaceMd * scene.controlScale
 
                     RowLayout {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 38 * scene.controlScale
+                        Layout.preferredHeight: scene.touchTarget
 
                         Column {
                             Layout.fillWidth: true
@@ -609,7 +632,7 @@ ApplicationWindow {
                                     : "SYSTEM CONTROL"
                                 color: window.pale
                                 font.family: displayFontFamily
-                                font.pixelSize: 17 * scene.controlScale
+                                font.pixelSize: Ui.textTitle * scene.contentScale
                                 font.bold: true
                                 font.letterSpacing: 2 * scene.controlScale
                             }
@@ -617,15 +640,15 @@ ApplicationWindow {
                                 text: "TARS-AI · NATIVE QML CONTROL"
                                 color: "#91a2aa"
                                 font.family: monoFontFamily
-                                font.pixelSize: 6.5 * scene.controlScale
+                                font.pixelSize: Ui.textCaption * scene.contentScale
                                 font.letterSpacing: 1.2 * scene.controlScale
                             }
                         }
 
                         Button {
                             id: closeOverlayButton
-                            Layout.preferredWidth: 72 * scene.controlScale
-                            Layout.preferredHeight: 28 * scene.controlScale
+                            Layout.preferredWidth: 88 * scene.controlScale
+                            Layout.preferredHeight: scene.touchTarget
                             Layout.alignment: Qt.AlignVCenter
                             hoverEnabled: true
                             onClicked: {
@@ -648,14 +671,14 @@ ApplicationWindow {
                                     text: scene.overlayMode === "app" ? "‹" : "×"
                                     color: window.red
                                     font.family: displayFontFamily
-                                    font.pixelSize: 11 * scene.controlScale
+                                    font.pixelSize: 11 * scene.contentScale
                                     font.bold: true
                                 }
                                 Text {
                                     text: scene.overlayMode === "app" ? "BACK" : "CLOSE"
                                     color: window.pale
                                     font.family: displayFontFamily
-                                    font.pixelSize: 7 * scene.controlScale
+                                    font.pixelSize: Ui.textSmall * scene.contentScale
                                     font.bold: true
                                     font.letterSpacing: 0.7 * scene.controlScale
                                 }
@@ -787,12 +810,14 @@ ApplicationWindow {
                                 model: AppRegistry.applications
                                 delegate: TarsButton {
                                     required property var modelData
+                                    uiScale: scene.contentScale
+                                    dense: true
                                     Layout.fillWidth: true
                                     Layout.minimumWidth: 0
                                     Layout.preferredWidth: 1
-                                    Layout.minimumHeight: 48 * scene.controlScale
-                                    Layout.preferredHeight: 48 * scene.controlScale
-                                    Layout.maximumHeight: 48 * scene.controlScale
+                                    Layout.minimumHeight: scene.touchTarget
+                                    Layout.preferredHeight: scene.touchTarget
+                                    Layout.maximumHeight: scene.touchTarget
                                     text: modelData.title
                                     iconText: modelData.icon
                                     badgeText: scene.launcherBadge(modelData)
@@ -814,7 +839,7 @@ ApplicationWindow {
                             source: AppRegistry.sourceFor(scene.activeAppId)
                             onLoaded: {
                                 if (item && item.hasOwnProperty("uiScale"))
-                                    item.uiScale = Qt.binding(function() { return scene.controlScale })
+                                    item.uiScale = Qt.binding(function() { return scene.contentScale })
                             }
                         }
 
@@ -826,7 +851,7 @@ ApplicationWindow {
                             detail: appLoader.status === Loader.Error
                                 ? "The selected QML pane could not be loaded. Check the terminal for details."
                                 : "Preparing " + AppRegistry.titleFor(scene.activeAppId) + "."
-                            uiScale: scene.controlScale
+                            uiScale: scene.contentScale
                         }
 
                         GridLayout {
@@ -839,12 +864,14 @@ ApplicationWindow {
                             columnSpacing: 7 * scene.controlScale
 
                             TarsButton {
+                                uiScale: scene.contentScale
+                                dense: true
                                 Layout.fillWidth: true
                                 Layout.minimumWidth: 0
                                 Layout.preferredWidth: 1
-                                Layout.minimumHeight: 45 * scene.controlScale
-                                Layout.preferredHeight: 45 * scene.controlScale
-                                Layout.maximumHeight: 45 * scene.controlScale
+                                Layout.minimumHeight: scene.touchTarget
+                                Layout.preferredHeight: scene.touchTarget
+                                Layout.maximumHeight: scene.touchTarget
                                 text: "SYSTEM HEALTH"
                                 iconText: "HLTH"
                                 iconPixelSize: 11 * scene.controlScale
@@ -853,12 +880,14 @@ ApplicationWindow {
                                 onClicked: scene.openApp("system-health", "menu")
                             }
                             TarsButton {
+                                uiScale: scene.contentScale
+                                dense: true
                                 Layout.fillWidth: true
                                 Layout.minimumWidth: 0
                                 Layout.preferredWidth: 1
-                                Layout.minimumHeight: 45 * scene.controlScale
-                                Layout.preferredHeight: 45 * scene.controlScale
-                                Layout.maximumHeight: 45 * scene.controlScale
+                                Layout.minimumHeight: scene.touchTarget
+                                Layout.preferredHeight: scene.touchTarget
+                                Layout.maximumHeight: scene.touchTarget
                                 text: "WI-FI & REMOTE"
                                 iconText: "LINK"
                                 iconPixelSize: 11 * scene.controlScale
@@ -867,12 +896,14 @@ ApplicationWindow {
                                 onClicked: scene.openApp("remote", "menu")
                             }
                             TarsButton {
+                                uiScale: scene.contentScale
+                                dense: true
                                 Layout.fillWidth: true
                                 Layout.minimumWidth: 0
                                 Layout.preferredWidth: 1
-                                Layout.minimumHeight: 45 * scene.controlScale
-                                Layout.preferredHeight: 45 * scene.controlScale
-                                Layout.maximumHeight: 45 * scene.controlScale
+                                Layout.minimumHeight: scene.touchTarget
+                                Layout.preferredHeight: scene.touchTarget
+                                Layout.maximumHeight: scene.touchTarget
                                 text: "SERVO CALIBRATION"
                                 iconText: "SRV"
                                 iconPixelSize: 11 * scene.controlScale
@@ -882,12 +913,14 @@ ApplicationWindow {
                                 onClicked: scene.openConfirmation("servo")
                             }
                             TarsButton {
+                                uiScale: scene.contentScale
+                                dense: true
                                 Layout.fillWidth: true
                                 Layout.minimumWidth: 0
                                 Layout.preferredWidth: 1
-                                Layout.minimumHeight: 45 * scene.controlScale
-                                Layout.preferredHeight: 45 * scene.controlScale
-                                Layout.maximumHeight: 45 * scene.controlScale
+                                Layout.minimumHeight: scene.touchTarget
+                                Layout.preferredHeight: scene.touchTarget
+                                Layout.maximumHeight: scene.touchTarget
                                 text: "RESTART TARS"
                                 iconText: "RST"
                                 iconPixelSize: 11 * scene.controlScale
@@ -896,12 +929,14 @@ ApplicationWindow {
                                 onClicked: scene.openConfirmation("restart")
                             }
                             TarsButton {
+                                uiScale: scene.contentScale
+                                dense: true
                                 Layout.fillWidth: true
                                 Layout.minimumWidth: 0
                                 Layout.preferredWidth: 1
-                                Layout.minimumHeight: 45 * scene.controlScale
-                                Layout.preferredHeight: 45 * scene.controlScale
-                                Layout.maximumHeight: 45 * scene.controlScale
+                                Layout.minimumHeight: scene.touchTarget
+                                Layout.preferredHeight: scene.touchTarget
+                                Layout.maximumHeight: scene.touchTarget
                                 text: "EXIT APPLICATION"
                                 iconText: "EXIT"
                                 iconPixelSize: 11 * scene.controlScale
@@ -910,12 +945,14 @@ ApplicationWindow {
                                 onClicked: scene.openConfirmation("exit")
                             }
                             TarsButton {
+                                uiScale: scene.contentScale
+                                dense: true
                                 Layout.fillWidth: true
                                 Layout.minimumWidth: 0
                                 Layout.preferredWidth: 1
-                                Layout.minimumHeight: 45 * scene.controlScale
-                                Layout.preferredHeight: 45 * scene.controlScale
-                                Layout.maximumHeight: 45 * scene.controlScale
+                                Layout.minimumHeight: scene.touchTarget
+                                Layout.preferredHeight: scene.touchTarget
+                                Layout.maximumHeight: scene.touchTarget
                                 text: "SHUT DOWN PI"
                                 iconText: "PWR"
                                 iconPixelSize: 11 * scene.controlScale
@@ -934,7 +971,7 @@ ApplicationWindow {
                             message: scene.confirmationMessage
                             confirmText: scene.confirmationButtonText
                             accent: scene.confirmationAction === "restart" ? window.amber : window.red
-                            uiScale: scene.controlScale
+                            uiScale: scene.contentScale
                             onRejected: {
                                 scene.confirmationAction = ""
                                 scene.overlayMode = ""
@@ -984,9 +1021,10 @@ ApplicationWindow {
                     font.letterSpacing: 1.2 * scene.uiScale
                 }
                 TarsButton {
+                    uiScale: scene.contentScale
                     anchors.horizontalCenter: parent.horizontalCenter
-                    width: 150 * scene.uiScale
-                    height: 54 * scene.uiScale
+                    width: 150 * scene.contentScale
+                    height: scene.comfortableTouchTarget
                     text: "EXIT"
                     iconText: "X"
                     accent: window.red

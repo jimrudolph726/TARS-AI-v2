@@ -1,4 +1,5 @@
 import QtQuick
+import "UiTokens.js" as Ui
 
 Rectangle {
     id: root
@@ -10,16 +11,16 @@ Rectangle {
     property color accent: "#ff3852"
     property real uiScale: 1.0
 
-    radius: 7 * uiScale
-    color: "#09151b"
+    radius: Ui.radiusMd * uiScale
+    color: Ui.surfaceRaised
     border.width: isTars ? 1.4 : 1
     border.color: isTars ? accent : "#31505e"
 
     Rectangle {
         id: avatar
-        width: 52 * root.uiScale
+        width: Math.min(52 * root.uiScale, root.height - 16 * root.uiScale)
         height: width
-        radius: 6 * root.uiScale
+        radius: Ui.radiusMd * root.uiScale
         anchors.left: parent.left
         anchors.leftMargin: 10 * root.uiScale
         anchors.verticalCenter: parent.verticalCenter
@@ -46,7 +47,7 @@ Rectangle {
         text: root.speaker
         color: root.accent
         font.family: displayFontFamily
-        font.pixelSize: 12 * root.uiScale
+        font.pixelSize: Ui.textHeading * root.uiScale
         font.bold: true
         font.letterSpacing: 1.8 * root.uiScale
     }
@@ -58,7 +59,7 @@ Rectangle {
         text: root.messageTime
         color: "#92a3ac"
         font.family: monoFontFamily
-        font.pixelSize: 8 * root.uiScale
+        font.pixelSize: Ui.textBody * root.uiScale
         font.letterSpacing: 1.0 * root.uiScale
     }
 
@@ -71,12 +72,12 @@ Rectangle {
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 8 * root.uiScale
         text: root.message
-        color: "#edf3f5"
+        color: Ui.textPrimary
         font.family: monoFontFamily
-        font.pixelSize: 14 * root.uiScale
+        font.pixelSize: Math.max(10, 13 * root.uiScale)
         verticalAlignment: Text.AlignVCenter
         wrapMode: Text.WordWrap
         elide: Text.ElideRight
-        maximumLineCount: 3
+        maximumLineCount: root.width < 360 * root.uiScale ? 4 : 3
     }
 }

@@ -1,4 +1,5 @@
 import QtQuick
+import "UiTokens.js" as Ui
 
 Item {
     id: root
@@ -21,7 +22,7 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        spacing: 13 * root.uiScale
+        spacing: Ui.spaceLg * root.uiScale
 
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
@@ -34,7 +35,7 @@ Item {
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
             text: root.title
-            color: "#edf3f5"
+            color: Ui.textPrimary
             font.family: displayFontFamily
             font.pixelSize: 13 * root.uiScale
             font.bold: true
@@ -44,7 +45,7 @@ Item {
             width: parent.width - 24 * root.uiScale
             anchors.horizontalCenter: parent.horizontalCenter
             text: root.message
-            color: "#97a7ae"
+            color: Ui.textSecondary
             font.family: monoFontFamily
             font.pixelSize: 7 * root.uiScale
             wrapMode: Text.Wrap
@@ -52,11 +53,12 @@ Item {
         }
         Row {
             anchors.horizontalCenter: parent.horizontalCenter
-            spacing: 9 * root.uiScale
+            spacing: Ui.spaceMd * root.uiScale
 
             TarsButton {
                 width: 120 * root.uiScale
-                height: 48 * root.uiScale
+                height: Math.max(Ui.touchMin, Ui.touchComfortable * root.uiScale)
+                uiScale: root.uiScale
                 text: root.cancelText
                 iconText: "<"
                 iconPixelSize: 10 * root.uiScale
@@ -66,7 +68,8 @@ Item {
             }
             TarsButton {
                 width: 150 * root.uiScale
-                height: 48 * root.uiScale
+                height: Math.max(Ui.touchMin, Ui.touchComfortable * root.uiScale)
+                uiScale: root.uiScale
                 text: root.confirmText
                 iconText: root.iconText
                 iconPixelSize: 10 * root.uiScale

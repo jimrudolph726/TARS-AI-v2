@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import "components"
+import "components/UiTokens.js" as Ui
 
 Item {
     id: root
@@ -33,8 +34,8 @@ Item {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 5 * root.uiScale
-        spacing: 5 * root.uiScale
+        anchors.margins: Ui.spaceSm * root.uiScale
+        spacing: Ui.spaceSm * root.uiScale
 
         RowLayout {
             Layout.fillWidth: true
@@ -144,8 +145,8 @@ Item {
         Rectangle {
             Layout.fillWidth: true
             Layout.minimumHeight: 0
-            Layout.preferredHeight: 48 * root.uiScale
-            Layout.maximumHeight: 48 * root.uiScale
+            Layout.preferredHeight: Math.max(Ui.touchMin, 48 * root.uiScale)
+            Layout.maximumHeight: Math.max(Ui.touchMin, 48 * root.uiScale)
             radius: 4 * root.uiScale
             color: "#071116"
             border.color: "#30434b"
@@ -182,9 +183,9 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             Layout.minimumHeight: 0
-            Layout.preferredHeight: 27 * root.uiScale
-            Layout.maximumHeight: 27 * root.uiScale
-            spacing: 4 * root.uiScale
+            Layout.preferredHeight: Math.max(Ui.touchMin, Ui.touchMin * root.uiScale)
+            Layout.maximumHeight: Math.max(Ui.touchMin, Ui.touchMin * root.uiScale)
+            spacing: Ui.spaceXs * root.uiScale
 
             Repeater {
                 model: [
@@ -194,6 +195,8 @@ Item {
                 ]
                 delegate: TarsButton {
                     required property var modelData
+                    uiScale: root.uiScale
+                    dense: true
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     text: modelData.label
@@ -205,6 +208,8 @@ Item {
                 }
             }
             TarsButton {
+                uiScale: root.uiScale
+                dense: true
                 Layout.preferredWidth: 72 * root.uiScale
                 Layout.fillHeight: true
                 text: "REFRESH"

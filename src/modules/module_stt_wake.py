@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import threading
 from difflib import SequenceMatcher
-
-import requests
+from urllib.request import urlopen
 
 
 def fuzzy_wake_word_match(transcript: str, wake_word: str, threshold: float = 0.6) -> bool:
@@ -24,8 +23,18 @@ def fuzzy_wake_word_match(transcript: str, wake_word: str, threshold: float = 0.
 
 
 def fire_and_forget_get(url: str) -> None:
+    def notify() -> None:
+        # Keep the wake-word matching module importable in hardware-free test
+        # and recovery environments. A missing/broken WebUI notification must
+        # never take down STT.
+        try:
+            with urlopen(url, timeout=1):
+                pass
+        except Exception:
+            pass
+
     threading.Thread(
-        target=lambda: requests.get(url, timeout=1),
+        target=notify,
         name="stt-notify",
         daemon=True,
     ).start()

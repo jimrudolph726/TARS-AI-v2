@@ -13,6 +13,31 @@ On PowerShell:
     $env:PYTHONPATH = "src;tests"
     python -m unittest discover -s tests -v
 
+Release gate
+------------
+
+The strict release gate installs no packages and never opens physical
+hardware. Install its small, explicit dependency manifest once, then run:
+
+    python -m pip install -r requirements-release-tests.txt
+    python tools/run_release_tests.py --strict
+
+On the Raspberry Pi, use the project interpreter:
+
+    src/.venv/bin/python tools/run_release_tests.py --strict
+
+Without --strict, missing desktop-only dependencies are reported and their
+specific tests are skipped. Strict mode rejects missing dependencies and any
+skipped test, which is the mode used by the GitHub Actions release workflow.
+
+The release layer loads every registered QML application with the safe mock
+controller, renders screenshots at 480x720, 480x800, 800x480, and 1080x1920,
+and checks that each image is nonblank and contains the TARS accent palette.
+Screenshots are written only to temporary directories. It also injects camera,
+microphone, and NetworkManager failures; verifies calibration offsets after a
+fresh config/model reload; audits active import and launcher boundaries; and
+runs an offline clean-checkout smoke test.
+
 The fake backend records every channel write and can inject probe or PWM
 failures. The suite verifies controller retry/recovery, calibrated endpoint
 mapping, safe pulse bounds, startup/shutdown behavior, calibration handoff,
@@ -37,6 +62,10 @@ rules; servo conversion and calibration rules; QML telemetry and remote-access
 services; and import boundaries between those services and their controller
 facades. They do not create a Qt application, open an audio device, contact a
 network service, or initialize servo hardware.
+
+The offline clean-install check can also be run by itself:
+
+    python tools/clean_install_smoke.py
 
 These tests validate software behavior only. They cannot prove that a gait is
 mechanically stable or that physical calibration endpoints are safe for a

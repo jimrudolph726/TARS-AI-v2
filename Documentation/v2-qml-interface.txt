@@ -198,6 +198,31 @@ The non-Qt regression checks for these contracts can be run with:
 
     python -m unittest tests.test_qml_visual_system
 
+Automated release tests
+-----------------------
+
+The hardware-free release gate combines the fake-servo suite with strict
+configuration validation, active import and launcher boundaries, simulated
+camera/microphone/network failures, calibration restart persistence, true
+offscreen QML component loading, and screenshot checks at the supported native,
+windowed, fullscreen, and high-resolution display sizes. It never accesses
+GPIO, I2C, the physical camera or microphone, or an external network service.
+
+Install the release-only dependencies and run the strict gate from the project
+root:
+
+    python -m pip install -r requirements-release-tests.txt
+    python tools/run_release_tests.py --strict
+
+On TARS itself:
+
+    src/.venv/bin/python tools/run_release_tests.py --strict
+
+GitHub Actions runs the same strict command on pushes to main and on pull
+requests. Strict mode fails on missing dependencies or skipped checks, while a
+normal local run may skip QML/WebUI checks when their optional desktop test
+packages are not installed.
+
 The [UI] section of src/config.ini controls the native interface:
 
     [UI]

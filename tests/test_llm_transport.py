@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 import unittest
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError as exc:  # pragma: no cover - host dependency gate
+    raise unittest.SkipTest(
+        "requests is required for LLM transport tests; install requirements-release-tests.txt"
+    ) from exc
 
 from modules.module_llm_transport import (
     LLMRequestCancelled,

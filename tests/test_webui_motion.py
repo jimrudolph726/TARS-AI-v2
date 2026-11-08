@@ -8,7 +8,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from flask import Flask
+try:
+    from flask import Flask
+except ModuleNotFoundError as exc:  # pragma: no cover - host dependency gate
+    raise unittest.SkipTest(
+        "Flask is required for WebUI tests; install requirements-release-tests.txt"
+    ) from exc
 
 from modules.webui import motion
 

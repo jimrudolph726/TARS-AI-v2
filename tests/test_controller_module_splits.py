@@ -181,7 +181,14 @@ class ControllerBoundaryTests(unittest.TestCase):
             "module_servo_math.py",
             "module_servo_tester_model.py",
         ]
-        forbidden = ("PySide6", "board", "busio", "adafruit_pca9685")
+        forbidden = (
+            "PySide6",
+            "board",
+            "busio",
+            "adafruit_pca9685",
+            "requests",
+            "sounddevice",
+        )
         offenders = {}
         for filename in pure_modules:
             imports = _import_names(SRC / "modules" / filename)

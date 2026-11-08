@@ -1,0 +1,6 @@
+# Hardware-free strict release test dependencies.
+# The production installer owns the full Raspberry Pi runtime dependency set.
+PySide6>=6.8,<7
+numpy>=1.26,<3
+requests>=2.31,<3
+Flask>=3,<4

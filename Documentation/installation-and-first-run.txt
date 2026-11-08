@@ -1,0 +1,125 @@
+TARS-AI V2 INSTALLATION AND FIRST RUN
+=====================================
+
+Supported release-candidate target
+----------------------------------
+
+- Raspberry Pi 5 running a current 64-bit Raspberry Pi OS Desktop image.
+- A stable Pi 5 power supply and adequate cooling.
+- PySide6/QML is the only supported on-device graphical interface.
+- The active repository is ~/TARS-AI-v2. Keep an older known-working checkout
+  in a different directory if desired; never install one checkout over another.
+
+Before installing
+-----------------
+
+1. Turn physical servo power OFF and support TARS so it cannot fall.
+2. Confirm display, camera ribbon, USB sound card, ReSpeaker, PCA9685, INA260,
+   and power wiring are fully seated.
+3. Do not run the installer or TARS with sudo. Install.sh invokes sudo only for
+   the individual system operations that require it.
+4. Have internet access available for packages and model downloads.
+
+Fresh installation
+------------------
+
+From the Raspberry Pi terminal:
+
+    cd ~
+    git clone https://github.com/jimrudolph726/TARS-AI-v2.git
+    cd TARS-AI-v2
+    chmod +x Install.sh tars-launcher.sh run-main-ui-demo.sh toggle-autostart.sh
+    ./Install.sh
+
+The installer creates src/.venv with --system-site-packages, installs the
+device profile dependencies, creates src/config.ini and .env from their
+templates when absent, and creates the desktop launcher. Existing config.ini
+and .env files are retained during a later installer run.
+
+Do not manually create a second virtual environment elsewhere. Camera access
+depends on the project environment being able to see Raspberry Pi system
+packages.
+
+Configure secrets
+-----------------
+
+The secrets file is at the repository root, not inside src:
+
+    cd ~/TARS-AI-v2
+    nano .env
+
+Set only the services you use. Typical entries are OPENAI_API_KEY,
+ELEVENLABS_API_KEY, and FLASK_SECRET_KEY. Never paste .env into an issue,
+terminal transcript, screenshot, or Git commit.
+
+Configure the robot
+-------------------
+
+    nano ~/TARS-AI-v2/src/config.ini
+
+At minimum review:
+
+- [AUDIO] input_device and output_device.
+- [STT] wake/STT/VAD settings and microphone gain.
+- [TTS] selected engine, voice, and model.
+- [VISION] enabled, rotation, and processor.
+- [ACCESS] WebUI password and port.
+- [UI] display dimensions, fullscreen, and rotation.
+- [CONTROLS] keep voicemovement=False until calibration is verified.
+- [SERVO] arms_present must match the physical robot.
+- [BATTERY] values must match the installed battery before auto-shutdown is
+  enabled.
+
+Validate the generated configuration without starting hardware:
+
+    cd ~/TARS-AI-v2
+    PYTHONPATH=src src/.venv/bin/python -c "from modules.module_config_store import validate_typed_config_file; validate_typed_config_file('src/config.ini'); print('config.ini valid')"
+
+First launch
+------------
+
+Keep physical servo power OFF for the initial software check:
+
+    cd ~/TARS-AI-v2
+    ./tars-launcher.sh --terminal
+
+Confirm there are no startup errors for configuration, audio devices, STT,
+TTS, or required models. Stop with Ctrl+C, then launch the QML interface:
+
+    ./tars-launcher.sh
+
+The launcher activates src/.venv automatically. If running a Python entry
+point manually, activate it first:
+
+    source ~/TARS-AI-v2/src/.venv/bin/activate
+
+The shell prompt should show (.venv). Do not use the system Python for the
+servo tester or main interface.
+
+Safe visual-only check
+----------------------
+
+This prototype uses mock state and opens no robot hardware:
+
+    cd ~/TARS-AI-v2
+    ./run-main-ui-demo.sh --fullscreen
+
+Run the hardware-free release gate
+----------------------------------
+
+    cd ~/TARS-AI-v2
+    src/.venv/bin/python tools/run_release_tests.py --strict
+
+The strict suite uses fake servo, camera, microphone, and network failures.
+It does not energize servos or open the physical camera/microphone. A passing
+automated suite is required but does not replace the physical checklist.
+
+Next steps
+----------
+
+1. Complete audio-respeaker-routing.txt.
+2. Complete camera-setup.txt.
+3. Back up the working state using backup-and-restoration.txt.
+4. Perform servo-calibration-safety-procedure.txt.
+5. Complete release-checklist-v2.0.0-rc1.txt before tagging.
+

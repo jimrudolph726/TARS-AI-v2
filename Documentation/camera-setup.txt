@@ -1,0 +1,109 @@
+RASPBERRY PI 5 CAMERA SETUP
+===========================
+
+Physical installation
+---------------------
+
+1. Shut down Raspberry Pi OS completely and disconnect power.
+2. On Raspberry Pi 5, either CAM/DISP connector can support a camera. Use the
+   correct Pi 5 22-pin-to-camera ribbon for the camera module.
+3. Fully release each connector latch, insert the ribbon squarely to the stop,
+   verify contact orientation, then close the latch evenly.
+4. Route and strain-relieve the ribbon so TARS movement cannot pull it loose.
+5. Reconnect power only after both ends are secured.
+
+Never insert or remove the camera ribbon while the Pi is powered.
+
+Operating-system check
+----------------------
+
+Raspberry Pi OS Bookworm and later use rpicam-* commands:
+
+    rpicam-hello --list-cameras
+
+With one working camera, it normally appears as camera index 0 even when it is
+physically connected to CAM/DISP1. Test capture without relying on a remotely
+forwarded preview:
+
+    rpicam-still -n -t 1000 -o /tmp/tars-camera-test.jpg
+    file /tmp/tars-camera-test.jpg
+
+If rpicam commands are missing:
+
+    sudo apt update
+    sudo apt install rpicam-apps
+
+TARS uses Picamera2 on top of libcamera. The project environment is created
+with --system-site-packages so it can use Raspberry Pi camera components.
+
+Python check
+------------
+
+Close TARS before this test so two processes do not compete for the camera:
+
+    cd ~/TARS-AI-v2/src
+    source .venv/bin/activate
+    python -c 'from picamera2 import Picamera2; p=Picamera2(); print("cameras:", p.global_camera_info())'
+
+TARS configuration
+------------------
+
+Review these settings in src/config.ini:
+
+    [UI]
+    use_camera_module = True
+
+    [VISION]
+    enabled = True
+    camera_rotation = 270
+    vision_processor = openai
+    use_llm_backend = False
+    vision_model = gpt-4o-mini
+
+The example processor/model is not mandatory. Available processors are
+documented in configuration-reference.txt. Important distinctions:
+
+- The QML Camera button needs the camera and [UI] use_camera_module.
+- Asking "What do you see?" also needs [VISION] enabled and a functioning
+  vision backend/model/API key.
+- A working preview does not prove that the configured AI backend accepts
+  images.
+
+camera_rotation accepts 0, 90, 180, or 270 and rotates camera frames. It is
+separate from [UI] rotation, which rotates the whole touchscreen interface.
+
+Application checks
+------------------
+
+1. Start TARS with ./tars-launcher.sh.
+2. Open Camera from the QML interface. Confirm correct orientation and a stable
+   live image. Close it and reopen it twice.
+3. Say "Hey TARS" and ask "What do you see?"
+4. Confirm terminal output includes a captured-frame message and the answer
+   accurately describes the view.
+
+The camera service is shared by QML preview, voice vision, identity services,
+and WebUI. Closing the preview can leave that shared session running by design;
+that is not automatically a resource leak.
+
+If the camera is not detected
+-----------------------------
+
+1. Power down and reseat both ribbon ends.
+2. Confirm the correct Pi 5 ribbon and connector orientation.
+3. Run rpicam-hello --list-cameras with TARS stopped.
+4. Check journal output: journalctl -b | grep -Ei 'camera|libcamera|pisp|imx|ov5647'
+5. Confirm the Pi power supply is adequate.
+6. Update Raspberry Pi OS and reboot.
+7. Only after rpicam works, retest Picamera2 and then TARS.
+
+Do not troubleshoot the vision model until rpicam and Picamera2 can capture a
+frame. Do not troubleshoot the ribbon if QML preview works but only the AI
+answer fails; that is a vision-backend configuration problem.
+
+Reference
+---------
+
+Official Raspberry Pi camera software documentation:
+https://www.raspberrypi.com/documentation/accessories/camera-software.html
+

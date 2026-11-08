@@ -147,6 +147,7 @@ cython_debug/
 
 # Notes
 *.md
+!CHANGELOG.md
 
 # LLM and Vision Files
 llm/

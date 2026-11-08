@@ -1,0 +1,209 @@
+TARS V2 TROUBLESHOOTING FLOWCHARTS
+==================================
+
+Start with the smallest failing layer. Do not change calibration, providers, and
+audio routing simultaneously. Capture the terminal output and current commit:
+
+    cd ~/TARS-AI-v2
+    git rev-parse --short HEAD
+    git status --short
+
+
+1. APPLICATION DOES NOT START
+-----------------------------
+
+    START
+      |
+      +-- Is the virtual environment active?
+      |      no -> source ~/TARS-AI-v2/src/.venv/bin/activate
+      |      yes
+      |
+      +-- Does `python -c "import PySide6, shiboken6"` succeed?
+      |      no -> rerun ./Install.sh; do not mix system/pip environments
+      |      yes
+      |
+      +-- Does configuration validation pass?
+      |      no -> restore/fix src/config.ini
+      |      yes
+      |
+      +-- Run `./tars-launcher.sh --terminal`
+             import error -> reinstall missing dependency in project venv
+             QML error    -> run strict release tests and record first QML error
+             hardware err -> continue with servo/camera/audio branch below
+
+
+2. NO AUDIO OR WRONG AUDIO DEVICE
+---------------------------------
+
+    Can Linux see both devices?
+      |
+      +-- no -> check USB power/cable; run `arecord -l`, `aplay -l`, `wpctl status`
+      +-- yes
+            |
+            +-- Can a direct microphone recording be played back?
+            |      no -> test ALSA device/rate/channel selection
+            |      yes
+            |
+            +-- Does sounddevice list both names?
+            |      no -> verify PortAudio/PipeWire/ALSA installation
+            |      yes
+            |
+            +-- Set [AUDIO] name fragments, restart TARS, run exact checks in
+                Documentation/audio-respeaker-routing.txt
+
+Desktop volume changes but TARS volume does not:
+    TARS may be opening the ALSA/PortAudio device directly. Confirm the configured
+    output and use the applicable hardware/ALSA volume control; do not assume the
+    desktop PipeWire slider owns that stream.
+
+
+3. WAKE WORD OR TRANSCRIPTION FAILS
+-----------------------------------
+
+    Does a direct ReSpeaker recording contain clear speech?
+      |
+      +-- no -> fix input routing/placement/gain first
+      +-- yes
+            |
+            +-- Wake word unreliable only?
+            |      -> verify Atomik templates are present
+            |      -> tune sensitivity one step at a time
+            |      -> re-record templates in the installed acoustic environment
+            |      -> watch false activations as sensitivity rises
+            |
+            +-- Wake succeeds, transcript poor?
+                   -> inspect VAD method, speechdelay, mic_amp_gain clipping
+                   -> verify GPT Live/provider key/network/model
+                   -> confirm local fallback model exists before relying on it
+
+
+4. CAMERA PREVIEW OR VISION FAILS
+---------------------------------
+
+    `rpicam-hello --list-cameras` detects camera?
+      |
+      +-- no -> power off; reseat ribbon/orientation; test other CAM/DISP connector
+      +-- yes
+            |
+            +-- `rpicam-still -n -t 1000 -o /tmp/tars-camera-test.jpg` works?
+            |      no -> OS/libcamera/ribbon/sensor problem
+            |      yes
+            |
+            +-- QML preview works?
+            |      no -> [UI] use_camera_module, Picamera2, ownership/logs
+            |      yes
+            |
+            +-- Voice "what do you see" works?
+                   no -> [VISION] enabled, model/backend/API key/image support
+                   error "model not available" -> install/configure that processor
+                   400 response -> chosen endpoint/model likely rejects payload
+
+A working preview proves capture, not image-analysis capability.
+
+
+5. SERVOS DO NOT MOVE OR MOVE UNEXPECTEDLY
+-------------------------------------------
+
+    Unexpected/rapid/stalled motion?
+      |
+      +-- YES -> PHYSICAL SERVO POWER OFF IMMEDIATELY
+      |          inspect mechanics, wiring, power, logs; do not repeat blindly
+      +-- no
+            |
+            +-- Physical servo power and wiring verified?
+            |      no -> correct with power off
+            |      yes
+            |
+            +-- Another TARS/tester/WebUI process owns motion?
+            |      yes -> close it; use one owner only
+            |      no
+            |
+            +-- Mock/fake-hardware tests pass?
+            |      no -> software regression; do not apply hardware power
+            |      yes
+            |
+            +-- Stand-alone tester reports connected but power off?
+            |      -> deliberately enable output while TARS is supported
+            |
+            +-- One movement works, later movements stop?
+                   -> inspect watchdog/cancellation/ownership logs
+                   -> inspect INA260/PCA9685 connections and supply voltage
+                   -> ensure previous routine returned/released movement state
+                   -> power off before inspecting hot/stalled hardware
+
+Follow `Documentation/servo-calibration-safety-procedure.txt` before changing
+offsets or endpoints.
+
+
+6. WEBUI CANNOT BE REACHED
+--------------------------
+
+    From Pi: `curl -I http://127.0.0.1/login` works?
+      |
+      +-- no -> verify [ACCESS] webui_enabled/port and application logs
+      +-- yes
+            |
+            +-- `sudo ss -ltnp | grep ':80 '` (or configured port) shows listener?
+            |      no -> service bound incorrectly/not running
+            |      yes
+            |
+            +-- PC can open http://<PI-IP>/login?
+                   no -> verify current `hostname -I`, firewall, subnet, port
+                   yes, phone cannot -> disable cellular/VPN temporarily; avoid
+                                        guest Wi-Fi; check AP/client isolation;
+                                        try another phone browser
+
+If the router page itself is unreachable from the phone but reachable from the
+PC, troubleshoot Wi-Fi/client isolation before changing TARS.
+
+
+7. `git pull` REFUSES TO UPDATE
+-------------------------------
+
+    `git status --short` clean?
+      |
+      +-- yes -> `git pull --ff-only origin main`
+      +-- no
+            |
+            +-- Are changes intentional?
+                   yes -> commit them on a named branch, then update
+                   unsure -> inspect `git diff`; copy/backup changed files
+                   temporary -> `git stash push -u -m "pi local changes before update"`
+
+Never use `git reset --hard` merely to clear this message. It can destroy local
+configuration/code changes. See `Documentation/upgrade-and-rollback.txt`.
+
+
+8. HIGH CPU, MEMORY GROWTH, OR TEMPERATURE
+------------------------------------------
+
+    Does the Performance/System Health view identify one active feature?
+      |
+      +-- yes -> close that feature; wait for settled resource measurement
+      |          camera -> verify capture session/thread ownership
+      |          audio  -> verify input/output streams close after use
+      |          app    -> open/close repeatedly and compare settled RSS
+      +-- no
+            |
+            +-- Does load rise only while listening/transcribing?
+            |      yes -> compare cloud STT vs local fallback/model load
+            |      no
+            |
+            +-- Does temperature continue rising at idle?
+                   yes -> inspect fan/heatsink mounting and background processes
+                   no  -> record workload, peak temperature, CPU, and RSS
+
+Use the procedure and thresholds in `Documentation/performance-testing.txt`.
+Do not remove visual effects or disable safeguards until measurements identify a
+specific cause.
+
+
+9. AFTER ANY FIX
+----------------
+
+    [ ] Restart the affected process so cached devices/config reload
+    [ ] Re-test one layer at a time
+    [ ] Record the working commit and config backup
+    [ ] Run `python tools/run_release_tests.py --strict`
+    [ ] Do not re-enable servo power until software tests and inspection pass
+

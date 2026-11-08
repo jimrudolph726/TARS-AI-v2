@@ -1,0 +1,195 @@
+TARS-AI V2.0.0-RC1 RELEASE CHECKLIST
+====================================
+
+STATE: NOT CERTIFIED — TAG MUST NOT BE CREATED YET
+
+Candidate commit: _________________________________________
+Raspberry Pi host: ________________________________________
+Operator: _________________________________________________
+Test date/time: ___________________________________________
+Backup folder: ____________________________________________
+Configuration/calibration identifier: ______________________
+
+Rules:
+
+- Run every required check against the exact candidate commit above.
+- Any source/configuration change invalidates affected results.
+- Do not waive physical servo safety checks because fake tests passed.
+- Mark a failure with notes; fix it and start a fresh candidate checklist.
+
+
+A. SOURCE AND AUTOMATED RELEASE TESTS
+-------------------------------------
+
+[ ] Worktree is clean: `git status --short` prints nothing
+[ ] Candidate commit recorded: `git rev-parse HEAD`
+[ ] `python tools/run_release_tests.py --strict` passes on the Pi
+[ ] Clean-install smoke test passes
+[ ] Import-boundary and active-QML-only launcher tests pass
+[ ] Configuration validation and atomic-write tests pass
+[ ] Fake camera, microphone, network, and servo failure tests pass
+[ ] QML component-load and screenshot/layout checks pass
+[ ] Calibration offset restart/persistence test passes
+[ ] Remote CI passes for the candidate commit
+
+Notes: _____________________________________________________
+
+
+B. BACKUP AND ROLLBACK
+----------------------
+
+[ ] Private backup created and its contents inspected
+[ ] Backup includes .env, config.ini, memory, wake templates, and calibration
+[ ] Backup permissions exclude group/other users
+[ ] Current commit is stored in the backup
+[ ] Non-destructive tag checkout/return-to-main procedure reviewed
+[ ] No API key or populated .env/config file is tracked by Git
+
+Notes: _____________________________________________________
+
+
+C. INSTALLATION AND STARTUP
+---------------------------
+
+[ ] `./Install.sh` completes without destroying existing configuration
+[ ] Desktop/direct launcher opens the QML interface
+[ ] `./tars-launcher.sh --terminal` starts and shuts down cleanly
+[ ] Fullscreen orientation and cursor behavior match the installed display
+[ ] Two complete stop/start cycles succeed without stale threads or devices
+[ ] System restart followed by normal launch succeeds
+
+Cold-start time: __________  Idle CPU: ______  Idle RSS: ______
+
+
+D. RESPEAKER INPUT AND ORIGINAL SOUND-CARD OUTPUT
+-------------------------------------------------
+
+[ ] Linux detects both USB audio devices
+[ ] Direct ReSpeaker recording is clear and unclipped
+[ ] TARS reports ReSpeaker Lite as input
+[ ] TARS reports original USB sound card as output
+[ ] ElevenLabs/configured TTS plays through the original sound card
+[ ] Wake word succeeds reliably at normal operating distance
+[ ] GPT Live/primary STT transcribes a complex prompt correctly
+[ ] Local STT fallback was deliberately exercised
+[ ] Barge-in and mute do not create feedback or duplicate speech
+
+Input device: __________________  Output device: ______________
+
+
+E. CAMERA AND VISION
+--------------------
+
+[ ] `rpicam-hello --list-cameras` detects the installed camera
+[ ] `rpicam-still` captures a valid image
+[ ] QML camera preview opens, rotates correctly, and closes repeatedly
+[ ] Voice request "what do you see" captures and analyzes a frame
+[ ] WebUI camera path works
+[ ] Camera failure produces a useful error and does not hang the UI
+[ ] Camera session/thread count returns to expected state after repeated use
+
+Notes: _____________________________________________________
+
+
+F. SERVO CALIBRATION AND MOVEMENT SAFETY
+----------------------------------------
+
+[ ] Mechanical/power/wiring inspection completed with servo power OFF
+[ ] Mock servo tester passes before hardware mode
+[ ] Hardware tester opens with output disabled
+[ ] Every installed joint moves in the expected direction without binding
+[ ] Neutral/reset pose is stable
+[ ] Calibration saves atomically and survives full restart
+[ ] Controlled stop completes without limp/spastic follow-on motion
+[ ] Physical servo-power emergency stop verified
+[ ] Movement watchdog failure path verified safely/fake-hardware where possible
+[ ] Forward/back/turn normal movements each pass repeatedly
+[ ] Fast forward gait passes repeatedly without tipping or excessive speed
+[ ] Wave, handshake, poke, laugh, and monster return safely to neutral
+[ ] Voice and WebUI movement each work after several prior movements
+[ ] No routine leaves movement ownership locked or disables later commands
+
+Physical test surface/support: ______________________________
+Notes: _____________________________________________________
+
+
+G. QML UI AND APPLICATIONS
+--------------------------
+
+[ ] Main display spacing/typography correct at installed resolution
+[ ] Touch targets work without accidental neighboring activation
+[ ] Listening/thinking/talking/standby states and waveform are correct
+[ ] Conversation cards remain readable with long text
+[ ] Camera, Apps, Mute, and Menu buttons retain consistent size
+[ ] Dashboard and System Health load/error/empty states work
+[ ] Audio Timeline, Eyes, Avatar, and Clock open/close repeatedly
+[ ] Menu navigation/back returns to the correct parent
+[ ] Servo Calibration handoff returns cleanly to main UI
+[ ] No active Pygame interface is launched or imported
+
+Notes: _____________________________________________________
+
+
+H. WEBUI
+--------
+
+[ ] Login works on Pi, LAN PC, and LAN phone
+[ ] Incorrect password is rejected
+[ ] Session/login remains valid as designed after application restart
+[ ] No default/shared password remains
+[ ] WebUI is not exposed through router port forwarding
+[ ] Status, settings, camera, and motion functions work
+[ ] Repeated WebUI movements do not block later voice/local movements
+[ ] Physical emergency stop remains reachable during WebUI motion
+
+Notes: _____________________________________________________
+
+
+I. PERFORMANCE, FAILURE STATES, AND THERMALS
+--------------------------------------------
+
+[ ] Listening CPU/temperature recorded
+[ ] Camera preview FPS/load is acceptable
+[ ] QML animation load is acceptable
+[ ] Memory does not trend upward after repeated app open/close cycles
+[ ] Memory does not trend upward after multiple conversations
+[ ] Extended operation remains below the Pi's thermal-throttling threshold
+[ ] Fake network/provider failures recover or report errors without deadlock
+[ ] Camera/audio/provider failure messages are readable and actionable
+[ ] Shutdown leaves no unexpected camera/audio/TARS child processes
+
+Listening CPU: ______  Peak temp: ______  Peak RSS: ______
+Test duration: ______  Notes: _______________________________
+
+
+J. DOCUMENTATION REVIEW
+-----------------------
+
+[ ] Installation/first-run instructions followed from a clean test context
+[ ] Audio, camera, calibration, configuration, backup, WebUI, and upgrade guides
+    match the candidate behavior
+[ ] Troubleshooting decisions were spot-checked
+[ ] Known limitations were reviewed and accepted
+[ ] CHANGELOG.md accurately describes the candidate without overclaiming
+[ ] License/attribution files remain present
+
+
+RELEASE AUTHORIZATION
+---------------------
+
+[ ] Every required item above passed
+[ ] Candidate commit still matches `git rev-parse HEAD`
+[ ] Worktree is still clean
+[ ] Maintainer authorizes `v2.0.0-rc1`
+
+Maintainer signature/name: __________________________________
+Approval date/time: _________________________________________
+
+Only after authorization:
+
+    git tag -a v2.0.0-rc1 -m "TARS-AI v2.0.0 release candidate 1"
+    git push origin main
+    git push origin v2.0.0-rc1
+
+Do not move a published tag. Use `v2.0.0-rc2` for a corrected candidate.
+

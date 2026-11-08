@@ -38,6 +38,32 @@ class CleanInstallSmokeTests(unittest.TestCase):
         for dependency in ("pyside6", "numpy", "requests", "flask"):
             self.assertIn(dependency, manifest)
 
+    def test_release_documentation_set_is_present(self):
+        required = (
+            "release-documentation-index.txt",
+            "installation-and-first-run.txt",
+            "audio-respeaker-routing.txt",
+            "camera-setup.txt",
+            "servo-calibration-safety-procedure.txt",
+            "configuration-reference.txt",
+            "backup-and-restoration.txt",
+            "troubleshooting-flowcharts.txt",
+            "webui-access.txt",
+            "upgrade-and-rollback.txt",
+            "known-limitations.txt",
+            "release-checklist-v2.0.0-rc1.txt",
+        )
+        documentation = ROOT / "Documentation"
+        missing = [name for name in required if not (documentation / name).is_file()]
+        self.assertEqual([], missing)
+        self.assertTrue((ROOT / "CHANGELOG.md").is_file())
+
+        checklist = (documentation / "release-checklist-v2.0.0-rc1.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("STATE: NOT CERTIFIED", checklist)
+        self.assertIn("Physical servo-power emergency stop verified", checklist)
+
 
 class LauncherContractTests(unittest.TestCase):
     def test_launchers_target_only_active_qml_interfaces(self):

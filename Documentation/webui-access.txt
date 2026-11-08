@@ -1,0 +1,119 @@
+TARS V2 WEBUI ACCESS AND SECURITY
+=================================
+
+The WebUI is a touch-friendly local controller for status, settings, camera
+features, and robot movement. Treat motion controls exactly like local servo
+controls: keep TARS supervised and keep the physical servo-power switch within
+reach.
+
+
+1. ENABLE AND FIND THE LOGIN PASSWORD
+-------------------------------------
+
+In `src/config.ini`:
+
+    [ACCESS]
+    webui_enabled = True
+    webui_port = 80
+    webui_password = REPLACE_WITH_A_PRIVATE_PASSWORD
+
+The installer creates a random password for a new configuration. View the value
+locally on the Pi without publishing the rest of the configuration:
+
+    cd ~/TARS-AI-v2
+    sed -n '/^\[ACCESS\]/,/^\[/p' src/config.ini
+
+Restart TARS after changing this section. Do not reuse an important account
+password.
+
+
+2. OPEN THE WEBUI
+-----------------
+
+Find the Pi's current LAN address:
+
+    hostname -I
+
+For port 80, open this from a computer or phone on the same trusted LAN:
+
+    http://PI_ADDRESS/login
+
+For any other port:
+
+    http://PI_ADDRESS:PORT/login
+
+Port 80 is the normal HTTP default, so browsers may hide `:80` from the displayed
+address. That is expected.
+
+
+3. VERIFY THE SERVICE FROM THE PI
+---------------------------------
+
+With port 80 configured:
+
+    curl -I http://127.0.0.1/login
+    sudo ss -ltnp | grep ':80 '
+
+For another port, substitute it in both commands. If localhost works but another
+device cannot connect, the application is running; investigate the Pi address,
+firewall, router isolation, and client network instead of changing the WebUI.
+
+
+4. PC AND PHONE TROUBLESHOOTING
+-------------------------------
+
+- Confirm the phone/PC and Pi addresses are on the same home subnet.
+- Do not use a guest SSID; many routers isolate guest clients.
+- Check wireless/AP/client isolation in the router.
+- Temporarily disable a phone VPN and cellular data while diagnosing routing.
+- Try Firefox or another browser if one mobile browser refuses a local HTTP URL.
+- Re-check `hostname -I`; DHCP addresses can change after reboot.
+- If the PC is Ethernet and the phone is Wi-Fi, confirm the router permits
+  Ethernet-to-Wi-Fi LAN traffic.
+
+If the phone cannot open the router's own LAN page, solve phone/router isolation
+before changing TARS.
+
+
+5. SECURITY BOUNDARY
+--------------------
+
+The WebUI is designed for a trusted private LAN. The release candidate does not
+provide a complete internet-facing security boundary:
+
+- Local HTTP is not encrypted.
+- Anyone who learns the password and can reach the service may control TARS.
+- Motion can cause physical movement.
+- Router port forwarding must remain disabled for this service.
+- Do not expose the WebUI directly to the public internet.
+
+For remote access, use a maintained VPN with authenticated devices rather than
+forwarding the WebUI port. Change `webui_password` if it has been shared. The
+root `.env` contains the persisted `FLASK_SECRET_KEY` used to protect sessions;
+back it up privately and rotate it if exposed.
+
+
+6. SAFE WEBUI MOTION USE
+------------------------
+
+1. Complete servo calibration and local movement validation first.
+2. Keep TARS in view; camera video is not a substitute for a safe fall zone.
+3. Send one movement at a time and wait for completion.
+4. If a routine stalls, goes limp, or becomes rapid/spastic, switch physical
+   servo power OFF immediately.
+5. Do not repeatedly click a failed command.
+6. Close competing servo-test processes before using WebUI motion.
+
+
+7. RELEASE CHECK
+----------------
+
+Before certifying a release candidate, verify login from:
+
+    [ ] The Pi itself
+    [ ] A computer on the trusted LAN
+    [ ] A phone on the trusted LAN
+    [ ] An incorrect password (must be rejected)
+    [ ] A correct password after application restart
+    [ ] Motion controls with TARS physically supervised
+

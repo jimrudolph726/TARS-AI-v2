@@ -1,0 +1,412 @@
+TARS V2 CONFIGURATION REFERENCE
+===============================
+
+Primary configuration: `src/config.ini`
+Template:              `src/config.ini.template`
+Secrets/environment:   `.env` at the repository root
+Dashboard settings:    `src/dashboard.ini`
+
+TARS reads most settings when the process starts. Restart the main interface
+after changing audio devices, STT/TTS providers, vision, servo values, UI
+orientation, skills, or WebUI settings. The WebUI settings editor uses typed
+validation and atomic writes; manual edits should be validated before restart.
+
+Never commit `.env` or a populated `src/config.ini` containing private data.
+Preserve comments and section names exactly. Boolean values accept `True` or
+`False`; use a decimal point for floating-point values.
+
+
+VALIDATION
+----------
+
+From the repository root with the environment active:
+
+    source src/.venv/bin/activate
+    python -m pytest -q tests/test_config_schema.py tests/test_config_atomic.py
+
+For the complete release check:
+
+    python tools/run_release_tests.py --strict
+
+
+[CHAR] — CHARACTER AND LOCAL CONTEXT
+------------------------------------
+
+character_card_path
+    Character JSON used to build TARS's persona and examples.
+
+user_name, user_details
+    Optional user context included in prompts. Do not place secrets here.
+
+location_name, latitude, longitude
+    Location used by weather/dashboard features. Latitude and longitude should
+    be decimal degrees.
+
+responses
+    Enables configured acknowledgement/response behavior.
+
+enable_thinking_responses, thinking_responses
+    Enables spoken/visible thinking phrases and provides their list. Disable if
+    placeholder audio is undesirable.
+
+
+[LLM] — LANGUAGE MODEL
+----------------------
+
+llm_backend
+    Backend selection used by the LLM manager.
+
+base_url
+    API-compatible endpoint. Keep the provider path expected by the backend.
+
+openai_model, grok_model, other_model
+    Model identifiers. Only the field used by the selected backend applies.
+
+systemprompt
+    Additional system instruction. Character-card content is also incorporated.
+
+contextsize, max_tokens
+    Conversation context budget and maximum generated output. Larger values use
+    more memory, time, and API tokens.
+
+seed, temperature, top_p
+    Sampling controls. Lower temperature is more deterministic. Change one
+    sampling control at a time.
+
+connect_timeout, read_timeout, total_timeout
+    Network deadline controls in seconds. `total_timeout` caps the whole request.
+
+max_retries, retry_backoff
+    Retry count and delay. Excessive retries make failures feel like lockups.
+
+json_mode
+    Requests structured JSON where supported.
+
+override_encoding_model
+    Optional tokenizer override; leave blank unless the selected model requires
+    one.
+
+
+[AUDIO] — DEVICE ROUTING
+------------------------
+
+input_device, output_device
+    Case-insensitive fragments of PortAudio device names. Prefer stable name
+    fragments, not numeric indexes. Example for the intended robot setup:
+
+        input_device = ReSpeaker Lite
+        output_device = USB PnP Audio Device
+
+    See `Documentation/audio-respeaker-routing.txt`. Restart after changes.
+
+
+[STT] — WAKE WORD AND SPEECH-TO-TEXT
+------------------------------------
+
+language
+    Recognition language or provider language code.
+
+wake_word
+    Phrase used to wake TARS.
+
+wake_word_processor
+    Wake engine selection. Current supported paths include Atomik template mode
+    and provider-specific alternatives configured by the runtime.
+
+atomik_mode
+    Atomik detector mode. Template data is stored under `src/tts/`.
+
+vad_transcript_verify, vad_speaker_verify
+    Optional secondary voice-activity checks.
+
+vad_speaker_threshold, vad_presence_gate
+    Thresholds for speaker/presence verification. Raising them rejects more
+    input; lowering them accepts more background/non-target audio.
+
+sensitivity
+    Wake-word sensitivity. Higher values make waking easier but can increase
+    false activations. Tune in small steps in the installed acoustic environment.
+
+stt_processor
+    Primary transcription implementation.
+
+openai_stt_model
+    OpenAI transcription model used by the live/cloud path.
+
+openai_stt_delay, openai_stt_timeout
+    Provider timing controls in seconds.
+
+openai_stt_fallback
+    Local STT used if cloud transcription is unavailable or empty.
+
+use_indicators
+    Enables configured recording/listening indicators.
+
+external_url
+    Optional external STT endpoint.
+
+vad_method
+    Voice-activity detector such as `silero` where installed.
+
+sherpa_onnx_denoise, sherpa_onnx_punctuation
+    Local STT cleanup controls.
+
+enable_bargein, bargein_mode, bargein_sensitivity
+    Allows speech to interrupt TARS. More sensitive settings can mistake speaker
+    output or noise for the user.
+
+speechdelay
+    End-of-speech timing. Too short cuts off pauses; too long delays response.
+
+speaker_id_enabled, speaker_id_threshold
+    Enables speaker recognition and acceptance threshold.
+
+mic_amp_gain
+    Software microphone multiplier. Values above 1.0 amplify both voice and
+    noise and can clip. It is not a hardware gain control and has no universal
+    ideal range.
+
+silence_margin
+    Margin used while estimating/deciding silence.
+
+
+[TTS] — TEXT-TO-SPEECH
+----------------------
+
+toggle_charvoice
+    When enabled, character-card voice settings can take precedence.
+
+ttsoption
+    Active TTS provider/engine.
+
+ttsurl, tts_voice
+    Endpoint and voice for compatible local/remote engines.
+
+elevenlabs_voice_id, elevenlabs_model
+    ElevenLabs voice and model identifiers. Availability depends on the current
+    ElevenLabs account/API; restart TARS after changing them.
+
+openai_voice
+    Voice used by the OpenAI TTS path.
+
+piper_multispeaker
+    Piper multi-speaker selection where the installed voice supports it.
+
+speaker_* / emotion speaker fields
+    Optional per-emotion speaker IDs. Unsupported IDs fall back according to the
+    selected engine.
+
+
+[EMOTION]
+---------
+
+enabled
+    Enables emotion classification/selection.
+
+emotion_method, emotion_model
+    Implementation and model. Model availability is installation-dependent.
+
+
+[VISION]
+--------
+
+enabled
+    Enables voice-triggered visual analysis. This is separate from the camera
+    preview toggle.
+
+camera_rotation
+    Rotation applied to captured camera frames. Independent of `[UI] rotation`.
+
+vision_processor
+    Analysis implementation.
+
+use_llm_backend
+    Reuses the configured LLM backend for multimodal requests when supported.
+
+base_url, vision_model, vision_max_tokens
+    Vision endpoint, model identifier, and response limit. A working preview does
+    not prove that the chosen analysis model accepts images.
+
+
+[RAG] — MEMORY/RETRIEVAL
+------------------------
+
+enabled
+    Enables retrieval-augmented conversation memory.
+
+enable_topic_tracking
+    Tracks topic continuity.
+
+strategy, context_window, max_memories, top_k
+    Retrieval strategy and limits.
+
+recency_boost_days
+    Boosts recent memories inside the given window.
+
+embedding_source, embedding_url
+    Embedding provider and optional compatible endpoint.
+
+
+[ACCESS] — WEBUI
+----------------
+
+webui_enabled
+    Starts the WebUI service.
+
+webui_port
+    Listening TCP port. Port 80 may require the installed launcher/service
+    permissions; non-default ports must be included in the URL.
+
+webui_password
+    Login token/password. The installer generates a random value for a new
+    configuration. Replace old/default values and keep this private.
+
+webui_theme
+    Visual theme selection.
+
+The WebUI is intended for a trusted local network; see
+`Documentation/webui-access.txt`.
+
+
+[UI] — QML INTERFACE
+--------------------
+
+screen_width, screen_height
+    Design/reference dimensions.
+
+UI_enabled
+    Enables the local interface.
+
+use_camera_module
+    Enables the camera preview feature. Separate from `[VISION] enabled`.
+
+show_mouse
+    Cursor visibility for touch vs desktop testing.
+
+fullscreen
+    Fullscreen launch behavior.
+
+rotation
+    QML interface rotation for the installed display orientation.
+
+show_time, show_cpu_temp, ampm_format
+    Status display choices.
+
+app
+    Default/start application selection where supported.
+
+target_fps
+    UI animation target. Higher values increase rendering load.
+
+font_size
+    Base text scale.
+
+screensaver_timer, screensaver_cycle_interval, screensaver_list
+    Screensaver activation and content cycling.
+
+
+[CONTROLS] — MOVEMENT INPUT
+---------------------------
+
+enabled
+    Enables movement-control integration.
+
+ventilate
+    Enables the corresponding legacy/supported behavior where installed. It is
+    not a thermal safety substitute.
+
+voicemovement
+    Allows recognized voice commands to actuate hardware. Leave `False` until
+    servo calibration and movement checks pass.
+
+swap_turn_directions, invert_y
+    Direction mapping corrections.
+
+controller_name
+    Preferred game/controller device.
+
+
+[BATTERY]
+---------
+
+battery_enabled
+    Enables INA260/battery telemetry.
+
+battery_auto_shutdown
+    Enables configured low-voltage shutdown behavior.
+
+battery_capacity_mAh, battery_initial_voltage, battery_cutoff_voltage
+    Battery estimate and cutoff parameters. Match the actual battery and power
+    system; incorrect values can make estimates misleading.
+
+
+[SERVO] — HARDWARE GEOMETRY AND SAFETY
+--------------------------------------
+
+arms_present
+    Must match installed arm hardware. It affects movement paths, not only the UI.
+
+watchdog fields
+    Runtime/motion timeout controls. These are safety backstops, not permission
+    to leave TARS unattended.
+
+leftUpHeight, leftDownHeight, rightUpHeight, rightDownHeight
+    Height-servo endpoints.
+
+forwardLeftLeg, backLeftLeg, forwardRightLeg, backRightLeg
+    Leg-rotation endpoints.
+
+leftMainMin/Max, leftForarmMin/Max, leftHandMin/Max
+rightMainMin/Max, rightForarmMin/Max, rightHandMin/Max
+    Arm endpoints. The historical key spelling `Forarm` is intentional where it
+    appears in the template; do not rename keys casually.
+
+perfectLeftHeightOffset, perfectRightHeightOffset,
+perfectLeftLegOffset, perfectRightLegOffset, and arm offsets
+    Saved calibration offsets applied to neutral/endpoints.
+
+Do not copy another robot's servo numbers blindly. Calibrate the physical unit
+using `Documentation/servo-calibration-safety-procedure.txt`.
+
+
+[SKILL:*]
+---------
+
+Each skill section can include:
+
+disabled
+    `True` prevents the skill from being registered/executed.
+
+Additional skill-specific keys may be read by that skill. Review the matching
+file under `src/skills/` before adding undocumented values.
+
+
+.env — SECRETS AND PROCESS ENVIRONMENT
+--------------------------------------
+
+The root `.env` commonly contains provider keys such as OpenAI, ElevenLabs, or
+other configured services, plus the persisted `FLASK_SECRET_KEY` used for WebUI
+sessions. Exact keys depend on enabled backends.
+
+View locally with:
+
+    cd ~/TARS-AI-v2
+    sed -n '1,200p' .env
+
+Do not paste its contents into issue reports or commit it. Secure backups with
+owner-only permissions.
+
+
+CONFIGURATION CHANGE PROCEDURE
+------------------------------
+
+1. Back up `src/config.ini` and `.env`.
+2. Change one functional area at a time.
+3. Validate configuration/tests.
+4. Fully stop and restart TARS.
+5. Verify the changed feature and its fallback.
+6. Restore the backup if behavior regresses.
+
+See `Documentation/backup-and-restoration.txt` and
+`Documentation/upgrade-and-rollback.txt`.
+

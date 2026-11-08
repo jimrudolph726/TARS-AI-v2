@@ -1,0 +1,123 @@
+RESPEAKER INPUT AND ORIGINAL SOUND-CARD OUTPUT
+==============================================
+
+Goal
+----
+
+- ReSpeaker Lite is the microphone input.
+- The original USB sound card remains the speaker/output device.
+- Desktop applications and TARS both use the intended devices after reboot or
+  USB reconnection.
+
+The ReSpeaker Lite is a USB Audio Class device. Raspberry Pi OS normally
+exposes it without a vendor driver. TARS selects devices by case-insensitive
+name fragments from [AUDIO]; this is more reliable than ALSA or PortAudio
+numeric indexes, which can change after reconnecting USB devices.
+
+Identify devices
+----------------
+
+    wpctl status
+    arecord -l
+    aplay -l
+
+For the current TARS build, typical PortAudio names are:
+
+    ReSpeaker Lite: USB Audio
+    USB PnP Audio Device: Audio
+
+List exactly what Python sees:
+
+    cd ~/TARS-AI-v2/src
+    source .venv/bin/activate
+    python -c 'import sounddevice as sd; [print(i, "|", d["name"], "| in:", d["max_input_channels"], "| out:", d["max_output_channels"]) for i,d in enumerate(sd.query_devices())]'
+
+Set Raspberry Pi Desktop defaults
+---------------------------------
+
+In wpctl status, locate the original sound-card sink under Audio/Sinks and the
+ReSpeaker source under Audio/Sources. Use their current node IDs:
+
+    wpctl set-default <ORIGINAL_SOUND_CARD_SINK_ID>
+    wpctl set-default <RESPEAKER_SOURCE_ID>
+
+Verify:
+
+    wpctl status
+    wpctl inspect @DEFAULT_AUDIO_SINK@
+    wpctl inspect @DEFAULT_AUDIO_SOURCE@
+
+WirePlumber remembers explicit default selections across restarts. The numeric
+IDs displayed by wpctl may still change, so identify names again before
+reissuing set-default after hardware changes.
+
+Pin TARS to device names
+------------------------
+
+Edit ~/TARS-AI-v2/src/config.ini:
+
+    [AUDIO]
+    input_device = ReSpeaker Lite
+    output_device = USB PnP Audio Device
+
+Use a unique fragment of the real name printed by sounddevice. Do not use a
+number such as 0, 1, hw:2,0, or hw:3,0 in config.ini.
+
+Restart TARS after changing [AUDIO]. Input and output choices are cached once
+per process.
+
+Verify the exact TARS choices
+-----------------------------
+
+From ~/TARS-AI-v2/src with .venv active:
+
+    python -c 'import sounddevice as sd; from modules.module_mic import get_device_info; i,r=get_device_info(retries=1,backoff=0); print("TARS input:", i, "none" if i is None else sd.query_devices(i)["name"], "rate:", r)'
+
+    python -c 'import sounddevice as sd; import modules.module_tts as t; t.init_audio_output(); i=t._output_device; print("TARS output:", "system default" if i is None else sd.query_devices(i)["name"])'
+
+Expected result:
+
+- TARS input contains ReSpeaker Lite.
+- TARS output contains the original USB sound-card name.
+
+Record and play a test
+----------------------
+
+Use the device index reported by arecord -l only for this diagnostic command:
+
+    arecord -D plughw:<CARD>,<DEVICE> -f S16_LE -r 16000 -c 1 -d 5 /tmp/respeaker-test.wav
+    aplay -D default /tmp/respeaker-test.wav
+
+The recording should come from the ReSpeaker and playback should leave through
+the default original sound card.
+
+Gain and VAD
+------------
+
+- mic_amp_gain multiplies captured samples in software. It is not a hardware
+  ReSpeaker gain control. Begin near the working value and adjust gradually.
+- silence_margin and vad_method decide what counts as speech; they do not set
+  the USB microphone's electrical gain.
+- sensitivity affects Atomik wake-word matching, not general transcription.
+- Change one value at a time and restart TARS before comparing results.
+
+Important volume limitation
+---------------------------
+
+TARS uses PortAudio/sounddevice and may open the configured ALSA hardware
+device directly. In that case the Raspberry Pi desktop volume slider can
+change browser/YouTube volume without changing TARS volume. Treat desktop
+PipeWire routing and TARS [AUDIO] selection as two related but separate layers.
+
+Do not repeatedly unplug USB audio while TARS is running. Close TARS, reconnect
+devices, verify names, then restart so cached selections are rebuilt.
+
+References
+----------
+
+Seeed Studio ReSpeaker Lite USB documentation:
+https://wiki.seeedstudio.com/reSpeaker_usb_v3/
+
+WirePlumber wpctl reference:
+https://pipewire.pages.freedesktop.org/wireplumber/man/wpctl.html
+

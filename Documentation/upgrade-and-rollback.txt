@@ -1,0 +1,128 @@
+TARS V2 UPGRADE AND ROLLBACK
+============================
+
+This procedure updates code without discarding robot-specific calibration,
+secrets, memories, wake templates, or movement data. Never use `git reset --hard`
+as a routine update or rollback method.
+
+
+1. PRE-UPGRADE GATE
+-------------------
+
+1. Stop TARS and switch servo power OFF.
+2. Create and verify a private backup using
+   `Documentation/backup-and-restoration.txt`.
+3. Record the current code and local changes:
+
+       cd ~/TARS-AI-v2
+       git rev-parse HEAD
+       git status --short
+
+4. If `git status` is not clean, inspect the changes:
+
+       git diff
+
+   Commit intentional source changes on a named branch, or stash temporary
+   changes with a clear message. Do not overwrite an unknown local edit.
+
+
+2. UPDATE THE MAIN BRANCH
+-------------------------
+
+    cd ~/TARS-AI-v2
+    git fetch origin --tags
+    git switch main
+    git pull --ff-only origin main
+
+If Git says local changes would be overwritten, stop and resolve them using the
+pre-upgrade gate. Do not force the pull.
+
+Refresh installation/dependencies using the repository installer:
+
+    ./Install.sh
+
+The installer is designed to retain an existing `.env` and `src/config.ini`, but
+the backup remains mandatory. Do not run the installer with `sudo` unless a
+specific documented command asks for it.
+
+
+3. VALIDATE BEFORE SERVO POWER
+------------------------------
+
+    source src/.venv/bin/activate
+    python tools/run_release_tests.py --strict
+
+Then launch terminal mode with servo power OFF:
+
+    ./tars-launcher.sh --terminal
+
+Verify audio input/output, QML startup, camera preview, and vision before
+performing the supervised servo procedure. Complete the release checklist for a
+release-candidate upgrade.
+
+
+4. RUN A KNOWN TAG
+------------------
+
+To inspect or run the known release without changing `main`:
+
+    cd ~/TARS-AI-v2
+    git fetch origin --tags
+    git switch --detach v2.0.0-rc1
+    ./Install.sh
+
+This detached checkout is suitable for testing. Do not develop in detached HEAD
+state. Return to the current development branch with:
+
+    git switch main
+
+If the release-candidate tag has not yet been published, Git will correctly
+report that it cannot find it.
+
+
+5. NON-DESTRUCTIVE ROLLBACK
+---------------------------
+
+1. Stop TARS; switch servo power OFF.
+2. Back up the current state even if it is failing.
+3. Record logs, commit, and configuration.
+4. Check out the last certified tag as shown above.
+5. Restore the matching configuration/data backup if schema or behavior changed.
+6. Run `./Install.sh` at that tag and run strict tests.
+7. Start with servo power OFF and repeat hardware validation.
+
+A Git rollback changes tracked source files only. It does not automatically roll
+back `.env`, `src/config.ini`, memories, wake templates, or home-directory servo
+state. Restore those deliberately from the matching backup.
+
+
+6. RETURN TO DEVELOPMENT
+------------------------
+
+    cd ~/TARS-AI-v2
+    git switch main
+    git pull --ff-only origin main
+    ./Install.sh
+
+Revalidate before applying servo power.
+
+
+7. CREATING A RELEASE-CANDIDATE TAG
+-----------------------------------
+
+Only the maintainer should create the tag, and only after every required item in
+`Documentation/release-checklist-v2.0.0-rc1.txt` is checked against one exact
+commit. Confirm a clean worktree and record that commit:
+
+    git status --short
+    git rev-parse HEAD
+
+After the checklist is signed:
+
+    git tag -a v2.0.0-rc1 -m "TARS-AI v2.0.0 release candidate 1"
+    git push origin main
+    git push origin v2.0.0-rc1
+
+Never silently move a published tag. If rc1 needs changes, fix them, repeat the
+checklist, and create `v2.0.0-rc2`.
+

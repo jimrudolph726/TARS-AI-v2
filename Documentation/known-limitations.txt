@@ -1,0 +1,100 @@
+TARS-AI V2.0.0 RELEASE-CANDIDATE KNOWN LIMITATIONS
+==================================================
+
+This file records current operating boundaries, not promises that failures are
+safe. Re-check it for each release candidate.
+
+
+HARDWARE AND PLATFORM
+---------------------
+
+- Primary deployment and physical acceptance testing target Raspberry Pi 5 and
+  the project's TARS hardware. Desktop/fake-hardware tests cannot certify wiring,
+  servo load, balance, camera ribbons, thermals, or audio devices.
+- USB/ALSA device indexes can change after unplugging or rebooting. TARS uses
+  configured name fragments, but identical device names remain ambiguous.
+- TARS audio may open an ALSA/PortAudio device directly, so the desktop PipeWire
+  volume slider may not control its stream.
+- Battery percentage is an estimate based on configured voltage/capacity and
+  INA260 readings; it is not a laboratory state-of-charge measurement.
+
+
+CAMERA AND VISION
+-----------------
+
+- Camera preview and visual analysis are separate. A working preview does not
+  prove that the selected LLM/model accepts images.
+- Vision depends on camera availability plus the configured local/cloud model,
+  credentials, endpoint schema, and network.
+- The shared camera may remain initialized for other features after a preview is
+  closed; only one physical camera session can own some capture paths at a time.
+
+
+SPEECH, CLOUD, AND MODELS
+-------------------------
+
+- GPT Live transcription, cloud LLM, ElevenLabs, weather, news, and other online
+  functions depend on network access, API availability, account limits, and
+  current provider model identifiers.
+- Local STT fallback accuracy and latency depend on installed models and Pi load.
+- Wake-word performance is acoustic-environment specific; high sensitivity can
+  improve detection while increasing false activations.
+- Software microphone gain amplifies noise and can clip; it does not replace
+  correct microphone placement or hardware gain.
+- Provider model names and deprecations can change after this release.
+
+
+SERVO AND MOVEMENT
+------------------
+
+- Fake hardware verifies control logic, not mechanical safety or gait stability.
+- Servo offsets and endpoint numbers are specific to one robot. Copying them to
+  another build can cause hard-stop or collision damage.
+- Watchdogs, cancellation, range limits, and controlled neutral returns reduce
+  risk but cannot guarantee recovery from loss of power, loose wiring, mechanical
+  binding, a blocked Python thread, or a failed servo controller.
+- The physical servo-power switch remains the emergency stop.
+- Movements must not be left unattended, particularly after mechanical changes,
+  a fall, or a cable/power repair.
+
+
+WEBUI AND NETWORK
+-----------------
+
+- The WebUI is for a trusted local network and uses local HTTP by default; it is
+  not an internet-facing service. Do not forward its port from the router.
+- LAN access can be blocked by guest Wi-Fi, AP/client isolation, host firewalls,
+  VPNs, changing DHCP addresses, or mobile-browser local-network policy.
+- WebUI motion has the same physical risks as local movement control.
+
+
+CONFIGURATION AND UPGRADES
+--------------------------
+
+- Most configuration/device/provider changes require a complete application
+  restart because controllers cache state at initialization.
+- Git tags preserve tracked code, not `.env`, `src/config.ini`, memories,
+  calibration, wake templates, or last servo positions.
+- Running older code with newer local configuration/data may require restoring a
+  release-matched backup.
+
+
+UI AND TESTING
+--------------
+
+- The QML interface is optimized for the installed rotated TARS display. Strict
+  QML and screenshot checks reduce layout regressions but cannot represent every
+  compositor, DPI scale, or display driver.
+- Headless CI cannot certify touch feel, perceived animation smoothness, camera
+  orientation on the chassis, or real audio/servo behavior.
+- Archived Pygame files are retained for source history only. They are not a
+  supported fallback and are excluded from active launchers.
+
+
+RELEASE STATUS
+--------------
+
+The `v2.0.0-rc1` tag must not be created until the accompanying checklist has
+passed on the actual TARS Raspberry Pi. A failing required item produces a new
+candidate commit and, after revalidation, a later candidate tag.
+

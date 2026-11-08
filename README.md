@@ -22,8 +22,15 @@
 
 ## 🚀 Getting Started
 
-- See the documentation:
-  👉 https://github.com/TARS-AI-Community/TARS-AI/wiki/Home
+- Start with the V2 release documentation:
+  [`Documentation/release-documentation-index.txt`](Documentation/release-documentation-index.txt)
+- Fresh Raspberry Pi setup:
+  [`Documentation/installation-and-first-run.txt`](Documentation/installation-and-first-run.txt)
+- Hardware troubleshooting:
+  [`Documentation/troubleshooting-flowcharts.txt`](Documentation/troubleshooting-flowcharts.txt)
+
+The `v2.0.0-rc1` release candidate is not certified or tagged until the physical
+robot passes [`Documentation/release-checklist-v2.0.0-rc1.txt`](Documentation/release-checklist-v2.0.0-rc1.txt).
 
 ### TARS-AI V2 interface
 
@@ -43,8 +50,20 @@ For a terminal-only diagnostic run:
 Run the QML servo calibration tool with:
 
 ```bash
+source src/.venv/bin/activate
 python src/app-servotester-qml.py --fullscreen --hardware
 ```
+
+Run the automated release suite before applying servo power after an upgrade:
+
+```bash
+source src/.venv/bin/activate
+python tools/run_release_tests.py --strict
+```
+
+Back up `.env`, configuration/calibration, memory, wake templates, and servo state
+before updating. The complete procedure is in
+[`Documentation/backup-and-restoration.txt`](Documentation/backup-and-restoration.txt).
 
 The retired Pygame interface is preserved under `legacy/pygame/` for source
 history only. It is not installed or loaded by TARS-AI V2.

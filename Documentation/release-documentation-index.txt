@@ -1,0 +1,63 @@
+TARS-AI V2 RELEASE DOCUMENTATION
+================================
+
+Start here
+----------
+
+1. installation-and-first-run.txt
+   Fresh Raspberry Pi installation, first configuration, launch commands, and
+   the initial hardware-free release check.
+
+2. audio-respeaker-routing.txt
+   ReSpeaker Lite microphone input with the original USB sound card retained
+   as TARS and desktop audio output.
+
+3. camera-setup.txt
+   Raspberry Pi 5 ribbon connection, rpicam/Picamera2 checks, TARS preview,
+   vision configuration, and camera troubleshooting.
+
+4. servo-calibration-safety-procedure.txt
+   Physical safety preparation, mock mode, hardware calibration, offset save,
+   movement validation, emergency stopping, and recovery.
+
+5. configuration-reference.txt
+   Operator reference for .env, config.ini, dashboard.ini, device selection,
+   restart behavior, safe ranges, and skill switches.
+
+6. backup-and-restoration.txt
+   Files that contain secrets, calibration, memory, voice identity, wake-word
+   templates, movement sequences, and last known servo positions.
+
+7. troubleshooting-flowcharts.txt
+   Decision trees for startup, audio, wake/STT, camera/vision, movement,
+   WebUI, performance, and failed upgrades.
+
+8. webui-access.txt
+   Local network URL, password location, PC/phone access, diagnostics, and
+   security boundaries.
+
+9. upgrade-and-rollback.txt
+   Backup-first updates, clean Git workflow, release tags, dependency refresh,
+   validation, and rollback without deleting user data.
+
+10. known-limitations.txt
+    Hardware, cloud, audio, camera, motion, WebUI, testing, and platform limits
+    that remain in the v2.0.0 release-candidate line.
+
+11. release-checklist-v2.0.0-rc1.txt
+    Automated and physical acceptance checks. Do not create the release tag
+    until every required item is checked and the target commit is recorded.
+
+Related engineering references
+------------------------------
+
+- v2-qml-interface.txt
+- servo-safety-and-cancellation.txt
+- typed-config-atomic-writes.txt
+- performance-testing.txt
+- controller-module-boundaries.txt
+- webui-module-boundaries.txt
+- pygame-retirement.txt
+
+Release history is recorded in the repository-root CHANGELOG.md.
+

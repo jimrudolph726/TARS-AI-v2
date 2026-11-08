@@ -1,0 +1,129 @@
+TARS V2 BACKUP AND RESTORATION
+==============================
+
+Code, configuration, secrets, calibration, and learned/local data have different
+lifecycles. A Git tag preserves code; it does not preserve `.env`, `config.ini`,
+speaker/wake templates, or memories.
+
+
+WHAT TO BACK UP
+---------------
+
+Required:
+
+    .env                         API keys and WebUI session secret
+    src/config.ini               Runtime settings and calibration offsets
+    src/dashboard.ini            Dashboard preferences/data settings
+    src/custom_sequences.json    User movement sequences, if present
+    src/memory/                   Conversation and speaker memory
+    src/tts/*_templates.pkl      Atomik wake-word templates
+    ~/.servo_positions.json      Last recorded servo positions
+
+Also preserve any customized character cards, local models not reproducible by
+the installer, and notes identifying audio devices and physical calibration.
+
+
+CREATE A PRIVATE BACKUP
+-----------------------
+
+Stop TARS first so files do not change while being copied. From the repository
+root:
+
+    cd ~/TARS-AI-v2
+    backup_dir="$HOME/tars-backups/tars-v2-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$backup_dir/src"
+    cp -a .env "$backup_dir/" 2>/dev/null || true
+    cp -a src/config.ini src/dashboard.ini "$backup_dir/src/" 2>/dev/null || true
+    cp -a src/custom_sequences.json "$backup_dir/src/" 2>/dev/null || true
+    cp -a src/memory "$backup_dir/src/" 2>/dev/null || true
+    mkdir -p "$backup_dir/src/tts"
+    cp -a src/tts/*_templates.pkl "$backup_dir/src/tts/" 2>/dev/null || true
+    cp -a "$HOME/.servo_positions.json" "$backup_dir/" 2>/dev/null || true
+    git rev-parse HEAD > "$backup_dir/git-commit.txt"
+    chmod -R go-rwx "$backup_dir"
+    echo "$backup_dir"
+
+Review the printed folder and copy it to a second trusted device. Because `.env`
+contains credentials, do not upload the folder unencrypted to a public service.
+
+To archive it locally:
+
+    tar -C "$(dirname "$backup_dir")" -czf "$backup_dir.tar.gz" "$(basename "$backup_dir")"
+    chmod 600 "$backup_dir.tar.gz"
+
+
+VERIFY A BACKUP
+---------------
+
+    find "$backup_dir" -maxdepth 3 -type f -printf '%P\n' | sort
+    cat "$backup_dir/git-commit.txt"
+
+Confirm that `.env`, `src/config.ini`, and the intended memory/template files
+appear. A backup that was never inspected is not a verified backup.
+
+
+RESTORE CONFIGURATION AND DATA
+------------------------------
+
+1. Stop TARS and switch physical servo power OFF.
+2. Make a new backup of the current state; never delete it first.
+3. Set `restore_dir` to the exact backup folder and inspect it:
+
+       restore_dir="$HOME/tars-backups/REPLACE-WITH-BACKUP-NAME"
+       test -d "$restore_dir" && find "$restore_dir" -maxdepth 2 -type f
+
+4. Restore only the items required:
+
+       cd ~/TARS-AI-v2
+       cp -a "$restore_dir/.env" .env
+       cp -a "$restore_dir/src/config.ini" src/config.ini
+       cp -a "$restore_dir/src/dashboard.ini" src/dashboard.ini 2>/dev/null || true
+
+5. For directory data, retain the current copy before replacement:
+
+       stamp="$(date +%Y%m%d-%H%M%S)"
+       mv src/memory "src/memory.pre-restore-$stamp"
+       cp -a "$restore_dir/src/memory" src/memory
+
+6. Restore optional templates/sequences only if present and intended.
+7. Activate the environment and run configuration/release tests.
+8. Start TARS with servo power OFF and verify audio/camera first.
+9. Re-enable servos only after confirming the restored calibration values.
+
+Do not paste these commands unchanged if your backup layout differs. Resolve and
+inspect the exact source and destination first.
+
+
+RESTORE ONLY SERVO CALIBRATION
+------------------------------
+
+The tester maintains:
+
+    src/config.calibration-backup.ini
+    src/config_backups/
+
+With TARS stopped and servo power OFF, choose the known-good file, inspect its
+`[SERVO]` section, back up the current `src/config.ini`, then copy the entire
+known-good configuration into place. Do not splice values from different robots
+without recalibration.
+
+
+KEY ROTATION AFTER EXPOSURE
+---------------------------
+
+If `.env` was committed, pasted publicly, or stored insecurely, deleting the
+file is not enough. Revoke/rotate each provider key, replace it in `.env`, and
+restart TARS. Change `webui_password` and regenerate `FLASK_SECRET_KEY` if WebUI
+session material was exposed.
+
+
+CODE ROLLBACK VS DATA RESTORE
+-----------------------------
+
+- Use Git/tag checkout to run an older code release.
+- Use this backup to restore robot-specific settings and data.
+- Do not assume a newer configuration is compatible with older code.
+- Keep the backup that corresponds to every release candidate.
+
+See `Documentation/upgrade-and-rollback.txt` for the non-destructive Git flow.
+

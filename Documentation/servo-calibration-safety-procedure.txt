@@ -1,0 +1,137 @@
+TARS V2 SERVO CALIBRATION AND SAFETY PROCEDURE
+================================================
+
+Status: Release-candidate operating procedure
+
+Servo calibration can move TARS suddenly and with enough force to damage a
+servo, linkage, cable, printed part, or nearby object. The physical servo-power
+switch remains the emergency stop. Software safeguards reduce risk; they do not
+replace supervision.
+
+
+1. BEFORE APPLYING SERVO POWER
+------------------------------
+
+1. Shut down the TARS application and switch servo power OFF.
+2. Put TARS on a stable, non-slip surface with enough clearance for every limb.
+3. Support the body so an unexpected command cannot make TARS fall.
+4. Inspect servo horns, screws, linkages, ribbon cables, PCA9685 wiring, INA260
+   wiring, fan/heatsink pins, and the camera/display ribbons.
+5. Confirm that no linkage is already at a hard mechanical stop.
+6. Back up the working calibration:
+
+       cd ~/TARS-AI-v2
+       cp src/config.ini "src/config.pre-calibration-$(date +%Y%m%d-%H%M%S).ini"
+
+7. Confirm `[SERVO] arms_present` matches the hardware actually installed.
+8. Keep one hand close to the physical servo-power switch throughout testing.
+
+
+2. TEST THE INTERFACE WITHOUT HARDWARE
+--------------------------------------
+
+Activate the project environment and start mock mode first:
+
+    cd ~/TARS-AI-v2
+    source src/.venv/bin/activate
+    python src/app-servotester-qml.py --fullscreen --mock
+
+Verify that the interface opens, sliders drag continuously, presets can be
+selected, and the emergency-stop control responds. Mock mode must not move the
+robot.
+
+
+3. START HARDWARE MODE SAFELY
+-----------------------------
+
+Only one process should control the PCA9685 at a time. Close the main TARS
+interface and WebUI motion activity before starting the stand-alone tester.
+
+    cd ~/TARS-AI-v2
+    source src/.venv/bin/activate
+    python src/app-servotester-qml.py --fullscreen --hardware
+
+Hardware mode opens with servo output disabled. Support TARS, switch physical
+servo power ON, and then deliberately enable servo output in the interface.
+Do not enable movement merely to clear a warning.
+
+When Servo Calibration is opened from the main QML interface, TARS performs a
+controlled ownership handoff. Do not simultaneously start the stand-alone
+tester.
+
+
+4. CALIBRATION ORDER
+--------------------
+
+Calibrate one joint at a time:
+
+1. Begin at the saved neutral position.
+2. Move the corresponding slider slowly in small increments.
+3. Watch the linkage, not only the number on screen.
+4. Stop immediately if motion becomes noisy, jerky, hot, stalled, or reaches a
+   hard stop.
+5. Return the joint to neutral and confirm repeatability.
+6. Save the offset only after the neutral position is physically correct.
+7. Repeat for the next joint.
+
+Use endpoint/range controls only while TARS is supported. Do not enlarge servo
+endpoint ranges simply to obtain a longer gait. Mechanical range, weight
+transfer, speed, and balance must all remain safe.
+
+The tester writes saved offsets atomically to `src/config.ini`, maintains
+`src/config.calibration-backup.ini`, and stores dated history under
+`src/config_backups/`. The main TARS process loads these values at startup, so
+restart the main interface after saving calibration.
+
+
+5. MOVEMENT VALIDATION
+----------------------
+
+After individual joints are calibrated:
+
+1. Disable output, reposition/support TARS, and re-enable output deliberately.
+2. Test neutral/reset first.
+3. Test one low-risk movement once.
+4. Inspect the robot before repeating it.
+5. Test walking only on a non-slip surface with a clear fall zone.
+6. Test voice and WebUI commands only after tester movements are reliable.
+7. Leave `[CONTROLS] voicemovement = False` until calibration and movement
+   validation are complete.
+
+The movement watchdog and position limits are secondary safeguards. Do not
+increase watchdog limits to conceal a stuck routine.
+
+
+6. EMERGENCY RESPONSE
+----------------------
+
+For rapid, unexpected, stalled, or spastic motion:
+
+1. Switch physical servo power OFF immediately.
+2. Do not restrain a powered joint by hand.
+3. Stop the application after power is physically removed.
+4. Inspect horns, fasteners, printed parts, cables, power wiring, and heat.
+5. Do not resume until the cause is understood and mock/fake-hardware tests pass.
+
+The on-screen emergency stop is useful when the UI is responsive, but it is not
+a substitute for the physical power switch.
+
+
+7. POST-CALIBRATION RECORD
+--------------------------
+
+Record the date, commit, configuration backup name, surface used, and movements
+tested. Preserve a known-good copy outside the repository as described in
+`Documentation/backup-and-restoration.txt`.
+
+Calibration acceptance checklist:
+
+    [ ] Every installed joint moves in the expected direction
+    [ ] Neutral pose is stable without binding
+    [ ] Full tested range stays clear of mechanical stops
+    [ ] Reset/return-to-neutral completes safely
+    [ ] Repeated low-risk movement remains consistent
+    [ ] Walking is stable at normal and fast presets
+    [ ] Controlled stop and physical power-off were both verified
+    [ ] Saved offsets survive a full application restart
+

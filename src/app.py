@@ -16,6 +16,8 @@ import time
 import warnings
 from pathlib import Path
 
+PROCESS_STARTED_AT = time.monotonic()
+
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -163,7 +165,7 @@ def main() -> int:
     from modules.module_runtime import TarsRuntime
     from modules.module_ui_qml import CameraImageProvider, TarsUIController
 
-    controller = TarsUIController(BASE_DIR)
+    controller = TarsUIController(BASE_DIR, process_started_at=PROCESS_STARTED_AT)
     runtime = TarsRuntime(config=config, ui_controller=controller, debug_mode=debug_mode)
     controller.bind_runtime(
         runtime.request_stop,
@@ -206,6 +208,11 @@ def main() -> int:
             return 2
 
         window = engine.rootObjects()[0]
+        # frameSwapped is emitted after Qt Quick completes a rendered frame.
+        # Observing it measures real QML animation cadence without creating a
+        # second render loop or changing any visual effect.
+        if hasattr(window, "frameSwapped"):
+            window.frameSwapped.connect(controller.recordQmlFrame)
         if config["UI"].get("fullscreen", True):
             window.showFullScreen()
         if not config["UI"].get("show_mouse", False):

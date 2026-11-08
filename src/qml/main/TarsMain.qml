@@ -85,6 +85,20 @@ ApplicationWindow {
             Qt.callLater(function() { scene.activeAppId = requestedApp })
         }
 
+        function performanceFeatureName() {
+            if (overlayMode === "app" && activeAppId.length)
+                return "app:" + activeAppId
+            return overlayMode.length ? overlayMode : "main"
+        }
+
+        function syncPerformanceFeature() {
+            controller.setActiveUiFeature(performanceFeatureName())
+        }
+
+        onOverlayModeChanged: Qt.callLater(syncPerformanceFeature)
+        onActiveAppIdChanged: Qt.callLater(syncPerformanceFeature)
+        Component.onCompleted: Qt.callLater(syncPerformanceFeature)
+
         function launcherBadge(app) {
             if (app.badgeKey === "health") {
                 if (!controller.runtimeReady)

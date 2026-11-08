@@ -143,6 +143,23 @@ The non-Qt regression checks for these contracts can be run with:
 
     python -m unittest tests.test_qml_app_states
 
+Performance and resource stability
+----------------------------------
+
+Menu > System Health > Performance exposes live cold-start, state-specific
+CPU, RSS, QML and camera FPS, UI event-loop latency, temperature, thread,
+feature-cycle, and shared-stream measurements. SAVE PERFORMANCE REPORT writes
+the bounded raw samples and budget verdicts to src/logs/. A final report is
+also written automatically when the interface exits cleanly.
+
+The measurements observe completed work and do not create a second render,
+camera, or microphone loop. QML FPS is connected to frameSwapped, camera FPS
+counts preview frames already delivered by the controller, and audio status
+describes the existing shared visualizer stream. Detailed Raspberry Pi 5
+budgets and the five repeatable profiling scenarios are documented in:
+
+    Documentation/performance-testing.txt
+
 Press Esc in a windowed session, or use Menu > Exit Application, to stop the
 application cleanly while leaving the Raspberry Pi on. Menu > Restart TARS
 restarts only the application. Menu > Shut Down Pi and the header PWR control

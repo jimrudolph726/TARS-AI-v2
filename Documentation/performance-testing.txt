@@ -1,0 +1,101 @@
+TARS-AI V2 performance and resource stability
+================================================
+
+The native interface measures performance continuously with bounded in-memory
+history. Open Menu > System Health > Performance to view the live result and
+select SAVE PERFORMANCE REPORT to write a JSON report under src/logs/. The
+latest report is also written atomically to:
+
+    src/logs/performance-latest.json
+
+This report includes raw two-second samples, state-specific CPU averages,
+completed QML frame rate, camera preview frame rate, UI event-loop delay,
+memory and thread growth, conversation row count, feature open/close cycles,
+temperature, and whether shared camera/audio sessions are active.
+
+Measurement definitions
+-----------------------
+
+- CPU is the TARS process CPU normalized across all logical CPU cores. On a
+  four-core system, one fully occupied core is approximately 25%.
+- Process memory is current resident memory (RSS), not peak allocation.
+- QML FPS comes from QQuickWindow.frameSwapped after a frame is completed.
+- Camera FPS counts frames successfully delivered to the QML image provider.
+- UI event-loop latency is the 95th percentile delay beyond a 250 ms Qt timer.
+- Feature-cycle growth is measured 1.5 seconds after a pane closes so QML has
+  time to destroy its Loader item and deferred objects.
+- The Audio Timeline uses the controller's shared microphone visualizer. It is
+  expected to remain active after that pane closes because the main waveform
+  also consumes it. The monitor verifies that another stream is not created.
+- The camera service is shared with QML preview, voice vision, and the WebUI.
+  The report distinguishes camera-preview activity from a reusable shared
+  camera session; an active shared session is not automatically a leak.
+
+Initial Raspberry Pi 5 budgets
+------------------------------
+
+These are investigation thresholds, not excuses to remove visual effects.
+Only a repeatable violation should trigger optimization.
+
+    Cold start                   target <= 45 s; error >= 90 s
+    Idle process CPU             warning >= 25%; error >= 45%
+    Listening process CPU        warning >= 45%; error >= 70%
+    Process RSS                  warning >= 1536 MB; error >= 2304 MB
+    Long-run RSS growth          warning >= 100 MB; error >= 256 MB
+    QML completed-frame rate     warning < 45 FPS; error < 30 FPS
+    Camera preview rate          warning < 8 FPS; error < 5 FPS
+    UI event-loop p95 delay      warning >= 40 ms; error >= 120 ms
+    CPU temperature              warning >= 75 C; error >= 82 C
+    Settled app-close RSS delta  warning >= 8 MB; error >= 25 MB
+    Native thread growth         warning >= 4; error >= 10
+
+Repeatable validation sequence
+------------------------------
+
+Use a second terminal so the act of displaying the probe does not disturb the
+touch interface. The probe finds the running V2 app automatically:
+
+1. Cold boot TARS and wait until the interface reports ready. Leave it in
+   STANDBY for five minutes:
+
+       python tools/profile_runtime.py --scenario idle --duration 300
+
+2. Run a five-minute listening test. Wake TARS at regular intervals and speak
+   realistic prompts while the probe runs:
+
+       python tools/profile_runtime.py --scenario listening --duration 300
+
+3. Open the camera preview for three minutes:
+
+       python tools/profile_runtime.py --scenario camera --duration 180
+
+4. For application lifecycle testing, repeatedly open and close every app at
+   least 20 times during this probe:
+
+       python tools/profile_runtime.py --scenario applications --duration 300
+
+5. Hold at least 25 conversations of mixed length during this probe:
+
+       python tools/profile_runtime.py --scenario conversations --duration 900
+
+6. Leave TARS operating for at least 30 minutes, then save the built-in
+   Performance report. Compare RSS, threads, file descriptors, and temperature
+   at the beginning and end. Confirm that closed QML panes do not keep adding
+   resources and that camera/audio status matches the documented shared-session
+   behavior.
+
+Each probe writes a timestamped JSON file beneath src/logs/. Use --pid when
+more than one development instance is running, --interval to change the sample
+period, or --output to choose another report path. Stop a probe early with
+Ctrl+C; the samples collected so far are still summarized and saved.
+
+Regression checks
+-----------------
+
+The monitor is hardware-neutral and deterministic under test:
+
+    python -m unittest tests.test_ui_performance
+
+The tests verify CPU normalization, cold-start timing, QML/camera rates,
+event-loop latency, settled feature-cycle deltas, budget classifications,
+bounded sample retention, and atomic report writes.

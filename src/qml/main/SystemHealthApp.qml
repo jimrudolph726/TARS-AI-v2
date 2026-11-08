@@ -141,6 +141,33 @@ Item {
                 accent: "#ff3852"
                 onClicked: root.diagnosticGroup = "software"
             }
+            TarsButton {
+                uiScale: root.uiScale; dense: true
+                Layout.fillWidth: true; Layout.fillHeight: true
+                text: "PERFORMANCE"
+                iconText: "FPS"
+                iconPixelSize: 8 * root.uiScale
+                labelPixelSize: 6 * root.uiScale
+                selected: root.diagnosticGroup === "performance"
+                accent: "#ff3852"
+                onClicked: root.diagnosticGroup = "performance"
+            }
+        }
+
+        TarsButton {
+            visible: root.diagnosticGroup === "performance"
+            uiScale: root.uiScale
+            dense: true
+            Layout.fillWidth: true
+            Layout.minimumHeight: visible ? root.touchTarget : 0
+            Layout.preferredHeight: visible ? root.touchTarget : 0
+            Layout.maximumHeight: visible ? root.touchTarget : 0
+            text: "SAVE PERFORMANCE REPORT"
+            iconText: "LOG"
+            iconPixelSize: 8 * root.uiScale
+            labelPixelSize: 6 * root.uiScale
+            accent: "#64b5f6"
+            onClicked: controller.exportPerformanceReport()
         }
 
         Item {
@@ -154,7 +181,9 @@ Item {
                 spacing: 4 * root.uiScale
                 model: root.diagnosticGroup === "hardware"
                     ? controller.hardwareDiagnostics
-                    : controller.softwareDiagnostics
+                    : root.diagnosticGroup === "software"
+                        ? controller.softwareDiagnostics
+                        : controller.performanceDiagnostics
 
                 delegate: SettingsRow {
                     required property var modelData

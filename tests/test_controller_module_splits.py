@@ -177,6 +177,7 @@ class ControllerBoundaryTests(unittest.TestCase):
             "module_stt_wake.py",
             "module_ui_remote.py",
             "module_ui_telemetry.py",
+            "module_ui_performance.py",
             "module_servo_math.py",
             "module_servo_tester_model.py",
         ]
@@ -201,6 +202,7 @@ class ControllerBoundaryTests(unittest.TestCase):
             },
             "module_ui_qml.py": {
                 "modules.module_ui_qml_models",
+                "modules.module_ui_performance",
                 "modules.module_ui_remote",
                 "modules.module_ui_telemetry",
             },

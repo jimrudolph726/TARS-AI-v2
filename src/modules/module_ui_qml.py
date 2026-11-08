@@ -28,6 +28,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QImage
 from modules.module_ui_qml_models import CameraImageProvider, ConversationModel
+from modules.module_ui_performance import RuntimePerformanceMonitor
 from modules.module_ui_remote import RemoteAccessService
 from modules.module_ui_telemetry import build_system_diagnostics, collect_resource_metrics
 
@@ -83,7 +84,13 @@ class TarsUIController(QObject):
         "SPEAKING": "RESPONSE ACTIVE",
     }
 
-    def __init__(self, base_dir: Path, parent: Optional[QObject] = None):
+    def __init__(
+        self,
+        base_dir: Path,
+        parent: Optional[QObject] = None,
+        *,
+        process_started_at: Optional[float] = None,
+    ):
         super().__init__(parent)
         self._base_dir = Path(base_dir)
         from modules.module_display import register_image_presenter
@@ -92,7 +99,13 @@ class TarsUIController(QObject):
 
         self._config = load_config()
         self._conversation = ConversationModel(parent=self)
-        self._process_started_at = time.monotonic()
+        self._process_started_at = float(
+            process_started_at if process_started_at is not None else time.monotonic()
+        )
+        self._performance = RuntimePerformanceMonitor(started_at=self._process_started_at)
+        self._performance_metrics: dict[str, object] = {}
+        self._performance_diagnostics: list[dict[str, str]] = []
+        self._performance_report_path = ""
         self._state = "BOOTING"
         self._battery_percent = 0
         self._battery_voltage = 0.0
@@ -221,6 +234,11 @@ class TarsUIController(QObject):
         self._telemetry_timer.start()
         QTimer.singleShot(0, self._poll_local_telemetry)
 
+        self._performance_timer = QTimer(self)
+        self._performance_timer.setInterval(250)
+        self._performance_timer.timeout.connect(self._record_ui_heartbeat)
+        self._performance_timer.start()
+
         self._dashboard_timer = QTimer(self)
         self._dashboard_timer.setInterval(60000)
         self._dashboard_timer.timeout.connect(self._refresh_dashboard_if_due)
@@ -324,6 +342,18 @@ class TarsUIController(QObject):
     @Property(int, notify=telemetryChanged)
     def processThreads(self) -> int:
         return self._process_threads
+
+    @Property("QVariantMap", notify=telemetryChanged)
+    def performanceMetrics(self) -> dict[str, object]:
+        return self._performance_metrics
+
+    @Property("QVariantList", notify=telemetryChanged)
+    def performanceDiagnostics(self) -> list[dict[str, str]]:
+        return self._performance_diagnostics
+
+    @Property(str, notify=telemetryChanged)
+    def performanceReportPath(self) -> str:
+        return self._performance_report_path
 
     @Property("QVariantList", notify=telemetryChanged)
     def hardwareDiagnostics(self) -> list[dict[str, object]]:
@@ -879,6 +909,7 @@ class TarsUIController(QObject):
             with self._camera_lock:
                 self._camera_frame = image
             self._camera_frame_revision += 1
+            self._performance.record_camera_frame()
             if self._camera_active:
                 self._camera_timer.start()
         self.cameraChanged.emit()
@@ -895,6 +926,7 @@ class TarsUIController(QObject):
             with self._camera_lock:
                 self._camera_frame = image
             self._camera_frame_revision += 1
+            self._performance.record_camera_frame()
             self.cameraChanged.emit()
         except Exception as exc:
             self._camera_error = str(exc)
@@ -935,6 +967,30 @@ class TarsUIController(QObject):
     def start(self) -> None:
         self._running = True
 
+    @Slot()
+    def recordQmlFrame(self) -> None:
+        """Record one completed Qt Quick frame without forcing another render."""
+        self._performance.record_qml_frame()
+
+    @Slot(str)
+    def setActiveUiFeature(self, feature: str) -> None:
+        """Track settled resource deltas when QML panes are opened and closed."""
+        self._performance.change_feature(feature)
+
+    @Slot(result=str)
+    def exportPerformanceReport(self) -> str:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        destination = self._base_dir / "logs" / f"performance-{timestamp}.json"
+        try:
+            saved = self._performance.write_report(destination)
+            self._performance_report_path = str(saved)
+            self.telemetryChanged.emit()
+            self._apply_notice(f"PERFORMANCE REPORT: {saved.name}", 4200)
+            return str(saved)
+        except Exception as exc:
+            self._apply_notice(f"PERFORMANCE REPORT ERROR: {exc}", 5000)
+            return ""
+
     def stop(self) -> None:
         if self._stopped:
             return
@@ -961,6 +1017,16 @@ class TarsUIController(QObject):
         self._camera_timer.stop()
         self._avatar_timer.stop()
         self._dashboard_timer.stop()
+        self._performance_timer.stop()
+        # Preserve a report before closing hardware streams. If a third-party
+        # camera/audio driver stalls during shutdown, the pre-close evidence
+        # still identifies the live session and resource counts.
+        try:
+            self._performance.write_report(
+                self._base_dir / "logs" / "performance-latest.json"
+            )
+        except Exception as exc:
+            print(f"WARNING: Unable to write pre-shutdown performance report: {exc}")
         if self._dashboard_service is not None:
             self._dashboard_service.stop()
         if self._audio_stream is not None:
@@ -974,6 +1040,21 @@ class TarsUIController(QObject):
                 self._camera_module.stop()
             except Exception:
                 pass
+        try:
+            self._performance.sample(
+                state="STOPPED",
+                temperature_c=self._cpu_temperature if self._cpu_available else None,
+                camera_preview=False,
+                camera_session=False,
+                audio_stream=False,
+                conversation_rows=self._conversation.rowCount(),
+            )
+            saved = self._performance.write_report(
+                self._base_dir / "logs" / "performance-latest.json"
+            )
+            self._performance_report_path = str(saved)
+        except Exception as exc:
+            print(f"WARNING: Unable to write final performance report: {exc}")
 
     def join(self, timeout=None) -> None:  # noqa: ANN001
         """Qt owns the main thread, so there is no UI worker to join."""
@@ -1325,6 +1406,8 @@ class TarsUIController(QObject):
     def _apply_runtime_status(self, status: str, ready: bool) -> None:
         self._runtime_status = status
         self._runtime_ready = ready
+        if ready:
+            self._performance.mark_runtime_ready()
         self.runtimeChanged.emit()
 
     @Slot(bool)
@@ -1384,6 +1467,23 @@ class TarsUIController(QObject):
         self._disk_percent = int(metrics["disk_percent"])
         self._uptime_text = str(metrics["uptime_text"])
         self._process_threads = int(metrics["process_threads"])
+        camera_session = bool(
+            self._camera_module is not None
+            and getattr(self._camera_module, "running", False)
+        )
+        self._performance_metrics = self._performance.sample(
+            state=self._state,
+            temperature_c=self._cpu_temperature if self._cpu_available else None,
+            camera_preview=self._camera_active,
+            camera_session=camera_session,
+            audio_stream=self._audio_stream is not None,
+            conversation_rows=self._conversation.rowCount(),
+        )
+        self._performance_diagnostics = self._performance.diagnostics()
+
+    @Slot()
+    def _record_ui_heartbeat(self) -> None:
+        self._performance.record_ui_heartbeat()
 
     def _build_system_diagnostics(self, battery, stt) -> None:  # noqa: ANN001
         self._hardware_diagnostics, self._software_diagnostics = build_system_diagnostics(

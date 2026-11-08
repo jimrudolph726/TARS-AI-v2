@@ -184,6 +184,7 @@ class MainInterfaceController(QObject):
         self._barge_in_event_revision = 0
         self._camera_active = False
         self._camera_error = ""
+        self._active_feature = "main"
         self._remote_state = "ready"
         self._remote_status = "Connected to TARS-NET"
         self._remote_url = ""
@@ -334,6 +335,27 @@ class MainInterfaceController(QObject):
             {"label": "LANGUAGE MODEL", "value": "OPENAI", "state": "info", "detail": "Configured conversational model"},
         ]
 
+    @Property("QVariantMap", notify=telemetryChanged)
+    def performanceMetrics(self) -> dict[str, object]:
+        return {"qmlFps": 60.0, "rssMb": 412.0, "activeFeature": self._active_feature}
+
+    @Property("QVariantList", notify=telemetryChanged)
+    def performanceDiagnostics(self) -> list[dict[str, object]]:
+        return [
+            {"label": "COLD START", "value": "3.8 S", "state": "ok", "detail": "Prototype measurement"},
+            {"label": "IDLE CPU", "value": "8.4%", "state": "ok", "detail": "Normalized across all CPU cores while STANDBY"},
+            {"label": "PROCESS MEMORY", "value": "412 MB", "state": "ok", "detail": "+6 MB since runtime ready"},
+            {"label": "QML RENDER", "value": "60.0 FPS", "state": "ok", "detail": "Completed Qt Quick frames"},
+            {"label": "UI EVENT LOOP", "value": "4 MS P95", "state": "ok", "detail": "Prototype heartbeat latency"},
+            {"label": "CAMERA PREVIEW", "value": "CLOSED", "state": "info", "detail": "Shared capture session is stopped"},
+            {"label": "THERMAL", "value": f"{self._cpu_temperature}°C", "state": "ok", "detail": "Target below 75°C"},
+            {"label": "APP LIFECYCLE", "value": "0 CYCLES", "state": "info", "detail": "Open and close apps to collect samples"},
+        ]
+
+    @Property(str, constant=True)
+    def performanceReportPath(self) -> str:
+        return ""
+
     @Property(bool, notify=dashboardChanged)
     def dashboardLoading(self) -> bool:
         return self._dashboard_loading
@@ -443,6 +465,14 @@ class MainInterfaceController(QObject):
     @Property(bool, notify=audioChanged)
     def audioSpeechActive(self) -> bool:
         return self._audio_rms >= self._audio_speech_threshold
+
+    @Property(str, constant=True)
+    def audioStatus(self) -> str:
+        return "ready"
+
+    @Property(str, constant=True)
+    def audioError(self) -> str:
+        return ""
 
     @Property(int, notify=audioChanged)
     def wakeEventRevision(self) -> int:
@@ -575,6 +605,28 @@ class MainInterfaceController(QObject):
     def closeCamera(self) -> None:
         self._camera_active = False
         self.cameraChanged.emit()
+
+    @Slot()
+    def retryAudioVisualizer(self) -> None:
+        self._set_notice("Prototype audio visualizer is active")
+
+    @Slot()
+    def reloadAvatar(self) -> None:
+        self._set_notice("Prototype avatar reloaded")
+
+    @Slot()
+    def recordQmlFrame(self) -> None:
+        pass
+
+    @Slot(str)
+    def setActiveUiFeature(self, feature: str) -> None:
+        self._active_feature = feature or "main"
+        self.telemetryChanged.emit()
+
+    @Slot(result=str)
+    def exportPerformanceReport(self) -> str:
+        self._set_notice("Performance reports are written by the live Raspberry Pi runtime")
+        return ""
 
     @Slot(str)
     def launchApp(self, app_name: str) -> None:

@@ -28,7 +28,7 @@ SKILL = {
    Triggers: Use ONLY when the user explicitly asks TARS to move or perform a physical gesture.
    Natural-language mappings:
      * "move/go forward" -> "step_forward"
-     * "move/go backward" -> "walk_backward"
+     * "move/go backward" -> "step_backward"
      * "turn left/right" -> "turn_left_slow" / "turn_right_slow"
      * "act like a monster" -> "monster"
      * "shake my hand" -> "right_handshake"

@@ -3,6 +3,68 @@
 from __future__ import annotations
 
 
+_ORIGINAL_FORWARD_STEP_PHASES = {
+    True: (
+        ("BODY SWING", "Original raised forward swing.", (32, 32, 25, 25), 0.9),
+        ("SUPPORT TRANSFER", "Original chassis support-transfer pose.", (88, 88, 8, 8), 1.0),
+        ("LEG RECOVERY", "Original leg recovery after the body advances.", (15, 15, 17, 17), 0.9),
+        ("LEG PLANT", "Original intermediate leg plant.", (75, 75, 24, 24), 0.9),
+        ("LEGS FOLLOW", "Original legs-under-body recovery.", (70, 70, 50, 50), 0.9),
+        ("FINAL NEUTRAL", "Original balanced finishing pose.", (50, 50, 50, 50), 0.9),
+    ),
+    False: (
+        ("BODY SWING", "Original raised forward swing.", (42, 42, 40, 40), 0.9),
+        ("SUPPORT TRANSFER", "Original chassis support-transfer pose.", (70, 70, 23, 23), 0.9),
+        ("LEG RECOVERY", "Original leg recovery after the body advances.", (30, 30, 30, 30), 0.8),
+        ("LEG PLANT", "Original intermediate leg plant.", (70, 70, 35, 35), 0.9),
+        ("LEGS FOLLOW", "Original legs-under-body recovery.", (60, 60, 50, 50), 0.9),
+        ("FINAL NEUTRAL", "Original balanced finishing pose.", (50, 50, 50, 50), 0.9),
+    ),
+}
+
+
+def _mirror_leg_rotation(pose: tuple[int, int, int, int]):
+    """Mirror only forward/back leg rotation around calibrated neutral."""
+    left_height, right_height, left_leg, right_leg = pose
+    return left_height, right_height, 100 - left_leg, 100 - right_leg
+
+
+def original_step_phases(direction: str, arms_present: bool) -> list[dict]:
+    """Return the field-proven fast step or its exact backward mirror.
+
+    Height, phase order, and speed remain identical in both directions. Only
+    the normalized forward/back leg percentages are mirrored around 50. Raw
+    PWM values must not be inverted because calibration already accounts for
+    each physical servo's endpoint direction.
+    """
+    if direction not in ("forward", "backward"):
+        raise ValueError(f"Unsupported original step direction: {direction}")
+
+    raw_phases = _ORIGINAL_FORWARD_STEP_PHASES[bool(arms_present)]
+    phases = []
+    for index, (name, description, forward_pose, speed) in enumerate(
+        raw_phases, start=1
+    ):
+        pose = (
+            forward_pose
+            if direction == "forward"
+            else _mirror_leg_rotation(forward_pose)
+        )
+        if direction == "backward":
+            description = description.replace("forward", "backward").replace(
+                "advances", "retreats"
+            )
+        phases.append({
+            "index": index,
+            "key": f"original_{direction}_{index}",
+            "name": name,
+            "description": description,
+            "pose": pose,
+            "speed": speed,
+        })
+    return phases
+
+
 def body_swing_profile(direction: str, arms_present: bool, fast: bool = False):
     """Return targets and timings for a chassis-supported body-swing gait.
 
@@ -49,61 +111,10 @@ def body_swing_profile(direction: str, arms_present: bool, fast: bool = False):
 
 
 def body_swing_diagnostic_phases(direction: str, arms_present: bool) -> list[dict]:
-    """Return the untouched original step poses for prefix replay diagnostics.
+    """Return the exact original/mirrored step poses for prefix diagnostics.
 
     Each pose includes the original ``move_legs`` speed factor. The diagnostic
     runner replays neutral through the selected pose without pausing between
     transitions, then holds that pose for inspection.
     """
-    if direction not in ("forward", "backward"):
-        raise ValueError(f"Unsupported gait direction: {direction}")
-
-    if direction == "forward" and arms_present:
-        raw_phases = [
-            ("BODY SWING", "Original raised forward swing.", (32, 32, 25, 25), 0.9),
-            ("SUPPORT TRANSFER", "Original chassis support-transfer pose.", (88, 88, 8, 8), 1.0),
-            ("LEG RECOVERY", "Original leg recovery after the body advances.", (15, 15, 17, 17), 0.9),
-            ("LEG PLANT", "Original intermediate leg plant.", (75, 75, 24, 24), 0.9),
-            ("LEGS FOLLOW", "Original legs-under-body recovery.", (70, 70, 50, 50), 0.9),
-            ("FINAL NEUTRAL", "Original balanced finishing pose.", (50, 50, 50, 50), 0.9),
-        ]
-    elif direction == "forward":
-        raw_phases = [
-            ("BODY SWING", "Original raised forward swing.", (42, 42, 40, 40), 0.9),
-            ("SUPPORT TRANSFER", "Original chassis support-transfer pose.", (70, 70, 23, 23), 0.9),
-            ("LEG RECOVERY", "Original leg recovery after the body advances.", (30, 30, 30, 30), 0.8),
-            ("LEG PLANT", "Original intermediate leg plant.", (70, 70, 35, 35), 0.9),
-            ("LEGS FOLLOW", "Original legs-under-body recovery.", (60, 60, 50, 50), 0.9),
-            ("FINAL NEUTRAL", "Original balanced finishing pose.", (50, 50, 50, 50), 0.9),
-        ]
-    elif arms_present:
-        raw_phases = [
-            ("BODY RAISE", "Original raised backward starting pose.", (22, 22, 50, 50), 0.9),
-            ("BODY SWING", "Original raised backward swing.", (22, 22, 80, 80), 0.9),
-            ("SUPPORT TRANSFER", "Original backward chassis support pose.", (68, 68, 92, 92), 0.9),
-            ("LEG RECOVERY", "Original backward leg recovery.", (15, 15, 83, 83), 0.9),
-            ("LEG PLANT", "Original intermediate backward leg plant.", (75, 75, 76, 76), 0.9),
-            ("LEGS FOLLOW", "Original legs-under-body recovery.", (70, 70, 50, 50), 0.9),
-            ("FINAL NEUTRAL", "Original balanced finishing pose.", (50, 50, 50, 50), 0.9),
-        ]
-    else:
-        raw_phases = [
-            ("BODY RAISE", "Original raised backward starting pose.", (30, 30, 55, 55), 0.8),
-            ("SUPPORT TRANSFER", "Original backward chassis support pose.", (68, 68, 82, 82), 0.8),
-            ("LEG RECOVERY", "Original backward leg recovery.", (30, 30, 70, 70), 0.8),
-            ("LEG PLANT", "Original intermediate backward leg plant.", (50, 50, 62, 62), 0.9),
-            ("LEGS FOLLOW", "Original legs-under-body recovery.", (65, 65, 50, 50), 0.9),
-            ("FINAL NEUTRAL", "Original balanced finishing pose.", (50, 50, 50, 50), 0.9),
-        ]
-
-    return [
-        {
-            "index": index,
-            "key": f"original_{direction}_{index}",
-            "name": name,
-            "description": description,
-            "pose": pose,
-            "speed": speed,
-        }
-        for index, (name, description, pose, speed) in enumerate(raw_phases, start=1)
-    ]
+    return original_step_phases(direction, arms_present)

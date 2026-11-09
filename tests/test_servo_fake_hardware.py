@@ -27,6 +27,8 @@ sys.modules.pop("modules.module_movements", None)
 sys.modules.pop("modules.module_servoctl", None)
 servoctl = importlib.import_module("modules.module_servoctl")
 movements = importlib.import_module("modules.module_movements")
+gait = importlib.import_module("modules.module_gait")
+movement_registry = importlib.import_module("modules.module_movement_registry")
 
 
 class ServoFakeHardwareTests(unittest.TestCase):
@@ -954,6 +956,51 @@ class ServoFakeHardwareTests(unittest.TestCase):
         self.assertNotIn((2, arms_stride), self.raw_pwm_writes)
         self.assertTrue(self.backend.all_outputs_disabled(controller))
         self.assert_all_raw_pulses_safe()
+
+    def test_original_backward_step_exactly_mirrors_forward_leg_rotation(self):
+        for arms_present in (False, True):
+            with self.subTest(arms_present=arms_present):
+                forward = gait.original_step_phases("forward", arms_present)
+                backward = gait.original_step_phases("backward", arms_present)
+
+                self.assertEqual(len(forward), len(backward))
+                for forward_phase, backward_phase in zip(forward, backward):
+                    forward_pose = forward_phase["pose"]
+                    backward_pose = backward_phase["pose"]
+                    self.assertEqual(forward_pose[:2], backward_pose[:2])
+                    self.assertEqual(
+                        (100 - forward_pose[2], 100 - forward_pose[3]),
+                        backward_pose[2:],
+                    )
+                    self.assertEqual(
+                        forward_phase["speed"], backward_phase["speed"]
+                    )
+
+    def test_original_arms_backward_step_is_bounded_and_returns_to_center(self):
+        controller = self._initialize()
+        servoctl.ARMS_PRESENT = True
+
+        self.assertTrue(movements.step_backward())
+
+        for channel, expected in (
+            (0, self._percent(50, servoctl.leftUpHeight, servoctl.leftDownHeight)),
+            (1, self._percent(50, servoctl.rightUpHeight, servoctl.rightDownHeight)),
+            (2, self._percent(50, servoctl.forwardLeftLeg, servoctl.backLeftLeg)),
+            (3, self._percent(50, servoctl.forwardRightLeg, servoctl.backRightLeg)),
+        ):
+            self.assertEqual(servoctl.servo_positions[channel], expected)
+
+        backward_support = self._percent(
+            92, servoctl.forwardLeftLeg, servoctl.backLeftLeg
+        )
+        self.assertIn((2, backward_support), self.raw_pwm_writes)
+        self.assertTrue(self.backend.all_outputs_disabled(controller))
+        self.assert_all_raw_pulses_safe()
+
+    def test_backward_alias_uses_the_fast_mirrored_step(self):
+        self.assertEqual(
+            movement_registry.resolve_name("backward"), "step_backward"
+        )
 
     def test_monster_and_handshake_park_before_releasing_pwm(self):
         controller = self._initialize()

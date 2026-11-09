@@ -5,7 +5,9 @@ candidates for hardware validation before a final stable release.
 
 ## [Unreleased]
 
-- No post-candidate changes recorded yet.
+- Rebuilt the fast backward step as an exact directional mirror of the
+  field-proven fast forward gait, unified normal backward command routing, and
+  synchronized the servo-tester diagnostic replay with the production movement.
 
 ## [2.0.0-rc1] - Pending Raspberry Pi hardware certification
 

@@ -17,7 +17,7 @@ requires a separate written license from Charles-Olivier Dion (AtomikSpace).
 This license applies only to this file and does not override licenses of other files in the repository.
 """
 import modules.module_servoctl as servoctl
-from modules.module_gait import body_swing_profile
+from modules.module_gait import body_swing_profile, original_step_phases
 
 move_legs = servoctl.move_legs
 move_legs_original = servoctl.move_legs_original
@@ -155,31 +155,17 @@ def _run_body_swing(direction, cycles, fast=False):
         servoctl._notify_movement_end()
 
 
-def step_forward():
-    """Execute the original, field-proven single forward step unchanged."""
+def _run_original_step(direction):
+    """Run the proven fast step forward or its normalized backward mirror."""
     if servoctl.MOVING:
         return
 
     servoctl.MOVING = True
     servoctl._notify_movement_start()
     try:
-        if not servoctl.ARMS_PRESENT:
-            move_legs_original(50, 50, 50, 50, 0.9)
-            move_legs_original(42, 42, 40, 40, 0.9)
-            move_legs_original(70, 70, 23, 23, 0.9)
-            move_legs_original(30, 30, 30, 30, 0.8)
-            move_legs_original(70, 70, 35, 35, 0.9)
-            move_legs_original(60, 60, 50, 50, 0.9)
-            move_legs_original(50, 50, 50, 50, 0.9)
-
-        if servoctl.ARMS_PRESENT:
-            move_legs_original(50, 50, 50, 50, 0.9)
-            move_legs_original(32, 32, 25, 25, 0.9)
-            move_legs_original(88, 88, 8, 8, 1.0)
-            move_legs_original(15, 15, 17, 17, 0.9)
-            move_legs_original(75, 75, 24, 24, 0.9)
-            move_legs_original(70, 70, 50, 50, 0.9)
-            move_legs_original(50, 50, 50, 50, 0.9)
+        move_legs_original(50, 50, 50, 50, 0.9)
+        for phase in original_step_phases(direction, servoctl.ARMS_PRESENT):
+            move_legs_original(*phase["pose"], phase["speed"])
 
         servoctl.wait_for_movement(0.1)
         disable_all_servos()
@@ -188,14 +174,19 @@ def step_forward():
         servoctl._notify_movement_end()
 
 
+def step_forward():
+    """Execute the original, field-proven single forward step unchanged."""
+    _run_original_step("forward")
+
+
 def walk_forward():
     """Two full body-first forward swings for greater travel."""
     _run_body_swing("forward", cycles=2, fast=False)
 
 
 def step_backward():
-    """One quick body-first backward swing followed by both legs."""
-    _run_body_swing("backward", cycles=1, fast=True)
+    """Execute an exact directional mirror of the proven fast forward step."""
+    _run_original_step("backward")
 
 
 def walk_backward():
@@ -411,7 +402,7 @@ def excited():
         try:
             move_legs(50, 50, 50, 50, 0.9)
             for _ in range(4):
-                move_legs(40, 60, 45, 50, 0.95) 
+                move_legs(40, 60, 45, 50, 0.95)
                 move_legs(60, 40, 50, 45, 0.95)
             move_legs(50, 50, 50, 50, 0.9)
             disable_all_servos()
@@ -449,7 +440,7 @@ def left_pezz_dispenser():
         servoctl.MOVING = True
         servoctl._notify_movement_start()
         try:
-            move_legs(50, 50, 50, 50, 0.4)            
+            move_legs(50, 50, 50, 50, 0.4)
             move_legs(80, None, 50, None, 0.9)
             move_legs(80, None, 80, None, 0.9)
             servoctl.wait_for_movement(0.2)
@@ -481,7 +472,7 @@ def right_pezz_dispenser():
         servoctl.MOVING = True
         servoctl._notify_movement_start()
         try:
-            move_legs(50, 50, 50, 50, 0.8)            
+            move_legs(50, 50, 50, 50, 0.8)
             move_legs(None, 80, None, 50, 0.9)
             move_legs(None, 80, None, 80, 0.9)
             servoctl.wait_for_movement(0.2)
@@ -1199,18 +1190,18 @@ def ventilate_on():
     if not servoctl.MOVING:
         servoctl.MOVING = True
         servoctl._is_ventilate_operation = True
-        
+
         servoctl._notify_movement_start()
         try:
             from modules.module_cputemp import set_ventilating
-            
+
             move_legs(50, 50, 50, 50, 0.8)
             move_legs(25, 25, 50, 50, 0.75)
             move_legs(25, 25, 42, 42, 0.75)
             move_legs(55, 55, 30, 30, 0.75)
 
             set_ventilating(True)
-            
+
             servoctl.wait_for_movement(0.1)
             disable_all_servos()
         finally:
@@ -1221,24 +1212,24 @@ def ventilate_on():
 
 def ventilate_off():
     from modules.module_cputemp import is_ventilating, set_ventilating
-    
+
     if is_ventilating():
         was_moving = servoctl.MOVING
 
         servoctl.MOVING = True
         servoctl._is_ventilate_operation = True
-        
+
         if not was_moving:
             servoctl._notify_movement_start()
-        
+
         try:
             move_legs(55, 55, 30, 30, 0.75)
             move_legs(25, 25, 30, 30, 0.75)
             move_legs(25, 25, 50, 50, 0.75)
             move_legs(50, 50, 50, 50, 0.75)
-            
+
             set_ventilating(False)
-            
+
             servoctl.wait_for_movement(0.1)
             disable_all_servos()
         finally:

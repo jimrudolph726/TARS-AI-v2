@@ -614,7 +614,7 @@ ApplicationWindow {
                     TacticalButton {
                         Layout.fillWidth: true
                         height: 36
-                        text: "RUN ORIGINAL STEP"
+                        text: "RUN " + controller.diagnosticDirection.toUpperCase() + " STEP"
                         accent: window.green
                         primary: true
                         enabled: !controller.movementActive

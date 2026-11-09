@@ -63,7 +63,7 @@ MOVEMENTS = {
 # the gaits that have proven reliable on the physical robot.
 MOVEMENT_ALIASES = {
     "forward": "step_forward",
-    "backward": "walk_backward",
+    "backward": "step_backward",
     "left": "turn_left_slow",
     "right": "turn_right_slow",
     "wave": "right_wave_open",

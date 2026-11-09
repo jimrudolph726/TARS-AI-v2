@@ -821,8 +821,12 @@ class ServoCalibrationController(QObject):
 
     @Slot()
     def runOriginalStepReplay(self) -> None:
-        """Run the exact original single-step movement without diagnostic holds."""
-        self.runMovement("step_forward")
+        """Run the selected exact forward step or mirrored backward step."""
+        self.runMovement(
+            "step_backward"
+            if self._diagnostic_direction == "backward"
+            else "step_forward"
+        )
 
     @Slot(int)
     def runDiagnosticPhase(self, index: int) -> None:

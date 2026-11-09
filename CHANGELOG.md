@@ -5,9 +5,11 @@ candidates for hardware validation before a final stable release.
 
 ## [Unreleased]
 
-- Rebuilt the fast backward step as an exact directional mirror of the
-  field-proven fast forward gait, unified normal backward command routing, and
-  synchronized the servo-tester diagnostic replay with the production movement.
+- Restored the pre-mirror fast backward body-swing gait after physical testing
+  showed that a mathematically symmetric forward-gait mirror was unstable on
+  the robot.
+- Fixed the QML initialization overlay remaining visible when startup completed
+  in the usable `SERVO RECOVERY ARMED` state.
 
 ## [2.0.0-rc1] - Pending Raspberry Pi hardware certification
 

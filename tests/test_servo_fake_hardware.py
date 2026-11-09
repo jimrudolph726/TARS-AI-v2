@@ -27,7 +27,6 @@ sys.modules.pop("modules.module_movements", None)
 sys.modules.pop("modules.module_servoctl", None)
 servoctl = importlib.import_module("modules.module_servoctl")
 movements = importlib.import_module("modules.module_movements")
-gait = importlib.import_module("modules.module_gait")
 movement_registry = importlib.import_module("modules.module_movement_registry")
 
 
@@ -957,26 +956,7 @@ class ServoFakeHardwareTests(unittest.TestCase):
         self.assertTrue(self.backend.all_outputs_disabled(controller))
         self.assert_all_raw_pulses_safe()
 
-    def test_original_backward_step_exactly_mirrors_forward_leg_rotation(self):
-        for arms_present in (False, True):
-            with self.subTest(arms_present=arms_present):
-                forward = gait.original_step_phases("forward", arms_present)
-                backward = gait.original_step_phases("backward", arms_present)
-
-                self.assertEqual(len(forward), len(backward))
-                for forward_phase, backward_phase in zip(forward, backward):
-                    forward_pose = forward_phase["pose"]
-                    backward_pose = backward_phase["pose"]
-                    self.assertEqual(forward_pose[:2], backward_pose[:2])
-                    self.assertEqual(
-                        (100 - forward_pose[2], 100 - forward_pose[3]),
-                        backward_pose[2:],
-                    )
-                    self.assertEqual(
-                        forward_phase["speed"], backward_phase["speed"]
-                    )
-
-    def test_original_arms_backward_step_is_bounded_and_returns_to_center(self):
+    def test_restored_fast_backward_step_is_bounded_and_returns_to_center(self):
         controller = self._initialize()
         servoctl.ARMS_PRESENT = True
 
@@ -997,7 +977,15 @@ class ServoFakeHardwareTests(unittest.TestCase):
         self.assertTrue(self.backend.all_outputs_disabled(controller))
         self.assert_all_raw_pulses_safe()
 
-    def test_backward_alias_uses_the_fast_mirrored_step(self):
+    def test_fast_backward_uses_original_body_swing_profile(self):
+        with patch.object(movements, "_run_body_swing") as run_body_swing:
+            inspect.unwrap(movements.step_backward)()
+
+        run_body_swing.assert_called_once_with(
+            "backward", cycles=1, fast=True
+        )
+
+    def test_backward_alias_uses_the_restored_fast_step(self):
         self.assertEqual(
             movement_registry.resolve_name("backward"), "step_backward"
         )

@@ -40,6 +40,10 @@ class QmlAppStateTests(unittest.TestCase):
         self.assertIn("function retryActiveApp()", text)
         self.assertIn('actionText: appLoader.status === Loader.Error ? "RETRY APP"', text)
         self.assertIn("readonly property bool runtimeFailed", text)
+        controller = _read(CONTROLLER)
+        self.assertIn(
+            "self._runtime_ready = self._runtime_ready or ready", controller
+        )
 
     def test_data_apps_expose_meaningful_empty_and_error_states(self):
         dashboard = _read(QML / "DashboardApp.qml")

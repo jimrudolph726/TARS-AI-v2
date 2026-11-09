@@ -17,7 +17,7 @@ requires a separate written license from Charles-Olivier Dion (AtomikSpace).
 This license applies only to this file and does not override licenses of other files in the repository.
 """
 import modules.module_servoctl as servoctl
-from modules.module_gait import body_swing_profile, original_step_phases
+from modules.module_gait import body_swing_profile
 
 move_legs = servoctl.move_legs
 move_legs_original = servoctl.move_legs_original
@@ -155,17 +155,31 @@ def _run_body_swing(direction, cycles, fast=False):
         servoctl._notify_movement_end()
 
 
-def _run_original_step(direction):
-    """Run the proven fast step forward or its normalized backward mirror."""
+def step_forward():
+    """Execute the original, field-proven single forward step unchanged."""
     if servoctl.MOVING:
         return
 
     servoctl.MOVING = True
     servoctl._notify_movement_start()
     try:
-        move_legs_original(50, 50, 50, 50, 0.9)
-        for phase in original_step_phases(direction, servoctl.ARMS_PRESENT):
-            move_legs_original(*phase["pose"], phase["speed"])
+        if not servoctl.ARMS_PRESENT:
+            move_legs_original(50, 50, 50, 50, 0.9)
+            move_legs_original(42, 42, 40, 40, 0.9)
+            move_legs_original(70, 70, 23, 23, 0.9)
+            move_legs_original(30, 30, 30, 30, 0.8)
+            move_legs_original(70, 70, 35, 35, 0.9)
+            move_legs_original(60, 60, 50, 50, 0.9)
+            move_legs_original(50, 50, 50, 50, 0.9)
+
+        if servoctl.ARMS_PRESENT:
+            move_legs_original(50, 50, 50, 50, 0.9)
+            move_legs_original(32, 32, 25, 25, 0.9)
+            move_legs_original(88, 88, 8, 8, 1.0)
+            move_legs_original(15, 15, 17, 17, 0.9)
+            move_legs_original(75, 75, 24, 24, 0.9)
+            move_legs_original(70, 70, 50, 50, 0.9)
+            move_legs_original(50, 50, 50, 50, 0.9)
 
         servoctl.wait_for_movement(0.1)
         disable_all_servos()
@@ -174,19 +188,14 @@ def _run_original_step(direction):
         servoctl._notify_movement_end()
 
 
-def step_forward():
-    """Execute the original, field-proven single forward step unchanged."""
-    _run_original_step("forward")
-
-
 def walk_forward():
     """Two full body-first forward swings for greater travel."""
     _run_body_swing("forward", cycles=2, fast=False)
 
 
 def step_backward():
-    """Execute an exact directional mirror of the proven fast forward step."""
-    _run_original_step("backward")
+    """One quick body-first backward swing followed by both legs."""
+    _run_body_swing("backward", cycles=1, fast=True)
 
 
 def walk_backward():

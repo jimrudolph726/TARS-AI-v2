@@ -12,6 +12,20 @@ import threading
 import traceback
 
 
+def startup_ready_status(
+    movement_configured: bool, servos_ready: bool
+) -> tuple[str, bool]:
+    """Return the final usable-runtime status after startup completes.
+
+    Servo recovery is a degraded hardware condition, not an incomplete runtime.
+    Speech, UI, camera, and automatic servo recovery remain usable, so QML must
+    dismiss its initialization overlay in both branches.
+    """
+    if movement_configured and not servos_ready:
+        return "SYSTEM READY · SERVO RECOVERY ARMED", True
+    return "ALL SYSTEMS OPERATIONAL", True
+
+
 class TarsRuntime(threading.Thread):
     """Own all non-Qt TARS services and shut them down as one unit."""
 
@@ -344,10 +358,10 @@ class TarsRuntime(threading.Thread):
             f"LOAD: TARS-AI OS: {version} running on {raspberry_version.upper()}"
         )
         self.ui.update_data("SYSTEM", f"TARS-AI OS: {version} running", "SYSTEM")
-        if movement_configured and not servos_ready:
-            self._status("SYSTEM READY · SERVO RECOVERY ARMED", False)
-        else:
-            self._status("ALL SYSTEMS OPERATIONAL", True)
+        ready_text, runtime_ready = startup_ready_status(
+            movement_configured, servos_ready
+        )
+        self._status(ready_text, runtime_ready)
 
         while not self.shutdown_event.wait(0.1):
             pass

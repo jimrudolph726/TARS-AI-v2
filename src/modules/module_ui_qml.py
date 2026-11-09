@@ -1405,8 +1405,11 @@ class TarsUIController(QObject):
     @Slot(str, bool)
     def _apply_runtime_status(self, status: str, ready: bool) -> None:
         self._runtime_status = status
-        self._runtime_ready = ready
-        if ready:
+        # Runtime readiness is a completed-startup milestone. A later degraded
+        # subsystem status must not bring the boot overlay back over a usable UI.
+        was_ready = self._runtime_ready
+        self._runtime_ready = self._runtime_ready or ready
+        if ready and not was_ready:
             self._performance.mark_runtime_ready()
         self.runtimeChanged.emit()
 

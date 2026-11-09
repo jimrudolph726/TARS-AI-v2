@@ -17,7 +17,7 @@ requires a separate written license from Charles-Olivier Dion (AtomikSpace).
 This license applies only to this file and does not override licenses of other files in the repository.
 """
 import modules.module_servoctl as servoctl
-from modules.module_gait import body_swing_profile
+from modules.module_gait import body_swing_execution_phases
 
 move_legs = servoctl.move_legs
 move_legs_original = servoctl.move_legs_original
@@ -71,11 +71,6 @@ def _confirm_monster_parked_pose(settle_seconds=1.0):
     servoctl.wait_for_movement(0.4)
 
 
-def _body_swing_profile(direction, fast=False):
-    """Return the paired-leg body-swing gait used by the original chassis."""
-    return body_swing_profile(direction, servoctl.ARMS_PRESENT, fast=fast)
-
-
 def _run_body_swing(direction, cycles, fast=False):
     """Swing the chassis first, then bring both legs underneath it."""
     if servoctl.MOVING:
@@ -84,69 +79,17 @@ def _run_body_swing(direction, cycles, fast=False):
     servoctl.MOVING = True
     servoctl._notify_movement_start()
     try:
-        profile = _body_swing_profile(direction, fast=fast)
-        stride_target = profile["stride_target"]
-        support_target = profile["support_target"]
-        unload_target = profile["unload_target"]
-        raised_height = profile["raised_height"]
-        planted_height = profile["planted_height"]
-        unloaded_height = profile["unloaded_height"]
-        (
-            raise_time, swing_time, lower_time, transfer_time, unload_time,
-            follow_time, replant_time, neutral_time,
-        ) = profile["timings"]
+        phases = body_swing_execution_phases(
+            direction, servoctl.ARMS_PRESENT, fast=fast
+        )
 
         move_legs_timed(50, 50, 50, 50, duration=0.25 if fast else 0.36)
 
         for _ in range(cycles):
-            # 1. Raise the chassis fully without changing horizontal position.
-            # 2. Swing the raised chassis horizontally without changing height.
-            # 3. Lower the chassis vertically at the completed swing position.
-            move_legs_timed(raised_height, raised_height, 50, 50, duration=raise_time)
-            move_legs_timed(
-                raised_height, raised_height, stride_target, stride_target,
-                duration=swing_time,
-            )
-            move_legs_timed(
-                planted_height, planted_height, stride_target, stride_target,
-                duration=lower_time,
-            )
-            servoctl.wait_for_movement(0.08 if fast else 0.12)
-
-            # 4. Continue rotating in the direction of travel while remaining
-            # low. This rolls the chassis onto its support edge so the feet are
-            # unloaded before their height changes.
-            move_legs_timed(
-                planted_height, planted_height, support_target, support_target,
-                duration=transfer_time,
-            )
-            servoctl.wait_for_movement(0.12 if fast else 0.18)
-
-            # 5. Retract both unloaded feet. Ease a little out of the extreme
-            # support angle at the same time to avoid binding the mechanism.
-            # 6. Bring both raised legs back underneath the supported chassis.
-            move_legs_timed(
-                unloaded_height, unloaded_height, unload_target, unload_target,
-                duration=unload_time,
-            )
-            servoctl.wait_for_movement(0.10 if fast else 0.14)
-            partial_target = round(unload_target + (50 - unload_target) * 0.25)
-            move_legs_timed(
-                unloaded_height, unloaded_height, partial_target, partial_target,
-                duration=max(0.20, follow_time * 0.35),
-            )
-            move_legs_timed(
-                unloaded_height, unloaded_height, 50, 50,
-                duration=max(0.24, follow_time * 0.65),
-            )
-
-            # 7. Extend the centered feet until they take the load again, then
-            # return to balanced neutral height.
-            move_legs_timed(
-                planted_height, planted_height, 50, 50,
-                duration=replant_time,
-            )
-            move_legs_timed(50, 50, 50, 50, duration=neutral_time)
+            for phase in phases:
+                move_legs_timed(*phase["pose"], duration=phase["duration"])
+                if phase["wait_after"]:
+                    servoctl.wait_for_movement(phase["wait_after"])
 
         servoctl.wait_for_movement(0.12)
         disable_all_servos()

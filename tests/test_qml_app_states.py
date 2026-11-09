@@ -45,6 +45,17 @@ class QmlAppStateTests(unittest.TestCase):
             "self._runtime_ready = self._runtime_ready or ready", controller
         )
 
+    def test_backward_diagnostic_is_production_matched_and_sequential(self):
+        tester = _read(ROOT / "src" / "app-servotester-qml.py")
+        calibration = _read(ROOT / "src" / "qml" / "ServoCalibration.qml")
+
+        self.assertIn("body_swing_execution_phases", tester)
+        self.assertIn("BACKWARD_DIAGNOSTIC_TIME_SCALE", tester)
+        self.assertIn("self._diagnostic_phase + 1", tester)
+        self.assertIn("move_legs_timed(*pose, duration=duration)", tester)
+        self.assertIn("|| modelData.next", calibration)
+        self.assertIn("P is production time", calibration)
+
     def test_data_apps_expose_meaningful_empty_and_error_states(self):
         dashboard = _read(QML / "DashboardApp.qml")
         health = _read(QML / "SystemHealthApp.qml")

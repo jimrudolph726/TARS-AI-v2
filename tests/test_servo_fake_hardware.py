@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from fake_servo_hardware import (
     FakeServoBackend,
@@ -28,6 +28,7 @@ sys.modules.pop("modules.module_servoctl", None)
 servoctl = importlib.import_module("modules.module_servoctl")
 movements = importlib.import_module("modules.module_movements")
 movement_registry = importlib.import_module("modules.module_movement_registry")
+gait = importlib.import_module("modules.module_gait")
 
 
 class ServoFakeHardwareTests(unittest.TestCase):
@@ -984,6 +985,26 @@ class ServoFakeHardwareTests(unittest.TestCase):
         run_body_swing.assert_called_once_with(
             "backward", cycles=1, fast=True
         )
+
+    def test_body_swing_runtime_consumes_shared_phase_sequence(self):
+        phases = gait.body_swing_execution_phases(
+            "backward", arms_present=True, fast=True
+        )
+        servoctl.ARMS_PRESENT = True
+
+        with (
+            patch.object(movements, "move_legs_timed") as move_timed,
+            patch.object(movements, "disable_all_servos"),
+            patch.object(servoctl, "wait_for_movement"),
+        ):
+            movements._run_body_swing("backward", cycles=1, fast=True)
+
+        expected = [call(50, 50, 50, 50, duration=0.25)]
+        expected.extend(
+            call(*phase["pose"], duration=phase["duration"])
+            for phase in phases
+        )
+        self.assertEqual(expected, move_timed.call_args_list)
 
     def test_backward_alias_uses_the_restored_fast_step(self):
         self.assertEqual(

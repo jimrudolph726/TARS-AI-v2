@@ -10,6 +10,8 @@ candidates for hardware validation before a final stable release.
   the robot.
 - Fixed the QML initialization overlay remaining visible when startup completed
   in the usable `SERVO RECOVERY ARMED` state.
+- Added a sequential, slowed backward-gait diagnostic whose poses and production
+  timings come from the same phase generator used by the live movement routine.
 
 ## [2.0.0-rc1] - Pending Raspberry Pi hardware certification
 

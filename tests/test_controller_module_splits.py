@@ -23,6 +23,7 @@ from modules.module_servo_math import (
     synchronized_duration,
     validate_write,
 )
+from modules.module_gait import body_swing_execution_phases
 from modules.module_servo_tester_model import (
     SERVO_DEFINITIONS,
     ServoCalibrationModel,
@@ -103,6 +104,44 @@ class STTServiceTests(unittest.TestCase):
 
 
 class ServoServiceTests(unittest.TestCase):
+    def test_fast_backward_execution_phases_are_bounded_and_complete(self):
+        phases = body_swing_execution_phases(
+            "backward", arms_present=True, fast=True
+        )
+
+        self.assertEqual(
+            [
+                "BODY RAISE",
+                "BODY SWING",
+                "BODY LOWER",
+                "SUPPORT TRANSFER",
+                "FEET UNLOAD",
+                "RECOVERY EASE",
+                "LEGS FOLLOW",
+                "FEET REPLANT",
+                "FINAL NEUTRAL",
+            ],
+            [phase["name"] for phase in phases],
+        )
+        self.assertEqual(
+            [
+                (32, 32, 50, 50),
+                (32, 32, 80, 80),
+                (78, 78, 80, 80),
+                (78, 78, 92, 92),
+                (16, 16, 83, 83),
+                (16, 16, 75, 75),
+                (16, 16, 50, 50),
+                (78, 78, 50, 50),
+                (50, 50, 50, 50),
+            ],
+            [phase["pose"] for phase in phases],
+        )
+        for phase in phases:
+            self.assertTrue(all(1 <= value <= 100 for value in phase["pose"]))
+            self.assertGreater(phase["duration"], 0)
+            self.assertGreaterEqual(phase["wait_after"], 0)
+
     def test_servo_math_preserves_envelopes_and_recovery_rule(self):
         ranges = {0: (220, 460)}
         self.assertEqual((220, 460), channel_bounds(0, ranges))
@@ -172,6 +211,7 @@ class QMLServiceTests(unittest.TestCase):
 class ControllerBoundaryTests(unittest.TestCase):
     def test_pure_extractions_do_not_import_qt_or_hardware_drivers(self):
         pure_modules = [
+            "module_gait.py",
             "module_stt_audio.py",
             "module_stt_bargein.py",
             "module_stt_wake.py",

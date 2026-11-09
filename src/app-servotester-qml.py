@@ -15,7 +15,10 @@ import time
 from copy import deepcopy
 from pathlib import Path
 
-from modules.module_gait import body_swing_diagnostic_phases
+from modules.module_gait import (
+    body_swing_diagnostic_phases,
+    body_swing_execution_phases,
+)
 from modules.module_config_store import atomic_write_text, validate_typed_config_file
 from modules.module_servo_tester_model import (
     BODY_MOVEMENTS,
@@ -53,6 +56,9 @@ from PySide6.QtQml import QQmlApplicationEngine
 
 ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent
+BACKWARD_DIAGNOSTIC_TIME_SCALE = 1.8
+BACKWARD_DIAGNOSTIC_MIN_DURATION = 0.45
+BACKWARD_DIAGNOSTIC_NEUTRAL_DURATION = 0.90
 
 def _is_raspberry_pi() -> bool:
     try:
@@ -315,6 +321,24 @@ class ServoCalibrationController(QObject):
             })
         return presets
 
+    def _diagnostic_phase_definitions(self) -> list[dict]:
+        if self._diagnostic_direction == "backward":
+            phases = body_swing_execution_phases(
+                "backward", self._arms_present(), fast=True
+            )
+            result = []
+            for phase in phases:
+                item = dict(phase)
+                item["test_duration"] = max(
+                    BACKWARD_DIAGNOSTIC_MIN_DURATION,
+                    item["duration"] * BACKWARD_DIAGNOSTIC_TIME_SCALE,
+                )
+                result.append(item)
+            return result
+        return body_swing_diagnostic_phases(
+            "forward", self._arms_present()
+        )
+
     @Property(str, notify=diagnosticsChanged)
     def diagnosticDirection(self) -> str:
         return self._diagnostic_direction
@@ -325,21 +349,27 @@ class ServoCalibrationController(QObject):
 
     @Property(str, notify=diagnosticsChanged)
     def diagnosticProfileText(self) -> str:
+        if self._diagnostic_direction == "backward":
+            return "PRODUCTION BACKWARD · SLOW INSPECTION"
         return "ORIGINAL ARMS STEP" if self._arms_present() else "ORIGINAL NO-ARMS STEP"
 
     @Property("QVariantList", notify=diagnosticsChanged)
     def diagnosticPhases(self) -> list[dict]:
-        phases = body_swing_diagnostic_phases(
-            self._diagnostic_direction,
-            self._arms_present(),
-        )
+        phases = self._diagnostic_phase_definitions()
         result = []
         for phase in phases:
             item = dict(phase)
             left_height, right_height, left_leg, right_leg = item.pop("pose")
+            if "test_duration" in item:
+                timing = (
+                    f"P {item['duration']:.2f}s"
+                    f" / TEST {item['test_duration']:.2f}s"
+                )
+            else:
+                timing = f"SPEED {item['speed']:.1f}"
             item["poseText"] = (
-                f"H {left_height}/{right_height}  ·  L {left_leg}/{right_leg}"
-                f"  ·  SPEED {item['speed']:.1f}"
+                f"H {left_height}/{right_height} · L {left_leg}/{right_leg}"
+                f" · {timing}"
             )
             item["completed"] = item["index"] <= self._diagnostic_phase
             item["next"] = item["index"] == self._diagnostic_phase + 1
@@ -757,17 +787,13 @@ class ServoCalibrationController(QObject):
         self.diagnosticsChanged.emit()
         self._set_status(f"Mock diagnostic phase {index} · {name}")
 
-    def _run_diagnostic_prefix(self, index: int, name: str) -> None:
-        """Replay the original movement continuously through ``index``."""
-        if not self._hardware_connected:
-            self._complete_mock_diagnostic_phase(index, name)
-            return
+    def _prepare_diagnostic_run(self) -> bool:
         if not self._servo_power:
             self._set_status("Diagnostic blocked · servo power is disabled")
-            return
+            return False
         if self._movement_active:
             self._set_status("Movement already in progress")
-            return
+            return False
 
         self._preview_cancel.set()
         with self._preview_condition:
@@ -775,8 +801,18 @@ class ServoCalibrationController(QObject):
         self._range_armed = False
         self._range_busy = False
         self.rangeTestChanged.emit()
+        return True
+
+    def _run_diagnostic_prefix(self, index: int, name: str) -> None:
+        """Replay the original movement continuously through ``index``."""
+        if not self._hardware_connected:
+            self._complete_mock_diagnostic_phase(index, name)
+            return
+        if not self._prepare_diagnostic_run():
+            return
+
         phases = body_swing_diagnostic_phases(
-            self._diagnostic_direction,
+            "forward",
             self._arms_present(),
         )
         selected_phases = [phase for phase in phases if phase["index"] <= index]
@@ -815,13 +851,72 @@ class ServoCalibrationController(QObject):
             self._set_status(f"Replaying original sequence through phase {index} · {name}")
         threading.Thread(target=diagnostic_worker, daemon=True).start()
 
+    def _run_backward_diagnostic_phase(self, index: int, name: str) -> None:
+        """Apply one production backward pose slowly, then hold for inspection."""
+        if not self._hardware_connected:
+            self._complete_mock_diagnostic_phase(index, name)
+            return
+        if not self._prepare_diagnostic_run():
+            return
+
+        phases = self._diagnostic_phase_definitions()
+        phase = next((item for item in phases if item["index"] == index), None)
+        if index != 0 and phase is None:
+            self._set_status(f"Unknown backward diagnostic phase · {index}")
+            return
+        pose = (50, 50, 50, 50) if index == 0 else phase["pose"]
+        duration = (
+            BACKWARD_DIAGNOSTIC_NEUTRAL_DURATION
+            if index == 0
+            else phase["test_duration"]
+        )
+
+        def diagnostic_worker() -> None:
+            def apply_single_phase() -> None:
+                self._servoctl.move_legs_timed(*pose, duration=duration)
+
+            guarded_phase = self._servoctl.movement_command(apply_single_phase)
+            try:
+                completed = guarded_phase()
+                if completed:
+                    self._diagnostic_phase = index
+                    if index == 0:
+                        self._set_status(
+                            "Backward diagnostic returned to neutral · support TARS"
+                        )
+                    else:
+                        self._set_status(
+                            f"Backward phase {index} held · {name} · inspect before NEXT"
+                        )
+                else:
+                    self._set_status(f"Backward diagnostic stopped · {name}")
+            except Exception as exc:
+                self._set_status(f"Backward diagnostic failed · {exc}")
+            finally:
+                self._movement_active = False
+                self.stateChanged.emit()
+                self.diagnosticsChanged.emit()
+
+        self._movement_active = True
+        self.stateChanged.emit()
+        if index == 0:
+            self._set_status("Returning backward diagnostic to neutral slowly")
+        else:
+            self._set_status(
+                f"Applying backward phase {index} slowly · {name}"
+            )
+        threading.Thread(target=diagnostic_worker, daemon=True).start()
+
     @Slot()
     def startDiagnostic(self) -> None:
-        self._run_diagnostic_prefix(0, "NEUTRAL START")
+        if self._diagnostic_direction == "backward":
+            self._run_backward_diagnostic_phase(0, "NEUTRAL")
+        else:
+            self._run_diagnostic_prefix(0, "NEUTRAL START")
 
     @Slot()
     def runOriginalStepReplay(self) -> None:
-        """Run the selected exact forward step or mirrored backward step."""
+        """Run the selected production step without diagnostic holds."""
         self.runMovement(
             "step_backward"
             if self._diagnostic_direction == "backward"
@@ -833,15 +928,21 @@ class ServoCalibrationController(QObject):
         if self._diagnostic_phase < 0:
             self._set_status("Reset the diagnostic to neutral before selecting a replay phase")
             return
-        phases = body_swing_diagnostic_phases(
-            self._diagnostic_direction,
-            self._arms_present(),
-        )
+        phases = self._diagnostic_phase_definitions()
         phase = next((item for item in phases if item["index"] == index), None)
         if phase is None:
             self._set_status(f"Unknown diagnostic phase · {index}")
             return
-        self._run_diagnostic_prefix(phase["index"], phase["name"])
+        if self._diagnostic_direction == "backward":
+            expected = self._diagnostic_phase + 1
+            if phase["index"] != expected:
+                self._set_status(
+                    f"Backward diagnostic is sequential · select phase {expected} next"
+                )
+                return
+            self._run_backward_diagnostic_phase(phase["index"], phase["name"])
+        else:
+            self._run_diagnostic_prefix(phase["index"], phase["name"])
 
     @Slot()
     def stopMovement(self) -> None:

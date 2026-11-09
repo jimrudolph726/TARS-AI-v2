@@ -48,6 +48,121 @@ def body_swing_profile(direction: str, arms_present: bool, fast: bool = False):
     }
 
 
+def body_swing_execution_phases(
+    direction: str, arms_present: bool, fast: bool = False
+) -> list[dict]:
+    """Expand a body-swing profile into the exact production pose sequence.
+
+    The movement runtime and backward diagnostic both consume this function so
+    their targets cannot drift apart. ``duration`` and ``wait_after`` are the
+    production timings; a diagnostic may deliberately scale the transition
+    duration while preserving pose order and geometry.
+    """
+    profile = body_swing_profile(direction, arms_present, fast=fast)
+    stride_target = profile["stride_target"]
+    support_target = profile["support_target"]
+    unload_target = profile["unload_target"]
+    raised_height = profile["raised_height"]
+    planted_height = profile["planted_height"]
+    unloaded_height = profile["unloaded_height"]
+    (
+        raise_time,
+        swing_time,
+        lower_time,
+        transfer_time,
+        unload_time,
+        follow_time,
+        replant_time,
+        neutral_time,
+    ) = profile["timings"]
+    partial_target = round(unload_target + (50 - unload_target) * 0.25)
+
+    raw_phases = (
+        (
+            "BODY RAISE",
+            "Raise the chassis vertically while the legs remain centered.",
+            (raised_height, raised_height, 50, 50),
+            raise_time,
+            0.0,
+        ),
+        (
+            "BODY SWING",
+            f"Swing the raised chassis {direction}.",
+            (raised_height, raised_height, stride_target, stride_target),
+            swing_time,
+            0.0,
+        ),
+        (
+            "BODY LOWER",
+            "Lower the chassis at the completed swing position.",
+            (planted_height, planted_height, stride_target, stride_target),
+            lower_time,
+            0.08 if fast else 0.12,
+        ),
+        (
+            "SUPPORT TRANSFER",
+            "Roll onto the chassis support edge before unloading the feet.",
+            (planted_height, planted_height, support_target, support_target),
+            transfer_time,
+            0.12 if fast else 0.18,
+        ),
+        (
+            "FEET UNLOAD",
+            "Retract the unloaded feet and ease away from the support extreme.",
+            (unloaded_height, unloaded_height, unload_target, unload_target),
+            unload_time,
+            0.10 if fast else 0.14,
+        ),
+        (
+            "RECOVERY EASE",
+            "Begin bringing the raised legs underneath the supported chassis.",
+            (unloaded_height, unloaded_height, partial_target, partial_target),
+            max(0.20, follow_time * 0.35),
+            0.0,
+        ),
+        (
+            "LEGS FOLLOW",
+            "Center both raised legs underneath the chassis.",
+            (unloaded_height, unloaded_height, 50, 50),
+            max(0.24, follow_time * 0.65),
+            0.0,
+        ),
+        (
+            "FEET REPLANT",
+            "Extend the centered feet until they carry the load again.",
+            (planted_height, planted_height, 50, 50),
+            replant_time,
+            0.0,
+        ),
+        (
+            "FINAL NEUTRAL",
+            "Return to the balanced neutral height.",
+            (50, 50, 50, 50),
+            neutral_time,
+            0.0,
+        ),
+    )
+
+    return [
+        {
+            "index": index,
+            "key": f"production_{direction}_{index}",
+            "name": name,
+            "description": description,
+            "pose": pose,
+            "duration": duration,
+            "wait_after": wait_after,
+        }
+        for index, (
+            name,
+            description,
+            pose,
+            duration,
+            wait_after,
+        ) in enumerate(raw_phases, start=1)
+    ]
+
+
 def body_swing_diagnostic_phases(direction: str, arms_present: bool) -> list[dict]:
     """Return the untouched original step poses for prefix replay diagnostics.
 

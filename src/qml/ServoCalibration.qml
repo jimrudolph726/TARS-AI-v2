@@ -605,7 +605,7 @@ ApplicationWindow {
                     TacticalButton {
                         Layout.fillWidth: true
                         height: 36
-                        text: controller.diagnosticPhase < 0 ? "START AT NEUTRAL" : "RESET TO NEUTRAL"
+                        text: controller.diagnosticPhase < 0 ? "START AT NEUTRAL" : "RETURN TO NEUTRAL"
                         accent: "#8b9ca4"
                         enabled: !controller.movementActive
                         onClicked: controller.startDiagnostic()
@@ -648,7 +648,9 @@ ApplicationWindow {
                                       ? "Support TARS, then start at neutral."
                                       : controller.diagnosticPhase === controller.diagnosticPhases.length
                                         ? "Restart to repeat the test."
-                                        : "Choose any phase to replay the original sequence through it."
+                                        : controller.diagnosticDirection === "backward"
+                                          ? "Select only the highlighted NEXT phase, inspect it, then continue."
+                                          : "Choose any phase to replay the original sequence through it."
                                 color: window.textMuted
                                 font.pixelSize: 8
                             }
@@ -659,7 +661,9 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         wrapMode: Text.WordWrap
-                        text: "SAFETY\nKeep one hand ready to support TARS. A phase replays the untouched original step from neutral, then holds at that phase. EMERGENCY PWM OFF releases torque immediately and stays latched."
+                        text: controller.diagnosticDirection === "backward"
+                              ? "SAFETY\nSupport TARS and advance one phase at a time. Each target matches the production backward step but moves more slowly, then holds torque for inspection. RETURN TO NEUTRAL is deliberate; EMERGENCY PWM OFF releases torque immediately."
+                              : "SAFETY\nKeep one hand ready to support TARS. A phase replays the untouched original step from neutral, then holds at that phase. EMERGENCY PWM OFF releases torque immediately and stays latched."
                         color: "#b6c0c4"
                         font.pixelSize: 8
                         lineHeight: 1.15
@@ -704,7 +708,9 @@ ApplicationWindow {
                     anchors.leftMargin: 10
                     anchors.rightMargin: 10
                     anchors.topMargin: 2
-                    text: "Select any phase to replay continuously from neutral through that original pose."
+                    text: controller.diagnosticDirection === "backward"
+                          ? "Advance only the highlighted NEXT phase. P is production time; TEST is the slower inspection time."
+                          : "Select any phase to replay continuously from neutral through that original pose."
                     color: window.textMuted
                     font.family: "Consolas"
                     font.pixelSize: 8
@@ -788,7 +794,10 @@ ApplicationWindow {
 
                             MouseArea {
                                 anchors.fill: parent
-                                enabled: controller.diagnosticPhase >= 0 && !controller.movementActive
+                                enabled: controller.diagnosticPhase >= 0
+                                         && !controller.movementActive
+                                         && (controller.diagnosticDirection !== "backward"
+                                             || modelData.next)
                                 cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                                 onClicked: controller.runDiagnosticPhase(modelData.index)
                             }
